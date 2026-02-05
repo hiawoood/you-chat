@@ -1,0 +1,9 @@
+node_modules/
+dist/
+data/
+.env
+*.log
+*.db
+.DS_Store
+cookies.txt
+.git-backup/
