@@ -1,8 +1,17 @@
 import { betterAuth } from "better-auth";
 import { db, getUserCount } from "./db";
 
+// Determine base URL: explicit env > Railway public domain > localhost
+const port = process.env.PORT || "8080";
+const baseURL = process.env.BETTER_AUTH_URL
+  || (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : null)
+  || `http://localhost:${port}`;
+
+console.log(`Auth base URL: ${baseURL}`);
+
 export const auth = betterAuth({
   database: db,
+  baseURL,
   emailAndPassword: {
     enabled: true,
     disableSignUp: true,  // Only allow login, no public registration
