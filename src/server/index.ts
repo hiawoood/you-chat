@@ -34,6 +34,11 @@ app.use(
 // Health check (public, used by Railway healthcheck)
 app.get("/api/health", (c) => c.json({ ok: true }));
 
+// Block public signup — only internal API (createAdminIfNeeded) can create users
+app.post("/api/auth/sign-up/*", (c) => {
+  return c.json({ error: "Signup is disabled" }, 403);
+});
+
 // Auth routes - must be before the auth middleware
 app.on(["POST", "GET"], "/api/auth/*", async (c) => {
   return auth.handler(c.req.raw);
