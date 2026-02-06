@@ -11,3 +11,4 @@ restartPolicyMaxRetries = 10
 [variables]
 PORT = "8080"
 ADMIN_EMAIL = "admin@local.dev"
+BETTER_AUTH_URL = "https://${{RAILWAY_PUBLIC_DOMAIN}}"
