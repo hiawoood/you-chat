@@ -1,5 +1,5 @@
 import { betterAuth } from "better-auth";
-import { db, getUserCount } from "./db";
+import { db, getUserCount, generateId } from "./db";
 
 // Determine base URL: explicit env > Railway public domain > localhost
 const port = process.env.PORT || "8080";
@@ -33,21 +33,38 @@ export const auth = betterAuth({
 export async function createAdminIfNeeded() {
   const email = process.env.ADMIN_EMAIL || "admin@local.dev";
   const password = process.env.ADMIN_PASSWORD || "change-me";
+
+  // Check if user with this email already exists
+  const existing = db.query("SELECT id FROM user WHERE email = ?").get(email);
+  if (existing) {
+    console.log(`Admin user exists: ${email}`);
+    return;
+  }
+
+  // Use better-auth's internal API to create user (handles password hashing)
   try {
-    await auth.api.signUpEmail({
-      body: {
-        email,
-        password,
-        name: "admin",
-      },
+    const result = await auth.api.signUpEmail({
+      body: { email, password, name: "admin" },
     });
     console.log(`Created admin user: ${email}`);
   } catch (e: any) {
-    // User already exists — that's fine
-    if (e?.message?.includes("already") || e?.body?.code === "USER_ALREADY_EXISTS") {
-      console.log(`Admin user exists: ${email}`);
-    } else {
-      console.log(`Admin setup note: ${e?.message || "user may already exist"}`);
+    console.error(`Failed to create admin via API: ${e?.message}`);
+    // Fallback: try creating directly with Bun's password hash
+    try {
+      const hashedPassword = await Bun.password.hash(password, { algorithm: "bcrypt" });
+      const userId = generateId();
+      const now = Date.now();
+      db.run(
+        "INSERT INTO user (id, name, email, emailVerified, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)",
+        [userId, "admin", email, 0, now, now]
+      );
+      db.run(
+        "INSERT INTO account (id, accountId, providerId, userId, password, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [generateId(), userId, "credential", userId, hashedPassword, now, now]
+      );
+      console.log(`Created admin user (direct): ${email}`);
+    } catch (e2: any) {
+      console.error(`Failed to create admin (direct): ${e2?.message}`);
     }
   }
 }
