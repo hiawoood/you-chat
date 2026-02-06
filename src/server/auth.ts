@@ -28,24 +28,26 @@ export const auth = betterAuth({
   secret: process.env.BETTER_AUTH_SECRET,
 });
 
-// Create admin user if no users exist
+// Ensure admin user exists on every startup
 // Credentials configurable via ADMIN_EMAIL and ADMIN_PASSWORD env vars
 export async function createAdminIfNeeded() {
-  const count = getUserCount();
-  if (count === 0) {
-    const email = process.env.ADMIN_EMAIL || "admin@local.dev";
-    const password = process.env.ADMIN_PASSWORD || "change-me";
-    try {
-      const ctx = await auth.api.signUpEmail({
-        body: {
-          email,
-          password,
-          name: "admin",
-        },
-      });
-      console.log(`Created admin user: ${email}`);
-    } catch (e) {
-      console.log("Admin user may already exist");
+  const email = process.env.ADMIN_EMAIL || "admin@local.dev";
+  const password = process.env.ADMIN_PASSWORD || "change-me";
+  try {
+    await auth.api.signUpEmail({
+      body: {
+        email,
+        password,
+        name: "admin",
+      },
+    });
+    console.log(`Created admin user: ${email}`);
+  } catch (e: any) {
+    // User already exists — that's fine
+    if (e?.message?.includes("already") || e?.body?.code === "USER_ALREADY_EXISTS") {
+      console.log(`Admin user exists: ${email}`);
+    } else {
+      console.log(`Admin setup note: ${e?.message || "user may already exist"}`);
     }
   }
 }
