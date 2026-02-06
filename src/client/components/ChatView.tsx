@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { ChatSession, Message, Agent, api } from "../lib/api";
 import { useChat } from "../hooks/useChat";
+import { useScrollDirection } from "../hooks/useScrollDirection";
 import MessageList from "./MessageList";
 import MessageInput from "./MessageInput";
 
@@ -40,6 +41,9 @@ export default function ChatView({
   const [collapsedIds, setCollapsedIds] = useState<Set<string>>(new Set());
   const streamingContentRef = useRef("");
   const pendingTempIdRef = useRef<string | null>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const scrollDirection = useScrollDirection(scrollContainerRef);
+  const hideHeader = scrollDirection === "down";
 
   useEffect(() => {
     api.getAgents().then(setAgents).catch(console.error);
@@ -107,8 +111,9 @@ export default function ChatView({
 
   return (
     <div className="flex flex-col h-full bg-white dark:bg-gray-900">
-      {/* Header - h-12 to match sidebar */}
-      <div className="h-12 flex items-center px-3 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 gap-2 flex-shrink-0">
+      {/* Header wrapper - collapses on mobile scroll-down */}
+      <div className={`overflow-hidden transition-all duration-300 ease-in-out flex-shrink-0 lg:!max-h-12 ${hideHeader ? "max-h-0" : "max-h-12"}`}>
+      <div className="h-12 flex items-center px-3 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 gap-2">
         {onToggleSidebar && (
           <button
             onClick={onToggleSidebar}
@@ -161,9 +166,10 @@ export default function ChatView({
           ))}
         </select>
       </div>
+      </div>
 
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto bg-gray-50 dark:bg-gray-950">
+      <div ref={scrollContainerRef} className="flex-1 overflow-y-auto bg-gray-50 dark:bg-gray-950">
         {messagesLoading ? (
           <div className="flex items-center justify-center h-full">
             <div className="flex flex-col items-center gap-2">
