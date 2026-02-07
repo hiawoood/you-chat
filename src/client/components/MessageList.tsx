@@ -246,7 +246,7 @@ function MessageBubble({
     else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); saveEdit(); }
   };
 
-  const isCollapsed = collapsed && isLong && !isStreaming && !editing;
+  const isCollapsed = collapsed && isLong && !editing;
   const isBusy = isDeleting || isSaving || isForking;
 
   return (
@@ -297,19 +297,25 @@ function MessageBubble({
               <div className={`markdown-content text-sm break-words ${isUser ? "markdown-user" : ""}`}>
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
               </div>
-              {isStreaming && <span className="inline-block w-2 h-4 ml-1 bg-gray-500 animate-pulse" />}
+              {isStreaming && !isCollapsed && <span className="inline-block w-2 h-4 ml-1 bg-gray-500 animate-pulse" />}
               {isCollapsed && (
                 <div className={`absolute bottom-0 left-0 right-0 h-8 bg-gradient-to-t ${
                   isUser ? "from-gray-900 dark:from-gray-700" : "from-white dark:from-gray-800"
                 } pointer-events-none`} />
               )}
             </div>
-            {isLong && !isStreaming && (
+            {isLong && (
               <button
                 onClick={() => setCollapsed((prev) => !prev)}
-                className={`text-xs mt-1 ${isUser ? "text-gray-300 hover:text-white" : "text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"}`}
+                className={`text-xs mt-1 flex items-center gap-1.5 ${isUser ? "text-gray-300 hover:text-white" : "text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"}`}
               >
                 {isCollapsed ? "▼ Show more" : "▲ Show less"}
+                {isCollapsed && isStreaming && (
+                  <span className="inline-flex items-center gap-1 text-blue-500 dark:text-blue-400">
+                    <span className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-pulse" />
+                    streaming…
+                  </span>
+                )}
               </button>
             )}
           </>

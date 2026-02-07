@@ -151,6 +151,19 @@ export default function ChatView({
         )}
         <h2 className="font-semibold text-sm truncate flex-1 text-gray-900 dark:text-white">{session.title}</h2>
 
+        {/* Scroll to bottom */}
+        {showScrollBtn && (
+          <button
+            onClick={scrollToBottom}
+            className="p-1.5 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-md text-gray-500 dark:text-gray-400"
+            title="Scroll to bottom"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 14l-7 7m0 0l-7-7m7 7V3" />
+            </svg>
+          </button>
+        )}
+
         {/* Collapse/Expand All toggle */}
         {hasMessages && (
           <button
@@ -237,21 +250,6 @@ export default function ChatView({
           </div>
         )}
       </div>
-
-      {/* Scroll to bottom button */}
-      {showScrollBtn && (
-        <div className="relative">
-          <button
-            onClick={scrollToBottom}
-            className="absolute bottom-2 left-1/2 -translate-x-1/2 z-10 p-2 rounded-full bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 shadow-lg hover:bg-gray-100 dark:hover:bg-gray-600 transition-all text-gray-500 dark:text-gray-300"
-            title="Scroll to bottom"
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 14l-7 7m0 0l-7-7m7 7V3" />
-            </svg>
-          </button>
-        </div>
-      )}
 
       {/* Input - h-14 fixed to align with sidebar bottom */}
       <div className="h-14 flex items-center border-t border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 flex-shrink-0">
