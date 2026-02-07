@@ -1,111 +1,215 @@
-## You.com AI Agent Chat App - Full Build
+# TASK: Refactor You-Chat to use Cookie-Based You.com API
 
-**Working Directory:** `/tmp/you-chat`
+Read `REFACTOR_PLAN.md` and `YOU_COM_API_SPEC.md` thoroughly before starting.
 
-**CRITICAL: Spend significant time on research and planning BEFORE writing code.**
+## What You're Building
 
-### Phase 1: Research (Do This First!)
+Replace the official You.com API (`api.you.com/v1/agents/runs` + API key) with the undocumented browser API (`you.com/api/streamingSearch` + per-user cookies). The app treats You.com as a raw LLM engine — our local DB owns all conversation state.
 
-Before writing any code, thoroughly research:
+## Implementation Steps (in order)
 
-1. **Bun 1.3.8 Features** - Read https://bun.sh/docs
-   - `bun:sqlite` - How to use the built-in SQLite
-   - `Bun.serve()` - Native HTTP server with streaming
-   - Bundling React apps with Bun
-   - Hot reload / dev server capabilities
+### Step 1: Rewrite `src/server/lib/you-client.ts`
 
-2. **better-auth with Hono + Bun** - Read https://better-auth.com/docs and https://hono.dev/examples/better-auth
-   - Setup with Hono
-   - SQLite adapter configuration
-   - Username/password authentication
-   - Session management
-   - Client-side integration with React
+Replace the entire file. New exports needed:
 
-3. **shadcn/ui Setup** - Read https://ui.shadcn.com/docs/installation
-   - Installation with Vite
-   - Tailwind CSS configuration
-   - Component installation (button, input, card, dialog, dropdown-menu, scroll-area, avatar, separator)
+```typescript
+// Core chat function - streams response tokens
+streamChat(options: {
+  query: string,
+  chatHistory: Array<{question: string, answer: string}>,
+  chatId: string,           // You.com thread UUID
+  agentOrModel: string,     // e.g. "user_mode_xxx" or "claude_4_5_opus"
+  dsCookie: string,
+  dsrCookie: string,
+  pastChatLength?: number,
+}): AsyncGenerator<string>
 
-4. **SSE Streaming Patterns**
-   - How to stream from Hono to frontend
-   - How to consume SSE in React with proper cleanup
-   - Error handling during streams
+// Non-streaming chat (for title generation etc)
+callChat(options: {
+  query: string,
+  agentOrModel: string,
+  dsCookie: string,
+  dsrCookie: string,
+}): Promise<string>
 
-5. **You.com API** - Details in CLAUDE.md
-   - Streaming response format
-   - Error handling
+// Validate cookies - returns user info or throws
+validateCookies(ds: string, dsr: string): Promise<{email: string, name: string, subscription?: string}>
 
-Document your research findings in a RESEARCH.md file before proceeding.
+// List custom agents
+listAgents(ds: string, dsr: string): Promise<Array<{id: string, name: string, model: string, turnCount: number}>>
 
-### Phase 2: Architecture Plan
+// List available AI models
+listModels(ds: string, dsr: string): Promise<Array<{id: string, name: string, isProOnly: boolean}>>
 
-Create ARCHITECTURE.md with:
-- Detailed component tree
-- Data flow diagrams (text-based)
-- API contract details
-- State management approach
-- Error handling strategy
+// Delete a You.com thread
+deleteThread(chatId: string, ds: string, dsr: string): Promise<void>
 
-### Phase 3: Implementation
+// Refresh cookies
+refreshCookies(ds: string, dsr: string): Promise<{ds: string, dsr: string} | null>
+```
 
-Follow the CLAUDE.md spec exactly:
+Key implementation details from the spec:
+- Endpoint: `POST https://you.com/api/streamingSearch`
+- Content-Type: `text/plain;charset=UTF-8` (NOT application/json!)
+- Body: `{"query": "...", "chat": "[]"}` — the `chat` field is a JSON STRING, not raw JSON
+- Auth: only cookies `DS` and `DSR` needed (pass via Cookie header)
+- Response: SSE stream with `youChatToken` events for clean tokens
+- User-Agent: use a realistic browser UA string
+- Each turn needs: new `conversationTurnId` (UUID), same `chatId`, increment `pastChatLength`
+- Multi-turn `chat` format: `"[{\"question\":\"q1\",\"answer\":\"a1\"}]"`
+- Delete thread: `DELETE https://you.com/api/chatThreads/{chatId}` (note: chatThreads not threads!)
+- List agents: `GET https://you.com/api/custom_assistants/assistants?filter_type=all&page[size]=500&page[number]=1`
+- List models: `GET https://you.com/api/get_ai_models`
+- Validate: `GET https://you.com/api/user/me`
 
-**Backend:**
-- Hono server on port 3001
-- bun:sqlite database
-- better-auth with username/password
-- Initial admin user (admin/admin123)
-- Session CRUD routes
-- Chat SSE streaming endpoint
-- You.com API integration
+### Step 2: Update `src/server/db.ts`
 
-**Frontend:**
-- React with Vite (via Bun)
-- shadcn/ui components
-- Mobile-responsive layout
-- Sidebar with sessions list
-- Chat view with streaming messages
-- Agent selector dropdown
-- Login/Register page
+1. Add `user_credentials` table:
+```sql
+CREATE TABLE IF NOT EXISTS user_credentials (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+  user_id TEXT NOT NULL UNIQUE,
+  ds_cookie TEXT NOT NULL,
+  dsr_cookie TEXT NOT NULL,
+  you_email TEXT,
+  you_name TEXT,
+  subscription_type TEXT,
+  validated_at INTEGER,
+  created_at INTEGER DEFAULT (unixepoch()),
+  updated_at INTEGER DEFAULT (unixepoch()),
+  FOREIGN KEY (user_id) REFERENCES user(id) ON DELETE CASCADE
+);
+```
 
-### Phase 4: Testing & Polish
+2. Add `you_chat_id` column to `chat_sessions`:
+```sql
+ALTER TABLE chat_sessions ADD COLUMN you_chat_id TEXT;
+```
 
-- Test all flows manually
-- Ensure mobile responsiveness
-- Error states and loading indicators
-- Commit and push frequently
+3. Add CRUD helpers:
+- `getUserCredentials(userId)` → returns credentials or null
+- `saveUserCredentials(userId, ds, dsr, youEmail?, youName?, subscription?)` → upsert
+- `updateSessionYouChatId(sessionId, youChatId)` → update the You.com thread ID
+- `getSessionYouChatId(sessionId)` → get current You.com thread ID
 
-### Environment Setup
+4. Keep `user_agents` table and functions for now (we'll keep them but they won't be used as the primary source — the API will be primary).
 
-Create .env from .env.example with:
-- BETTER_AUTH_SECRET=<generate a random 32+ char string>
-- BETTER_AUTH_URL=http://localhost:3001
-- YOU_API_KEY=<YOUR_YOU_API_KEY>
-- DATABASE_URL=./data/you-chat.db
-- PORT=3001
+### Step 3: Create `src/server/routes/credentials.ts`
 
-### Commands
+New route file:
+- `POST /api/credentials` — save DS/DSR cookies (validates first via `validateCookies()`)
+- `GET /api/credentials` — check if user has valid credentials (returns email, name, validated status — NOT the actual cookie values)
+- `DELETE /api/credentials` — remove stored credentials
 
-Make sure these work:
-- bun install - Install deps
-- bun run dev - Development with hot reload
-- bun run build - Production build
-- bun run start - Production server
+### Step 4: Refactor `src/server/routes/chat.ts`
 
-### Git
+Major changes:
+1. Before any chat operation, fetch user's credentials from DB
+2. If no credentials → return 403 with `{error: "You.com credentials required"}`
+3. **Normal message flow:**
+   - Get or create `you_chat_id` for the session
+   - Build chat history from local messages as `[{question, answer}]` pairs
+   - Call `streamChat()` with user's cookies
+   - Stream response back via SSE (same format as before for frontend compatibility)
+   - Save messages to local DB
+4. **Regenerate flow:**
+   - Delete old You.com thread (`deleteThread()`)
+   - Generate new `you_chat_id`
+   - Build history up to the message being regenerated
+   - Pack history into context and send to new thread
+   - Update session's `you_chat_id`
+5. **Title generation:** Use `callChat()` with a cheap model like `claude_4_5_haiku` (it's free)
 
-- Commit after each major milestone
-- Push to origin/main regularly
-- Clear commit messages
+### Step 5: Refactor `src/server/routes/agents.ts`
 
-### Key Constraints
+Replace the local CRUD with:
+- `GET /api/agents` — fetch live from You.com API using user's cookies
+  - Returns combined list: user's custom agents + available base models
+  - Custom agents first, then a separator, then models
+- Remove POST/PATCH/DELETE routes (agents are managed on you.com, not here)
 
-- Use ONLY Bun (not npm/yarn)
-- Use bun:sqlite (not external sqlite packages)
-- All code in TypeScript
-- shadcn/ui for all UI components
-- Must work on mobile
+### Step 6: Refactor `src/server/routes/sessions.ts`
 
-**Take your time. Research thoroughly. Plan carefully. Build quality.**
+- On `DELETE /api/sessions/:id` — also delete the You.com thread if the session has a `you_chat_id`
+- On fork — DON'T delete the original You.com thread
+- The fork's new session gets no `you_chat_id` initially (created on first message)
 
-When completely finished, run this command to notify me:
+### Step 7: Update `src/server/index.ts`
+
+- Import and mount credentials routes at `/api/credentials`
+- Remove YOU_API_KEY from env validation
+- Add middleware: for protected routes (except `/api/credentials` and `/api/auth/*`), optionally check if user has credentials and add a header hint
+
+### Step 8: Update `src/server/env.ts`
+
+- Remove `YOU_API_KEY` requirement
+- Add `BETTER_AUTH_SECRET` if not already required
+
+### Step 9: Frontend — `src/client/pages/CookieSetup.tsx` (NEW)
+
+Create a setup page shown when user has no credentials:
+- Title: "Connect Your You.com Account"
+- Clear instructions:
+  1. Go to you.com and sign in
+  2. Open Developer Tools (F12)
+  3. Go to Application → Cookies → you.com
+  4. Copy the value of the `DS` cookie
+  5. Copy the value of the `DSR` cookie
+- Two input fields (password-type for security): DS, DSR
+- "Connect" button that POSTs to `/api/credentials`
+- Show validation status (loading → success/error)
+- On success, show You.com account info (name, email) and proceed to chat
+
+### Step 10: Frontend — Update `src/client/App.tsx`
+
+- After auth check, also check `GET /api/credentials`
+- If no credentials → show CookieSetup page instead of Chat
+- Once credentials saved → navigate to Chat
+
+### Step 11: Frontend — Update `src/client/pages/Settings.tsx`
+
+Replace agent management with:
+- **You.com Connection** section:
+  - Show connected account info (email, name, subscription)
+  - "Update Cookies" button (reopens the cookie input form)
+  - "Disconnect" button (deletes credentials)
+- Remove all the agent CRUD UI
+
+### Step 12: Frontend — Update `src/client/lib/api.ts`
+
+Add:
+```typescript
+// Credentials
+getCredentials(): Promise<{hasCredentials: boolean, email?: string, name?: string}>
+saveCredentials(ds: string, dsr: string): Promise<{email: string, name: string}>
+deleteCredentials(): Promise<void>
+```
+
+Update agents endpoint to expect the new response format (live agents + models).
+
+### Step 13: Frontend — Update agent selector
+
+In `Sidebar.tsx` or wherever the agent dropdown is:
+- Fetch agents from the updated `/api/agents` endpoint
+- Group by: "Custom Agents" and "Models"
+- Show model name alongside agent name
+
+### Step 14: Cleanup
+
+- Remove `YOU_API_KEY` from `README.md`, `CLAUDE.md`, `.env.example`, `Dockerfile`
+- Update README with new setup instructions
+- Update CLAUDE.md to reflect new architecture
+- `git add -A && git commit`
+
+## IMPORTANT NOTES
+
+- **Do NOT break the frontend SSE format** — the `useChat` hook expects `{delta}`, `{done, messageId, generatedTitle}`, `{error}`. Keep this contract.
+- **The `chat` parameter is a JSON STRING** — `"[]"` not `[]`. Double-encode it.
+- **Content-Type for You.com requests is `text/plain;charset=UTF-8`** — NOT `application/json`
+- **Test by building:** Run `bun run build` to verify TypeScript compiles
+- **Commit after each major step** with clear messages
+
+When completely finished, run this command to notify:
+```
+openclaw gateway wake --text "Done: Refactored you-chat to use cookie-based You.com API" --mode now
+```
