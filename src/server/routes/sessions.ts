@@ -10,7 +10,10 @@ import {
   deleteMessage,
   getMessage,
   forkSession,
+  getSessionYouChatId,
+  getUserCredentials,
 } from "../db";
+import { deleteThread } from "../lib/you-client";
 
 const sessions = new Hono();
 
@@ -61,7 +64,22 @@ sessions.delete("/:id", async (c) => {
   const user = c.get("user");
   if (!user) return c.json({ error: "Unauthorized" }, 401);
 
-  deleteChatSession(c.req.param("id"), user.id);
+  const sessionId = c.req.param("id");
+
+  // Also delete the You.com thread if one exists
+  const youChatId = getSessionYouChatId(sessionId);
+  if (youChatId) {
+    const creds = getUserCredentials(user.id);
+    if (creds) {
+      try {
+        await deleteThread(youChatId, creds.ds_cookie, creds.dsr_cookie);
+      } catch (e) {
+        console.error("Failed to delete You.com thread:", e);
+      }
+    }
+  }
+
+  deleteChatSession(sessionId, user.id);
   return c.json({ success: true });
 });
 
