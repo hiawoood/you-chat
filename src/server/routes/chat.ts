@@ -125,6 +125,8 @@ chat.post("/", async (c) => {
       // Auto-generate title if first message
       let generatedTitle: string | undefined;
       if (isFirstMessage && session.title === "untitled") {
+        // Use a temporary chat for title generation, then delete it from You.com
+        const titleChatId = crypto.randomUUID();
         try {
           const titlePrompt = `Generate a very short title (3-6 words max) for a conversation that starts with this message. Reply with ONLY the title, no quotes or punctuation:\n\n${message}`;
           const title = await callChat({
@@ -132,6 +134,7 @@ chat.post("/", async (c) => {
             agentOrModel: "claude_4_5_haiku",
             dsCookie: creds.ds_cookie,
             dsrCookie: creds.dsr_cookie,
+            _chatId: titleChatId,
           });
           generatedTitle = title.trim().slice(0, 60);
           if (generatedTitle) {
@@ -139,6 +142,12 @@ chat.post("/", async (c) => {
           }
         } catch (e) {
           console.error("Failed to generate title:", e);
+        }
+        // Clean up the title generation chat from You.com
+        try {
+          await deleteThread(titleChatId, creds.ds_cookie, creds.dsr_cookie);
+        } catch {
+          // best effort cleanup
         }
       }
 

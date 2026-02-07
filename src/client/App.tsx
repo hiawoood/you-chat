@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useSession } from "./lib/auth";
 import { api } from "./lib/api";
 import Login from "./pages/Login";
@@ -9,9 +9,12 @@ export default function App() {
   const { data: session, isPending } = useSession();
   const [hasCredentials, setHasCredentials] = useState<boolean | null>(null);
   const [checkingCredentials, setCheckingCredentials] = useState(false);
+  const credentialChecked = useRef(false);
 
   useEffect(() => {
-    if (session?.user) {
+    // Only check credentials once per session, not on every re-render/refocus
+    if (session?.user && !credentialChecked.current) {
+      credentialChecked.current = true;
       setCheckingCredentials(true);
       api.getCredentials()
         .then((result) => setHasCredentials(result.hasCredentials))
@@ -33,7 +36,14 @@ export default function App() {
   }
 
   if (hasCredentials === false) {
-    return <CookieSetup onComplete={() => setHasCredentials(true)} />;
+    return (
+      <CookieSetup
+        onComplete={() => {
+          credentialChecked.current = true;
+          setHasCredentials(true);
+        }}
+      />
+    );
   }
 
   return <Chat />;

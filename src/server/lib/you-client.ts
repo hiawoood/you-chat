@@ -123,16 +123,17 @@ export interface CallChatOptions {
   agentOrModel: string;
   dsCookie: string;
   dsrCookie: string;
+  _chatId?: string; // optional: pass a known chatId so caller can delete the thread after
 }
 
 export async function callChat(options: CallChatOptions): Promise<string> {
-  const { query, agentOrModel, dsCookie, dsrCookie } = options;
+  const { query, agentOrModel, dsCookie, dsrCookie, _chatId } = options;
 
   let result = "";
   for await (const token of streamChat({
     query,
     chatHistory: [],
-    chatId: crypto.randomUUID(),
+    chatId: _chatId || crypto.randomUUID(),
     agentOrModel,
     dsCookie,
     dsrCookie,

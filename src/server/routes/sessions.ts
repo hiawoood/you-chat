@@ -68,14 +68,18 @@ sessions.delete("/:id", async (c) => {
 
   // Also delete the You.com thread if one exists
   const youChatId = getSessionYouChatId(sessionId);
+  console.log(`[delete-session] session=${sessionId} youChatId=${youChatId}`);
   if (youChatId) {
     const creds = getUserCredentials(user.id);
     if (creds) {
       try {
         await deleteThread(youChatId, creds.ds_cookie, creds.dsr_cookie);
+        console.log(`[delete-session] You.com thread ${youChatId} deleted`);
       } catch (e) {
-        console.error("Failed to delete You.com thread:", e);
+        console.error(`[delete-session] Failed to delete You.com thread ${youChatId}:`, e);
       }
+    } else {
+      console.warn(`[delete-session] No credentials found for user ${user.id}`);
     }
   }
 
