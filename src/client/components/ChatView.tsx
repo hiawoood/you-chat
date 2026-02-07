@@ -149,8 +149,9 @@ export default function ChatView({
             </svg>
           </button>
         )}
-        <h2 className="font-semibold text-sm truncate flex-1 text-gray-900 dark:text-white">{session.title}</h2>
+        <h2 className="font-semibold text-sm truncate flex-1 min-w-0 text-gray-900 dark:text-white">{session.title}</h2>
 
+        <div className="flex items-center gap-1 flex-shrink-0">
         {/* Scroll to bottom */}
         {showScrollBtn && (
           <button
@@ -195,7 +196,7 @@ export default function ChatView({
           value={session.agent}
           onChange={(e) => handleAgentChange(e.target.value)}
           disabled={isStreaming}
-          className="text-sm px-2 py-1 bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-md text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-gray-400"
+          className="text-sm px-2 py-1 bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-md text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-gray-400 max-w-[120px] sm:max-w-none"
         >
           {agents.filter(a => a.type === "agent").length > 0 && (
             <optgroup label="Custom Agents">
@@ -219,6 +220,7 @@ export default function ChatView({
             <option value={session.agent}>{session.agent}</option>
           )}
         </select>
+        </div>
       </div>
       </div>
 
