@@ -15,11 +15,10 @@ export default function Settings({ onBack }: SettingsProps) {
     hasFullCookies?: boolean;
   } | null>(null);
 
-  // Cookie update form
   const [showUpdate, setShowUpdate] = useState(false);
   const [ds, setDs] = useState("");
   const [dsr, setDsr] = useState("");
-  const [fullCookies, setFullCookies] = useState("");
+  const [uuidGuest, setUuidGuest] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
@@ -43,27 +42,16 @@ export default function Settings({ onBack }: SettingsProps) {
     if (!ds.trim() || !dsr.trim()) return;
     setSaving(true);
     setError("");
-
-    // Build allCookies: merge DS/DSR into the full string if provided
-    let allCookies = fullCookies.trim();
-    if (allCookies) {
-      if (!allCookies.includes("DS=")) allCookies = `DS=${ds.trim()}; ${allCookies}`;
-      if (!allCookies.includes("DSR=")) allCookies = `DSR=${dsr.trim()}; ${allCookies}`;
-    }
-
     try {
-      const result = await api.saveCredentials(ds.trim(), dsr.trim(), allCookies || undefined);
+      const result = await api.saveCredentials(ds.trim(), dsr.trim(), uuidGuest.trim() || undefined);
       setCredentials({
         hasCredentials: true,
         email: result.email,
         name: result.name,
         subscription: result.subscription,
-        hasFullCookies: !!allCookies,
+        hasFullCookies: !!uuidGuest.trim(),
       });
-      setShowUpdate(false);
-      setDs("");
-      setDsr("");
-      setFullCookies("");
+      resetForm();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to update cookies");
     } finally {
@@ -88,7 +76,7 @@ export default function Settings({ onBack }: SettingsProps) {
     setShowUpdate(false);
     setDs("");
     setDsr("");
-    setFullCookies("");
+    setUuidGuest("");
     setError("");
   };
 
@@ -102,7 +90,7 @@ export default function Settings({ onBack }: SettingsProps) {
           type="password"
           value={ds}
           onChange={(e) => setDs(e.target.value)}
-          placeholder="Paste DS cookie value (Application → Cookies → DS)"
+          placeholder="Application → Cookies → DS (starts with eyJ...)"
           className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-gray-400"
         />
       </div>
@@ -114,23 +102,23 @@ export default function Settings({ onBack }: SettingsProps) {
           type="password"
           value={dsr}
           onChange={(e) => setDsr(e.target.value)}
-          placeholder="Paste DSR cookie value (Application → Cookies → DSR)"
+          placeholder="Application → Cookies → DSR (starts with eyJ...)"
           className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-gray-400"
         />
       </div>
       <div>
         <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
-          Full Cookie Header <span className="text-gray-400 font-normal">(recommended)</span>
+          uuid_guest Cookie <span className="text-gray-400 font-normal">(recommended)</span>
         </label>
-        <textarea
-          value={fullCookies}
-          onChange={(e) => setFullCookies(e.target.value)}
-          placeholder="Network tab → any you.com/api/ request → Cookie header value"
-          rows={3}
-          className="w-full px-3 py-2 text-sm font-mono border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-gray-400 resize-none"
+        <input
+          type="text"
+          value={uuidGuest}
+          onChange={(e) => setUuidGuest(e.target.value)}
+          placeholder="Application → Cookies → uuid_guest (UUID format)"
+          className="w-full px-3 py-2 text-sm font-mono border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-gray-400"
         />
         <p className="mt-0.5 text-xs text-gray-400 dark:text-gray-500">
-          Enables You.com thread cleanup on delete. Copy from Network tab → any API request → Cookie header.
+          Enables You.com thread cleanup on chat delete.
         </p>
       </div>
       {error && (
@@ -204,12 +192,12 @@ export default function Settings({ onBack }: SettingsProps) {
                 )}
               </div>
 
-              {/* Warning if full cookies missing */}
+              {/* Warning if uuid_guest missing */}
               {!credentials.hasFullCookies && (
                 <div className="p-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg">
-                  <p className="text-sm font-medium text-amber-800 dark:text-amber-200">⚠️ Full cookies not set</p>
+                  <p className="text-sm font-medium text-amber-800 dark:text-amber-200">⚠️ uuid_guest not set</p>
                   <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
-                    Thread cleanup on delete won't work. Click "Update Cookies" and include the full Cookie header from the Network tab.
+                    Thread cleanup on delete won't work. Update cookies and include uuid_guest from Application → Cookies.
                   </p>
                 </div>
               )}

@@ -11,12 +11,38 @@ function commonHeaders(ds: string, dsr: string): Record<string, string> {
   };
 }
 
-/** Build headers using the full cookie string (needed for delete and other endpoints) */
-function fullCookieHeaders(allCookies: string, ds: string, dsr: string): Record<string, string> {
-  return {
-    "User-Agent": BROWSER_UA,
-    Cookie: allCookies || `DS=${ds}; DSR=${dsr}`,
+/** Parse claims from DS JWT (base64url-decoded payload) */
+function parseDsClaims(ds: string): Record<string, unknown> {
+  try {
+    const payload = ds.split(".")[1];
+    const padded = payload.replace(/-/g, "+").replace(/_/g, "/");
+    return JSON.parse(atob(padded));
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Build the full cookie string needed for delete operations.
+ * The delete endpoint requires DS + DSR + uuid_guest + ld_context.
+ * We construct ld_context from the DS JWT claims + uuid_guest.
+ */
+function deleteCookieHeader(ds: string, dsr: string, uuidGuest: string): string {
+  if (!uuidGuest) return `DS=${ds}; DSR=${dsr}`;
+
+  const claims = parseDsClaims(ds);
+  const ldContext = {
+    kind: "user",
+    key: uuidGuest,
+    email: claims.email || "",
+    country: "US",
+    userAgent: BROWSER_UA,
+    secUserAgent: "UNKNOWN",
+    tenantId: claims.tenants ? Object.keys(claims.tenants as Record<string, unknown>)[0] || "" : "",
+    subscriptionTier: claims.subscriptionTier || "",
   };
+  const ldEncoded = encodeURIComponent(JSON.stringify(ldContext));
+  return `DS=${ds}; DSR=${dsr}; uuid_guest=${uuidGuest}; ld_context=${ldEncoded}`;
 }
 
 // ─── Stream Chat ────────────────────────────────────────────
@@ -300,18 +326,22 @@ export async function deleteThread(
   chatId: string,
   ds: string,
   dsr: string,
-  allCookies?: string
+  uuidGuest?: string
 ): Promise<void> {
+  const cookieStr = deleteCookieHeader(ds, dsr, uuidGuest || "");
   const response = await fetch(
     `https://you.com/api/chatThreads/${chatId}`,
     {
       method: "DELETE",
-      headers: fullCookieHeaders(allCookies || "", ds, dsr),
+      headers: {
+        "User-Agent": BROWSER_UA,
+        Cookie: cookieStr,
+      },
     }
   );
 
   if (!response.ok && response.status !== 404) {
-    console.warn(`[deleteThread] Failed: HTTP ${response.status} for ${chatId} (has allCookies: ${!!allCookies && allCookies.length > 0})`);
+    console.warn(`[deleteThread] Failed: HTTP ${response.status} for ${chatId} (has uuid_guest: ${!!uuidGuest})`);
   }
 }
 

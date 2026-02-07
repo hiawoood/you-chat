@@ -20,7 +20,7 @@ credentials.get("/", async (c) => {
     name: creds.you_name,
     subscription: creds.subscription_type,
     validatedAt: creds.validated_at,
-    hasFullCookies: !!(creds.all_cookies && creds.all_cookies.length > 10),
+    hasFullCookies: !!(creds.uuid_guest && creds.uuid_guest.length > 5),
   });
 });
 
@@ -29,14 +29,14 @@ credentials.post("/", async (c) => {
   const user = c.get("user");
   if (!user) return c.json({ error: "Unauthorized" }, 401);
 
-  const { ds, dsr, allCookies } = await c.req.json();
+  const { ds, dsr, uuidGuest } = await c.req.json();
   if (!ds || !dsr) {
     return c.json({ error: "Both DS and DSR cookie values are required" }, 400);
   }
 
   try {
     const info = await validateCookies(ds, dsr);
-    saveUserCredentials(user.id, ds, dsr, info.email, info.name, info.subscription, allCookies || "");
+    saveUserCredentials(user.id, ds, dsr, info.email, info.name, info.subscription, "", uuidGuest || "");
     return c.json({
       email: info.email,
       name: info.name,

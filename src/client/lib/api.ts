@@ -68,8 +68,8 @@ export const api = {
   // Credentials
   getCredentials: (): Promise<{ hasCredentials: boolean; email?: string; name?: string; subscription?: string }> =>
     fetchAPI("/credentials"),
-  saveCredentials: (ds: string, dsr: string, allCookies?: string): Promise<{ email: string; name: string; subscription?: string }> =>
-    fetchAPI("/credentials", { method: "POST", body: JSON.stringify({ ds, dsr, allCookies }) }),
+  saveCredentials: (ds: string, dsr: string, uuidGuest?: string): Promise<{ email: string; name: string; subscription?: string }> =>
+    fetchAPI("/credentials", { method: "POST", body: JSON.stringify({ ds, dsr, uuidGuest }) }),
   deleteCredentials: (): Promise<void> =>
     fetchAPI("/credentials", { method: "DELETE" }),
 };

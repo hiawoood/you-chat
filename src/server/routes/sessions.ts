@@ -73,7 +73,7 @@ sessions.delete("/:id", async (c) => {
     const creds = getUserCredentials(user.id);
     if (creds) {
       try {
-        await deleteThread(youChatId, creds.ds_cookie, creds.dsr_cookie, creds.all_cookies);
+        await deleteThread(youChatId, creds.ds_cookie, creds.dsr_cookie, creds.uuid_guest);
         console.log(`[delete-session] You.com thread ${youChatId} deleted`);
       } catch (e) {
         console.error(`[delete-session] Failed to delete You.com thread ${youChatId}:`, e);

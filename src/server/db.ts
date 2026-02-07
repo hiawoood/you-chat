@@ -148,6 +148,7 @@ export function initDb() {
       ds_cookie TEXT NOT NULL,
       dsr_cookie TEXT NOT NULL,
       all_cookies TEXT DEFAULT '',
+      uuid_guest TEXT DEFAULT '',
       you_email TEXT,
       you_name TEXT,
       subscription_type TEXT,
@@ -158,12 +159,9 @@ export function initDb() {
     )
   `);
 
-  // Migration: add all_cookies column if missing
-  try {
-    db.run(`ALTER TABLE user_credentials ADD COLUMN all_cookies TEXT DEFAULT ''`);
-  } catch {
-    // Column already exists
-  }
+  // Migration: add columns if missing
+  try { db.run(`ALTER TABLE user_credentials ADD COLUMN all_cookies TEXT DEFAULT ''`); } catch { /* exists */ }
+  try { db.run(`ALTER TABLE user_credentials ADD COLUMN uuid_guest TEXT DEFAULT ''`); } catch { /* exists */ }
 
   // Indexes
   db.run(`CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id)`);
@@ -385,6 +383,7 @@ export interface UserCredentials {
   ds_cookie: string;
   dsr_cookie: string;
   all_cookies: string;
+  uuid_guest: string;
   you_email: string | null;
   you_name: string | null;
   subscription_type: string | null;
@@ -404,20 +403,21 @@ export function saveUserCredentials(
   youEmail?: string,
   youName?: string,
   subscription?: string,
-  allCookies?: string
+  allCookies?: string,
+  uuidGuest?: string
 ) {
   const now = Math.floor(Date.now() / 1000);
   const existing = getUserCredentials(userId);
   if (existing) {
     db.run(
-      `UPDATE user_credentials SET ds_cookie = ?, dsr_cookie = ?, all_cookies = ?, you_email = ?, you_name = ?, subscription_type = ?, validated_at = ?, updated_at = ? WHERE user_id = ?`,
-      [ds, dsr, allCookies || "", youEmail || null, youName || null, subscription || null, now, now, userId]
+      `UPDATE user_credentials SET ds_cookie = ?, dsr_cookie = ?, all_cookies = ?, uuid_guest = ?, you_email = ?, you_name = ?, subscription_type = ?, validated_at = ?, updated_at = ? WHERE user_id = ?`,
+      [ds, dsr, allCookies || "", uuidGuest || "", youEmail || null, youName || null, subscription || null, now, now, userId]
     );
   } else {
     const id = generateId();
     db.run(
-      `INSERT INTO user_credentials (id, user_id, ds_cookie, dsr_cookie, all_cookies, you_email, you_name, subscription_type, validated_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [id, userId, ds, dsr, allCookies || "", youEmail || null, youName || null, subscription || null, now, now, now]
+      `INSERT INTO user_credentials (id, user_id, ds_cookie, dsr_cookie, all_cookies, uuid_guest, you_email, you_name, subscription_type, validated_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, userId, ds, dsr, allCookies || "", uuidGuest || "", youEmail || null, youName || null, subscription || null, now, now, now]
     );
   }
 }

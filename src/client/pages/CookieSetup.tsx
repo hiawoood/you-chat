@@ -8,7 +8,7 @@ interface CookieSetupProps {
 export default function CookieSetup({ onComplete }: CookieSetupProps) {
   const [ds, setDs] = useState("");
   const [dsr, setDsr] = useState("");
-  const [fullCookies, setFullCookies] = useState("");
+  const [uuidGuest, setUuidGuest] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState<{ email: string; name: string } | null>(null);
@@ -20,16 +20,8 @@ export default function CookieSetup({ onComplete }: CookieSetupProps) {
     setLoading(true);
     setError("");
 
-    // Build allCookies: merge DS/DSR into the full string if provided
-    let allCookies = fullCookies.trim();
-    if (allCookies) {
-      // Ensure DS/DSR are in the full string
-      if (!allCookies.includes("DS=")) allCookies = `DS=${ds.trim()}; ${allCookies}`;
-      if (!allCookies.includes("DSR=")) allCookies = `DSR=${dsr.trim()}; ${allCookies}`;
-    }
-
     try {
-      const result = await api.saveCredentials(ds.trim(), dsr.trim(), allCookies || undefined);
+      const result = await api.saveCredentials(ds.trim(), dsr.trim(), uuidGuest.trim() || undefined);
       setSuccess(result);
       setTimeout(onComplete, 1500);
     } catch (err) {
@@ -56,8 +48,8 @@ export default function CookieSetup({ onComplete }: CookieSetupProps) {
             <ol className="text-sm text-gray-600 dark:text-gray-400 space-y-2 list-decimal list-inside">
               <li>Go to <span className="font-mono text-gray-900 dark:text-gray-200">you.com</span> and sign in</li>
               <li>Open Developer Tools (<span className="font-mono text-xs bg-gray-200 dark:bg-gray-700 px-1 rounded">F12</span>)</li>
-              <li><strong>DS &amp; DSR:</strong> Go to <strong>Application</strong> → <strong>Cookies</strong> → <strong>you.com</strong> → find and copy <span className="font-mono text-xs bg-gray-200 dark:bg-gray-700 px-1 rounded">DS</span> and <span className="font-mono text-xs bg-gray-200 dark:bg-gray-700 px-1 rounded">DSR</span></li>
-              <li><strong>Full cookies (optional):</strong> Go to <strong>Network</strong> tab → click any <span className="font-mono text-xs">you.com/api/</span> request → copy the full <span className="font-mono text-xs bg-gray-200 dark:bg-gray-700 px-1 rounded">Cookie</span> header value</li>
+              <li>Go to <strong>Application</strong> tab → <strong>Cookies</strong> → <strong>you.com</strong></li>
+              <li>Find and copy the values for <span className="font-mono text-xs bg-gray-200 dark:bg-gray-700 px-1 rounded">DS</span>, <span className="font-mono text-xs bg-gray-200 dark:bg-gray-700 px-1 rounded">DSR</span>, and <span className="font-mono text-xs bg-gray-200 dark:bg-gray-700 px-1 rounded">uuid_guest</span></li>
             </ol>
           </div>
 
@@ -96,17 +88,17 @@ export default function CookieSetup({ onComplete }: CookieSetupProps) {
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                  Full Cookie Header <span className="text-gray-400 font-normal">(recommended)</span>
+                  uuid_guest Cookie <span className="text-gray-400 font-normal">(recommended)</span>
                 </label>
-                <textarea
-                  value={fullCookies}
-                  onChange={(e) => setFullCookies(e.target.value)}
-                  placeholder="Paste the full Cookie header from Network tab (enables thread cleanup)"
-                  rows={3}
-                  className="w-full px-3 py-2 text-sm font-mono border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-gray-400 dark:focus:ring-gray-500 resize-none"
+                <input
+                  type="text"
+                  value={uuidGuest}
+                  onChange={(e) => setUuidGuest(e.target.value)}
+                  placeholder="e.g. f3113104-89d7-474c-b88d-ed14558ee923"
+                  className="w-full px-3 py-2 text-sm font-mono border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-gray-400 dark:focus:ring-gray-500"
                 />
                 <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">
-                  Needed for cleaning up You.com threads. Get it from Network tab → any API request → Cookie header.
+                  Enables thread cleanup. Find it in Application → Cookies → uuid_guest
                 </p>
               </div>
 

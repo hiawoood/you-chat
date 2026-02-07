@@ -153,7 +153,7 @@ chat.post("/", async (c) => {
         }
         // Always clean up the title generation chat from You.com
         try {
-          await deleteThread(titleChatId, creds.ds_cookie, creds.dsr_cookie, creds.all_cookies);
+          await deleteThread(titleChatId, creds.ds_cookie, creds.dsr_cookie, creds.uuid_guest);
           console.log(`[title-gen] Cleaned up You.com thread ${titleChatId}`);
         } catch (e) {
           console.error("[title-gen] Cleanup failed:", e);
@@ -203,7 +203,7 @@ chat.post("/regenerate", async (c) => {
   const oldYouChatId = getSessionYouChatId(sessionId);
   if (oldYouChatId) {
     try {
-      await deleteThread(oldYouChatId, creds.ds_cookie, creds.dsr_cookie, creds.all_cookies);
+      await deleteThread(oldYouChatId, creds.ds_cookie, creds.dsr_cookie, creds.uuid_guest);
     } catch (e) {
       console.error("Failed to delete old You.com thread:", e);
     }
