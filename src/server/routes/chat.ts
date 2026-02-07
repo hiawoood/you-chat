@@ -4,50 +4,53 @@ import {
   getChatSession, createMessage, getMessages, updateChatSession,
   deleteMessagesAfter, getMessage,
   createStreamingMessage, updateStreamingContent, completeStreamingMessage,
+  getUserCredentials, getSessionYouChatId, updateSessionYouChatId,
 } from "../db";
-import { streamYouChat, callYouChat } from "../lib/you-client";
+import { streamChat, callChat, deleteThread } from "../lib/you-client";
 
-const SAVE_INTERVAL_MS = 1000; // Save to DB every second during streaming
+const SAVE_INTERVAL_MS = 1000;
 
 const chat = new Hono();
 
-// Helper: build consolidated conversation context from message history
-function buildContext(history: { role: string; content: string }[]): string {
-  const consolidated: { role: string; content: string }[] = [];
-  for (const msg of history) {
-    const last = consolidated[consolidated.length - 1];
-    if (last && last.role === msg.role) {
-      last.content += "\n" + msg.content;
-    } else {
-      consolidated.push({ role: msg.role, content: msg.content });
+// Helper: build chat history as Q&A pairs for You.com API
+function buildChatHistory(messages: { role: string; content: string }[]): Array<{ question: string; answer: string }> {
+  const pairs: Array<{ question: string; answer: string }> = [];
+  for (let i = 0; i < messages.length - 1; i += 2) {
+    const userMsg = messages[i];
+    const assistantMsg = messages[i + 1];
+    if (userMsg?.role === "user" && assistantMsg?.role === "assistant") {
+      pairs.push({ question: userMsg.content, answer: assistantMsg.content });
     }
   }
-  return consolidated
-    .map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`)
-    .join("\n\n");
+  return pairs;
 }
 
 // Helper: stream from You.com, save progressively, and pipe to SSE client
 async function streamAndSave(
-  fullInput: string,
-  agent: string,
+  options: {
+    query: string;
+    chatHistory: Array<{ question: string; answer: string }>;
+    chatId: string;
+    agentOrModel: string;
+    dsCookie: string;
+    dsrCookie: string;
+    pastChatLength: number;
+  },
   assistantMsgId: string,
   onDelta?: (delta: string) => Promise<void>,
 ): Promise<string> {
   let fullResponse = "";
   let lastSaveTime = Date.now();
 
-  for await (const delta of streamYouChat(fullInput, agent)) {
+  for await (const delta of streamChat(options)) {
     fullResponse += delta;
 
-    // Save to DB periodically
     const now = Date.now();
     if (now - lastSaveTime > SAVE_INTERVAL_MS) {
       updateStreamingContent(assistantMsgId, fullResponse);
       lastSaveTime = now;
     }
 
-    // Try to send to client (may fail if disconnected)
     try {
       await onDelta?.(delta);
     } catch {
@@ -55,7 +58,6 @@ async function streamAndSave(
     }
   }
 
-  // Final save with complete status
   completeStreamingMessage(assistantMsgId, fullResponse);
   return fullResponse;
 }
@@ -63,6 +65,12 @@ async function streamAndSave(
 chat.post("/", async (c) => {
   const user = c.get("user");
   if (!user) return c.json({ error: "Unauthorized" }, 401);
+
+  // Get user's You.com credentials
+  const creds = getUserCredentials(user.id);
+  if (!creds) {
+    return c.json({ error: "You.com credentials required" }, 403);
+  }
 
   const { sessionId, message } = await c.req.json();
   if (!sessionId || !message) {
@@ -80,29 +88,51 @@ chat.post("/", async (c) => {
   // Save user message
   const userMsg = createMessage(sessionId, "user", message);
 
-  // Build context
-  const history = getMessages(sessionId) as { role: string; content: string }[];
-  const fullInput = buildContext(history) || message;
+  // Build chat history for You.com (Q&A pairs from previous messages, NOT including current)
+  const allMessages = getMessages(sessionId) as { role: string; content: string }[];
+  const historyMessages = allMessages.slice(0, -1);
+  const chatHistory = buildChatHistory(historyMessages);
 
-  // Create assistant message in "streaming" state immediately
+  // Get or create You.com thread ID
+  let youChatId = getSessionYouChatId(sessionId);
+  if (!youChatId) {
+    youChatId = crypto.randomUUID();
+    updateSessionYouChatId(sessionId, youChatId);
+  }
+
   const assistantMsg = createStreamingMessage(sessionId, "assistant");
 
   return streamSSE(c, async (stream) => {
     try {
-      // Send real user message ID and assistant message ID
       await stream.writeSSE({ data: JSON.stringify({ userMessageId: userMsg.id, assistantMessageId: assistantMsg.id }) });
 
-      // Stream, save progressively, and send deltas to client
-      await streamAndSave(fullInput, session.agent, assistantMsg.id, async (delta) => {
-        await stream.writeSSE({ data: JSON.stringify({ delta }) });
-      });
+      await streamAndSave(
+        {
+          query: message,
+          chatHistory,
+          chatId: youChatId!,
+          agentOrModel: session.agent,
+          dsCookie: creds.ds_cookie,
+          dsrCookie: creds.dsr_cookie,
+          pastChatLength: chatHistory.length,
+        },
+        assistantMsg.id,
+        async (delta) => {
+          await stream.writeSSE({ data: JSON.stringify({ delta }) });
+        },
+      );
 
       // Auto-generate title if first message
       let generatedTitle: string | undefined;
       if (isFirstMessage && session.title === "untitled") {
         try {
           const titlePrompt = `Generate a very short title (3-6 words max) for a conversation that starts with this message. Reply with ONLY the title, no quotes or punctuation:\n\n${message}`;
-          const title = await callYouChat(titlePrompt, "express");
+          const title = await callChat({
+            query: titlePrompt,
+            agentOrModel: "claude_4_5_haiku",
+            dsCookie: creds.ds_cookie,
+            dsrCookie: creds.dsr_cookie,
+          });
           generatedTitle = title.trim().slice(0, 60);
           if (generatedTitle) {
             updateChatSession(sessionId, user.id, { title: generatedTitle });
@@ -131,6 +161,11 @@ chat.post("/regenerate", async (c) => {
   const user = c.get("user");
   if (!user) return c.json({ error: "Unauthorized" }, 401);
 
+  const creds = getUserCredentials(user.id);
+  if (!creds) {
+    return c.json({ error: "You.com credentials required" }, 403);
+  }
+
   const { sessionId, messageId } = await c.req.json();
   if (!sessionId || !messageId) {
     return c.json({ error: "sessionId and messageId required" }, 400);
@@ -146,8 +181,26 @@ chat.post("/regenerate", async (c) => {
 
   deleteMessagesAfter(messageId, sessionId);
 
+  // Delete old You.com thread and create new one (rebase)
+  const oldYouChatId = getSessionYouChatId(sessionId);
+  if (oldYouChatId) {
+    try {
+      await deleteThread(oldYouChatId, creds.ds_cookie, creds.dsr_cookie);
+    } catch (e) {
+      console.error("Failed to delete old You.com thread:", e);
+    }
+  }
+
+  const newYouChatId = crypto.randomUUID();
+  updateSessionYouChatId(sessionId, newYouChatId);
+
+  // Build history from remaining messages
   const history = getMessages(sessionId) as { role: string; content: string }[];
-  const fullInput = buildContext(history);
+  const chatHistory = buildChatHistory(history);
+
+  // The last user message is the query for regeneration
+  const lastUserMsg = history.filter(m => m.role === "user").pop();
+  const query = lastUserMsg?.content || "";
 
   const assistantMsg = createStreamingMessage(sessionId, "assistant");
 
@@ -155,9 +208,21 @@ chat.post("/regenerate", async (c) => {
     try {
       await stream.writeSSE({ data: JSON.stringify({ assistantMessageId: assistantMsg.id }) });
 
-      await streamAndSave(fullInput, session.agent, assistantMsg.id, async (delta) => {
-        await stream.writeSSE({ data: JSON.stringify({ delta }) });
-      });
+      await streamAndSave(
+        {
+          query,
+          chatHistory: chatHistory.slice(0, -1),
+          chatId: newYouChatId,
+          agentOrModel: session.agent,
+          dsCookie: creds.ds_cookie,
+          dsrCookie: creds.dsr_cookie,
+          pastChatLength: Math.max(0, chatHistory.length - 1),
+        },
+        assistantMsg.id,
+        async (delta) => {
+          await stream.writeSSE({ data: JSON.stringify({ delta }) });
+        },
+      );
 
       await stream.writeSSE({
         data: JSON.stringify({ done: true, messageId: assistantMsg.id }),
