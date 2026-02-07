@@ -4,15 +4,18 @@
 const BROWSER_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
-function commonHeaders(ds: string, dsr: string, extraCookies?: string): Record<string, string> {
-  // Some endpoints (like delete) need more than just DS/DSR
-  let cookie = `DS=${ds}; DSR=${dsr}`;
-  if (extraCookies) {
-    cookie += `; ${extraCookies}`;
-  }
+function commonHeaders(ds: string, dsr: string): Record<string, string> {
   return {
     "User-Agent": BROWSER_UA,
-    Cookie: cookie,
+    Cookie: `DS=${ds}; DSR=${dsr}`,
+  };
+}
+
+/** Build headers using the full cookie string (needed for delete and other endpoints) */
+function fullCookieHeaders(allCookies: string, ds: string, dsr: string): Record<string, string> {
+  return {
+    "User-Agent": BROWSER_UA,
+    Cookie: allCookies || `DS=${ds}; DSR=${dsr}`,
   };
 }
 
@@ -303,13 +306,12 @@ export async function deleteThread(
     `https://you.com/api/chatThreads/${chatId}`,
     {
       method: "DELETE",
-      headers: commonHeaders(ds, dsr, allCookies),
+      headers: fullCookieHeaders(allCookies || "", ds, dsr),
     }
   );
 
   if (!response.ok && response.status !== 404) {
-    console.warn(`[deleteThread] Failed: HTTP ${response.status} for ${chatId}`);
-    // Don't throw - best effort cleanup
+    console.warn(`[deleteThread] Failed: HTTP ${response.status} for ${chatId} (has allCookies: ${!!allCookies && allCookies.length > 0})`);
   }
 }
 
