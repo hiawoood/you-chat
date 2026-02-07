@@ -16,8 +16,7 @@ export default function Settings({ onBack }: SettingsProps) {
 
   // Cookie update form
   const [showUpdate, setShowUpdate] = useState(false);
-  const [ds, setDs] = useState("");
-  const [dsr, setDsr] = useState("");
+  const [cookieString, setCookieString] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
@@ -37,12 +36,27 @@ export default function Settings({ onBack }: SettingsProps) {
     }
   };
 
+  const parseCookieValue = (raw: string, name: string): string => {
+    const match = raw.match(new RegExp(`(?:^|;\\s*)${name}=([^;]+)`));
+    return match?.[1]?.trim() ?? "";
+  };
+
   const handleUpdate = async () => {
-    if (!ds.trim() || !dsr.trim()) return;
+    const raw = cookieString.trim();
+    if (!raw) return;
+
+    const ds = parseCookieValue(raw, "DS");
+    const dsr = parseCookieValue(raw, "DSR");
+
+    if (!ds || !dsr) {
+      setError("Could not find DS and DSR cookies. Make sure you copied the full Cookie header.");
+      return;
+    }
+
     setSaving(true);
     setError("");
     try {
-      const result = await api.saveCredentials(ds.trim(), dsr.trim());
+      const result = await api.saveCredentials(ds, dsr, raw);
       setCredentials({
         hasCredentials: true,
         email: result.email,
@@ -50,8 +64,7 @@ export default function Settings({ onBack }: SettingsProps) {
         subscription: result.subscription,
       });
       setShowUpdate(false);
-      setDs("");
-      setDsr("");
+      setCookieString("");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to update cookies");
     } finally {
@@ -71,6 +84,41 @@ export default function Settings({ onBack }: SettingsProps) {
       setSaving(false);
     }
   };
+
+  const CookieForm = ({ buttonLabel }: { buttonLabel: string }) => (
+    <div className="space-y-3">
+      <div>
+        <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+          Cookie Header Value
+        </label>
+        <textarea
+          value={cookieString}
+          onChange={(e) => setCookieString(e.target.value)}
+          placeholder="Paste the full Cookie header value from DevTools (Network tab → any request → Headers → Cookie)"
+          rows={4}
+          className="w-full px-3 py-2 text-sm font-mono border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-gray-400 resize-none"
+        />
+      </div>
+      {error && (
+        <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
+      )}
+      <div className="flex gap-2">
+        <button
+          onClick={handleUpdate}
+          disabled={!cookieString.trim() || saving}
+          className="px-3 py-1.5 text-sm bg-gray-900 dark:bg-gray-600 text-white rounded-md hover:bg-gray-800 dark:hover:bg-gray-500 disabled:opacity-50"
+        >
+          {saving ? "Validating..." : buttonLabel}
+        </button>
+        <button
+          onClick={() => { setShowUpdate(false); setCookieString(""); setError(""); }}
+          className="px-3 py-1.5 text-sm text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
 
   return (
     <div className="flex flex-col h-[100dvh] bg-white dark:bg-gray-900">
@@ -126,46 +174,7 @@ export default function Settings({ onBack }: SettingsProps) {
               {showUpdate ? (
                 <div className="p-4 border border-gray-200 dark:border-gray-700 rounded-lg">
                   <h3 className="text-sm font-medium text-gray-900 dark:text-white mb-3">Update Cookies</h3>
-                  <div className="space-y-3">
-                    <div>
-                      <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">DS Cookie</label>
-                      <input
-                        type="password"
-                        value={ds}
-                        onChange={(e) => setDs(e.target.value)}
-                        placeholder="Paste new DS cookie value"
-                        className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-gray-400"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">DSR Cookie</label>
-                      <input
-                        type="password"
-                        value={dsr}
-                        onChange={(e) => setDsr(e.target.value)}
-                        placeholder="Paste new DSR cookie value"
-                        className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-gray-400"
-                      />
-                    </div>
-                    {error && (
-                      <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
-                    )}
-                    <div className="flex gap-2">
-                      <button
-                        onClick={handleUpdate}
-                        disabled={!ds.trim() || !dsr.trim() || saving}
-                        className="px-3 py-1.5 text-sm bg-gray-900 dark:bg-gray-600 text-white rounded-md hover:bg-gray-800 dark:hover:bg-gray-500 disabled:opacity-50"
-                      >
-                        {saving ? "Validating..." : "Update"}
-                      </button>
-                      <button
-                        onClick={() => { setShowUpdate(false); setDs(""); setDsr(""); setError(""); }}
-                        className="px-3 py-1.5 text-sm text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  </div>
+                  <CookieForm buttonLabel="Update" />
                 </div>
               ) : (
                 <div className="flex gap-2">
@@ -206,55 +215,17 @@ export default function Settings({ onBack }: SettingsProps) {
             <div className="text-center py-12 text-gray-500 dark:text-gray-400">
               <p className="mb-2">No You.com account connected.</p>
               <p className="text-sm mb-4">You need to connect your account to use the chat.</p>
-              <button
-                onClick={() => setShowUpdate(true)}
-                className="px-4 py-2 text-sm bg-gray-900 dark:bg-gray-700 text-white rounded-md hover:bg-gray-800 dark:hover:bg-gray-600"
-              >
-                Connect Account
-              </button>
-              {showUpdate && (
+              {showUpdate ? (
                 <div className="mt-4 p-4 border border-gray-200 dark:border-gray-700 rounded-lg text-left">
-                  <div className="space-y-3">
-                    <div>
-                      <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">DS Cookie</label>
-                      <input
-                        type="password"
-                        value={ds}
-                        onChange={(e) => setDs(e.target.value)}
-                        placeholder="Paste DS cookie value"
-                        className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-gray-400"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">DSR Cookie</label>
-                      <input
-                        type="password"
-                        value={dsr}
-                        onChange={(e) => setDsr(e.target.value)}
-                        placeholder="Paste DSR cookie value"
-                        className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-gray-400"
-                      />
-                    </div>
-                    {error && (
-                      <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
-                    )}
-                    <div className="flex gap-2">
-                      <button
-                        onClick={handleUpdate}
-                        disabled={!ds.trim() || !dsr.trim() || saving}
-                        className="px-3 py-1.5 text-sm bg-gray-900 dark:bg-gray-600 text-white rounded-md hover:bg-gray-800 dark:hover:bg-gray-500 disabled:opacity-50"
-                      >
-                        {saving ? "Validating..." : "Connect"}
-                      </button>
-                      <button
-                        onClick={() => { setShowUpdate(false); setDs(""); setDsr(""); setError(""); }}
-                        className="px-3 py-1.5 text-sm text-gray-600 dark:text-gray-400"
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  </div>
+                  <CookieForm buttonLabel="Connect" />
                 </div>
+              ) : (
+                <button
+                  onClick={() => setShowUpdate(true)}
+                  className="px-4 py-2 text-sm bg-gray-900 dark:bg-gray-700 text-white rounded-md hover:bg-gray-800 dark:hover:bg-gray-600"
+                >
+                  Connect Account
+                </button>
               )}
             </div>
           )}

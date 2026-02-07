@@ -84,6 +84,8 @@ const port = parseInt(process.env.PORT || "8080");
 const server = Bun.serve({
   port,
   fetch: app.fetch,
+  // SSE streams can take 30s+ during thinking phase — increase from default 10s
+  idleTimeout: 255, // max allowed by Bun (seconds)
 });
 
 console.log(`Server running at http://localhost:${server.port}`);

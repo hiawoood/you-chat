@@ -23,19 +23,19 @@ credentials.get("/", async (c) => {
   });
 });
 
-// Save DS/DSR cookies (validates first)
+// Save cookies (validates first)
 credentials.post("/", async (c) => {
   const user = c.get("user");
   if (!user) return c.json({ error: "Unauthorized" }, 401);
 
-  const { ds, dsr } = await c.req.json();
+  const { ds, dsr, allCookies } = await c.req.json();
   if (!ds || !dsr) {
     return c.json({ error: "Both DS and DSR cookie values are required" }, 400);
   }
 
   try {
     const info = await validateCookies(ds, dsr);
-    saveUserCredentials(user.id, ds, dsr, info.email, info.name, info.subscription);
+    saveUserCredentials(user.id, ds, dsr, info.email, info.name, info.subscription, allCookies || "");
     return c.json({
       email: info.email,
       name: info.name,

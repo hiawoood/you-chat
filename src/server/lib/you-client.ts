@@ -4,14 +4,15 @@
 const BROWSER_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
-function cookieHeader(ds: string, dsr: string): string {
-  return `DS=${ds}; DSR=${dsr}`;
-}
-
-function commonHeaders(ds: string, dsr: string): Record<string, string> {
+function commonHeaders(ds: string, dsr: string, extraCookies?: string): Record<string, string> {
+  // Some endpoints (like delete) need more than just DS/DSR
+  let cookie = `DS=${ds}; DSR=${dsr}`;
+  if (extraCookies) {
+    cookie += `; ${extraCookies}`;
+  }
   return {
     "User-Agent": BROWSER_UA,
-    Cookie: cookieHeader(ds, dsr),
+    Cookie: cookie,
   };
 }
 
@@ -295,18 +296,20 @@ export async function listModels(
 export async function deleteThread(
   chatId: string,
   ds: string,
-  dsr: string
+  dsr: string,
+  allCookies?: string
 ): Promise<void> {
   const response = await fetch(
     `https://you.com/api/chatThreads/${chatId}`,
     {
       method: "DELETE",
-      headers: commonHeaders(ds, dsr),
+      headers: commonHeaders(ds, dsr, allCookies),
     }
   );
 
   if (!response.ok && response.status !== 404) {
-    throw new Error(`Failed to delete thread: ${response.status}`);
+    console.warn(`[deleteThread] Failed: HTTP ${response.status} for ${chatId}`);
+    // Don't throw - best effort cleanup
   }
 }
 
@@ -322,7 +325,7 @@ export async function refreshCookies(
       {
         method: "POST",
         headers: {
-          Cookie: cookieHeader(ds, dsr),
+          Cookie: `DS=${ds}; DSR=${dsr}`,
           "User-Agent": BROWSER_UA,
         },
       }

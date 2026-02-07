@@ -6,21 +6,35 @@ interface CookieSetupProps {
 }
 
 export default function CookieSetup({ onComplete }: CookieSetupProps) {
-  const [ds, setDs] = useState("");
-  const [dsr, setDsr] = useState("");
+  const [cookieString, setCookieString] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState<{ email: string; name: string } | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!ds.trim() || !dsr.trim()) return;
+    const raw = cookieString.trim();
+    if (!raw) return;
+
+    // Parse DS and DSR from the full cookie string
+    const parseCookie = (name: string): string => {
+      const match = raw.match(new RegExp(`(?:^|;\\s*)${name}=([^;]+)`));
+      return match?.[1]?.trim() ?? "";
+    };
+
+    const ds = parseCookie("DS");
+    const dsr = parseCookie("DSR");
+
+    if (!ds || !dsr) {
+      setError("Could not find DS and DSR cookies in the pasted string. Make sure you copied the full cookie header.");
+      return;
+    }
 
     setLoading(true);
     setError("");
 
     try {
-      const result = await api.saveCredentials(ds.trim(), dsr.trim());
+      const result = await api.saveCredentials(ds, dsr, raw);
       setSuccess(result);
       setTimeout(onComplete, 1500);
     } catch (err) {
@@ -38,7 +52,7 @@ export default function CookieSetup({ onComplete }: CookieSetupProps) {
             Connect Your You.com Account
           </h1>
           <p className="text-sm text-gray-500 dark:text-gray-400 mb-6">
-            To use this app, you need to provide your You.com session cookies.
+            Paste your You.com cookies to connect your account.
           </p>
 
           {/* Instructions */}
@@ -47,9 +61,10 @@ export default function CookieSetup({ onComplete }: CookieSetupProps) {
             <ol className="text-sm text-gray-600 dark:text-gray-400 space-y-2 list-decimal list-inside">
               <li>Go to <span className="font-mono text-gray-900 dark:text-gray-200">you.com</span> and sign in</li>
               <li>Open Developer Tools (<span className="font-mono text-xs bg-gray-200 dark:bg-gray-700 px-1 rounded">F12</span>)</li>
-              <li>Go to <strong>Application</strong> tab &rarr; <strong>Cookies</strong> &rarr; <strong>you.com</strong></li>
-              <li>Copy the value of the <span className="font-mono text-xs bg-gray-200 dark:bg-gray-700 px-1 rounded">DS</span> cookie</li>
-              <li>Copy the value of the <span className="font-mono text-xs bg-gray-200 dark:bg-gray-700 px-1 rounded">DSR</span> cookie</li>
+              <li>Go to the <strong>Network</strong> tab</li>
+              <li>Reload the page, click any request to <span className="font-mono text-xs">you.com</span></li>
+              <li>In the <strong>Headers</strong> tab, find the <span className="font-mono text-xs bg-gray-200 dark:bg-gray-700 px-1 rounded">Cookie</span> request header</li>
+              <li>Copy the <strong>entire value</strong> and paste it below</li>
             </ol>
           </div>
 
@@ -64,27 +79,18 @@ export default function CookieSetup({ onComplete }: CookieSetupProps) {
             <form onSubmit={handleSubmit} className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                  DS Cookie
+                  Cookie Header Value
                 </label>
-                <input
-                  type="password"
-                  value={ds}
-                  onChange={(e) => setDs(e.target.value)}
-                  placeholder="Paste DS cookie value"
-                  className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-gray-400 dark:focus:ring-gray-500"
+                <textarea
+                  value={cookieString}
+                  onChange={(e) => setCookieString(e.target.value)}
+                  placeholder="Paste the full Cookie header value here (contains DS=...; DSR=...; and other cookies)"
+                  rows={4}
+                  className="w-full px-3 py-2 text-sm font-mono border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-gray-400 dark:focus:ring-gray-500 resize-none"
                 />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                  DSR Cookie
-                </label>
-                <input
-                  type="password"
-                  value={dsr}
-                  onChange={(e) => setDsr(e.target.value)}
-                  placeholder="Paste DSR cookie value"
-                  className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-gray-400 dark:focus:ring-gray-500"
-                />
+                <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">
+                  Should start with something like <span className="font-mono">_gcl_au=...</span> or <span className="font-mono">DS=eyJ...</span>
+                </p>
               </div>
 
               {error && (
@@ -95,7 +101,7 @@ export default function CookieSetup({ onComplete }: CookieSetupProps) {
 
               <button
                 type="submit"
-                disabled={!ds.trim() || !dsr.trim() || loading}
+                disabled={!cookieString.trim() || loading}
                 className="w-full py-2.5 px-4 text-sm font-medium bg-gray-900 dark:bg-gray-700 text-white rounded-md hover:bg-gray-800 dark:hover:bg-gray-600 disabled:opacity-50 flex items-center justify-center gap-2"
               >
                 {loading ? (
