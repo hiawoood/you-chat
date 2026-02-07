@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { ChatSession, Message, Agent, api } from "../lib/api";
 import { useChat } from "../hooks/useChat";
 import { useScrollDirection } from "../hooks/useScrollDirection";
@@ -44,6 +44,23 @@ export default function ChatView({
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const scrollDirection = useScrollDirection(scrollContainerRef);
   const hideHeader = scrollDirection === "down";
+  const [showScrollBtn, setShowScrollBtn] = useState(false);
+
+  useEffect(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    const handleScroll = () => {
+      const distFromBottom = el.scrollHeight - el.clientHeight - el.scrollTop;
+      setShowScrollBtn(distFromBottom > 200);
+    };
+    el.addEventListener("scroll", handleScroll, { passive: true });
+    return () => el.removeEventListener("scroll", handleScroll);
+  }, []);
+
+  const scrollToBottom = useCallback(() => {
+    const el = scrollContainerRef.current;
+    if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+  }, []);
 
   useEffect(() => {
     api.getAgents().then(setAgents).catch(console.error);
@@ -220,6 +237,21 @@ export default function ChatView({
           </div>
         )}
       </div>
+
+      {/* Scroll to bottom button */}
+      {showScrollBtn && (
+        <div className="relative">
+          <button
+            onClick={scrollToBottom}
+            className="absolute bottom-2 left-1/2 -translate-x-1/2 z-10 p-2 rounded-full bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 shadow-lg hover:bg-gray-100 dark:hover:bg-gray-600 transition-all text-gray-500 dark:text-gray-300"
+            title="Scroll to bottom"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 14l-7 7m0 0l-7-7m7 7V3" />
+            </svg>
+          </button>
+        </div>
+      )}
 
       {/* Input - h-14 fixed to align with sidebar bottom */}
       <div className="h-14 flex items-center border-t border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 flex-shrink-0">
