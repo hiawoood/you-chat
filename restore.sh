@@ -96,7 +96,7 @@ if [ ! -f "$APP_DIR/.env" ]; then
 PORT=3001
 BETTER_AUTH_SECRET=change-me-to-something-secure
 BETTER_AUTH_URL=http://localhost:3001
-YOU_API_KEY=your-you-api-key-here
+# YOU_API_KEY removed - now uses cookie-based auth
 ENVEOF
     cp "$APP_DIR/.env" "$PERSIST_DIR/.env"
     echo "  ⚠️  Created default .env - update with your API keys!"
