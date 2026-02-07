@@ -53,6 +53,8 @@ export default function ChatView({
     onUpdateSession(session.id, { agent: newAgent });
   };
 
+  const [thinkingStatus, setThinkingStatus] = useState<string | null>(null);
+
   const { sendMessage, regenerate, isStreaming } = useChat({
     sessionId: session.id,
     onUserMessageId: (realId) => {
@@ -61,11 +63,16 @@ export default function ChatView({
         pendingTempIdRef.current = null;
       }
     },
+    onThinking: (status) => {
+      setThinkingStatus(status);
+    },
     onMessage: (content) => {
+      setThinkingStatus(null);
       streamingContentRef.current = content;
       setStreamingContent(content);
     },
     onDone: (messageId) => {
+      setThinkingStatus(null);
       onMessageReceived({
         id: messageId,
         session_id: session.id,
@@ -81,6 +88,7 @@ export default function ChatView({
     },
     onError: (error) => {
       console.error("Chat error:", error);
+      setThinkingStatus(null);
       streamingContentRef.current = "";
       setStreamingContent("");
     },
@@ -201,6 +209,7 @@ export default function ChatView({
             <MessageList
               messages={messages}
               streamingContent={streamingContent}
+              thinkingStatus={thinkingStatus}
               onEditMessage={onEditMessage}
               onDeleteMessage={onDeleteMessage}
               onRegenerate={handleRegenerate}

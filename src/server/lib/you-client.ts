@@ -17,6 +17,11 @@ function commonHeaders(ds: string, dsr: string): Record<string, string> {
 
 // ─── Stream Chat ────────────────────────────────────────────
 
+export type StreamEvent =
+  | { type: "thinking"; message: string }
+  | { type: "token"; text: string }
+  | { type: "done" };
+
 export interface StreamChatOptions {
   query: string;
   chatHistory: Array<{ question: string; answer: string }>;
@@ -29,7 +34,7 @@ export interface StreamChatOptions {
 
 export async function* streamChat(
   options: StreamChatOptions
-): AsyncGenerator<string, void, unknown> {
+): AsyncGenerator<StreamEvent, void, unknown> {
   const {
     query,
     chatHistory,
@@ -99,16 +104,27 @@ export async function* streamChat(
         currentEvent = trimmed.slice(7);
       } else if (trimmed.startsWith("data: ")) {
         const data = trimmed.slice(6);
-        if (currentEvent === "youChatToken") {
+        if (currentEvent === "youChatUpdate") {
+          try {
+            const parsed = JSON.parse(data);
+            // Thinking status: {"msg": "Thinking", "done": false}
+            if (parsed.msg && !parsed.done) {
+              yield { type: "thinking", message: parsed.msg };
+            }
+          } catch {
+            // skip
+          }
+        } else if (currentEvent === "youChatToken") {
           try {
             const parsed = JSON.parse(data);
             if (parsed.youChatToken) {
-              yield parsed.youChatToken;
+              yield { type: "token", text: parsed.youChatToken };
             }
           } catch {
             // skip malformed JSON
           }
         } else if (currentEvent === "done") {
+          yield { type: "done" };
           return;
         }
       }
@@ -130,7 +146,7 @@ export async function callChat(options: CallChatOptions): Promise<string> {
   const { query, agentOrModel, dsCookie, dsrCookie, _chatId } = options;
 
   let result = "";
-  for await (const token of streamChat({
+  for await (const event of streamChat({
     query,
     chatHistory: [],
     chatId: _chatId || crypto.randomUUID(),
@@ -139,7 +155,9 @@ export async function callChat(options: CallChatOptions): Promise<string> {
     dsrCookie,
     pastChatLength: 0,
   })) {
-    result += token;
+    if (event.type === "token") {
+      result += event.text;
+    }
   }
   return result;
 }

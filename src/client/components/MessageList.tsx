@@ -9,6 +9,7 @@ const COLLAPSE_LINE_COUNT = 3;
 interface MessageListProps {
   messages: Message[];
   streamingContent: string;
+  thinkingStatus?: string | null;
   onEditMessage?: (messageId: string, content: string) => void;
   onDeleteMessage?: (messageId: string) => void;
   onRegenerate?: (messageId: string) => void;
@@ -34,6 +35,7 @@ function formatTime(ts: number): string {
 export default function MessageList({
   messages,
   streamingContent,
+  thinkingStatus,
   onEditMessage,
   onDeleteMessage,
   onRegenerate,
@@ -59,7 +61,7 @@ export default function MessageList({
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages.length, streamingContent]);
+  }, [messages.length, streamingContent, thinkingStatus]);
 
   if (items.length === 0) {
     return (
@@ -95,6 +97,19 @@ export default function MessageList({
           />
         );
       })}
+      {/* Thinking indicator */}
+      {thinkingStatus && !streamingContent && (
+        <div className="flex flex-col items-start">
+          <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg px-4 py-2.5 flex items-center gap-2">
+            <div className="flex gap-1">
+              <span className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
+              <span className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
+              <span className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
+            </div>
+            <span className="text-xs text-gray-500 dark:text-gray-400">{thinkingStatus}…</span>
+          </div>
+        </div>
+      )}
       <div ref={bottomRef} />
     </div>
   );

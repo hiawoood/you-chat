@@ -7,6 +7,7 @@ import {
   getUserCredentials, getSessionYouChatId, updateSessionYouChatId,
 } from "../db";
 import { streamChat, callChat, deleteThread } from "../lib/you-client";
+import type { StreamEvent } from "../lib/you-client";
 
 const SAVE_INTERVAL_MS = 1000;
 
@@ -37,22 +38,24 @@ async function streamAndSave(
     pastChatLength: number;
   },
   assistantMsgId: string,
-  onDelta?: (delta: string) => Promise<void>,
+  onEvent?: (event: StreamEvent) => Promise<void>,
 ): Promise<string> {
   let fullResponse = "";
   let lastSaveTime = Date.now();
 
-  for await (const delta of streamChat(options)) {
-    fullResponse += delta;
+  for await (const event of streamChat(options)) {
+    if (event.type === "token") {
+      fullResponse += event.text;
 
-    const now = Date.now();
-    if (now - lastSaveTime > SAVE_INTERVAL_MS) {
-      updateStreamingContent(assistantMsgId, fullResponse);
-      lastSaveTime = now;
+      const now = Date.now();
+      if (now - lastSaveTime > SAVE_INTERVAL_MS) {
+        updateStreamingContent(assistantMsgId, fullResponse);
+        lastSaveTime = now;
+      }
     }
 
     try {
-      await onDelta?.(delta);
+      await onEvent?.(event);
     } catch {
       // Client disconnected, keep going to save to DB
     }
@@ -117,15 +120,18 @@ chat.post("/", async (c) => {
           pastChatLength: chatHistory.length,
         },
         assistantMsg.id,
-        async (delta) => {
-          await stream.writeSSE({ data: JSON.stringify({ delta }) });
+        async (event) => {
+          if (event.type === "thinking") {
+            await stream.writeSSE({ data: JSON.stringify({ thinking: event.message }) });
+          } else if (event.type === "token") {
+            await stream.writeSSE({ data: JSON.stringify({ delta: event.text }) });
+          }
         },
       );
 
       // Auto-generate title if first message
       let generatedTitle: string | undefined;
       if (isFirstMessage && session.title === "untitled") {
-        // Use a temporary chat for title generation, then delete it from You.com
         const titleChatId = crypto.randomUUID();
         try {
           const titlePrompt = `Generate a very short title (3-6 words max) for a conversation that starts with this message. Reply with ONLY the title, no quotes or punctuation:\n\n${message}`;
@@ -136,18 +142,21 @@ chat.post("/", async (c) => {
             dsrCookie: creds.dsr_cookie,
             _chatId: titleChatId,
           });
-          generatedTitle = title.trim().slice(0, 60);
-          if (generatedTitle) {
+          // Clean raw response: remove quotes, extra whitespace, asterisks
+          generatedTitle = title.trim().replace(/^["'*]+|["'*]+$/g, "").trim().slice(0, 60);
+          console.log(`[title-gen] raw="${title.trim()}" cleaned="${generatedTitle}"`);
+          if (generatedTitle && generatedTitle.length > 0) {
             updateChatSession(sessionId, user.id, { title: generatedTitle });
           }
         } catch (e) {
-          console.error("Failed to generate title:", e);
+          console.error("[title-gen] Failed:", e);
         }
-        // Clean up the title generation chat from You.com
+        // Always clean up the title generation chat from You.com
         try {
           await deleteThread(titleChatId, creds.ds_cookie, creds.dsr_cookie);
-        } catch {
-          // best effort cleanup
+          console.log(`[title-gen] Cleaned up You.com thread ${titleChatId}`);
+        } catch (e) {
+          console.error("[title-gen] Cleanup failed:", e);
         }
       }
 
@@ -228,8 +237,12 @@ chat.post("/regenerate", async (c) => {
           pastChatLength: Math.max(0, chatHistory.length - 1),
         },
         assistantMsg.id,
-        async (delta) => {
-          await stream.writeSSE({ data: JSON.stringify({ delta }) });
+        async (event) => {
+          if (event.type === "thinking") {
+            await stream.writeSSE({ data: JSON.stringify({ thinking: event.message }) });
+          } else if (event.type === "token") {
+            await stream.writeSSE({ data: JSON.stringify({ delta: event.text }) });
+          }
         },
       );
 

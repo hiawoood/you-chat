@@ -6,6 +6,7 @@ interface UseChatOptions {
   onUserMessageId?: (realId: string) => void;
   onDone?: (messageId: string) => void;
   onTitleGenerated?: (title: string) => void;
+  onThinking?: (status: string) => void;
   onError?: (error: string) => void;
 }
 
@@ -15,6 +16,7 @@ async function readStream(
   callbacks: {
     onDelta?: (delta: string) => void;
     onUserMessageId?: (id: string) => void;
+    onThinking?: (status: string) => void;
     onDone?: (messageId: string, generatedTitle?: string) => void;
     onError?: (error: string) => void;
   }
@@ -50,6 +52,10 @@ async function readStream(
           callbacks.onUserMessageId?.(parsed.userMessageId);
         }
 
+        if (parsed.thinking) {
+          callbacks.onThinking?.(parsed.thinking);
+        }
+
         if (parsed.delta) {
           callbacks.onDelta?.(parsed.delta);
         }
@@ -64,14 +70,16 @@ async function readStream(
   }
 }
 
-export function useChat({ sessionId, onMessage, onUserMessageId, onDone, onTitleGenerated, onError }: UseChatOptions) {
+export function useChat({ sessionId, onMessage, onUserMessageId, onDone, onTitleGenerated, onThinking, onError }: UseChatOptions) {
   const [isStreaming, setIsStreaming] = useState(false);
+  const [thinkingStatus, setThinkingStatus] = useState<string | null>(null);
   const [streamedContent, setStreamedContent] = useState("");
 
   const sendMessage = useCallback(
     async (message: string) => {
       setIsStreaming(true);
       setStreamedContent("");
+      setThinkingStatus(null);
       let fullContent = "";
 
       try {
@@ -85,13 +93,19 @@ export function useChat({ sessionId, onMessage, onUserMessageId, onDone, onTitle
         if (!response.ok) throw new Error("Failed to send message");
 
         await readStream(response, {
+          onThinking: (status) => {
+            setThinkingStatus(status);
+            onThinking?.(status);
+          },
           onDelta: (delta) => {
+            setThinkingStatus(null); // Clear thinking when tokens arrive
             fullContent += delta;
             setStreamedContent(fullContent);
             onMessage?.(fullContent);
           },
           onUserMessageId,
           onDone: (messageId, generatedTitle) => {
+            setThinkingStatus(null);
             onDone?.(messageId);
             if (generatedTitle) onTitleGenerated?.(generatedTitle);
           },
@@ -101,15 +115,17 @@ export function useChat({ sessionId, onMessage, onUserMessageId, onDone, onTitle
         onError?.(error instanceof Error ? error.message : "Unknown error");
       } finally {
         setIsStreaming(false);
+        setThinkingStatus(null);
       }
     },
-    [sessionId, onMessage, onUserMessageId, onDone, onTitleGenerated, onError]
+    [sessionId, onMessage, onUserMessageId, onDone, onTitleGenerated, onThinking, onError]
   );
 
   const regenerate = useCallback(
     async (messageId: string) => {
       setIsStreaming(true);
       setStreamedContent("");
+      setThinkingStatus(null);
       let fullContent = "";
 
       try {
@@ -123,22 +139,31 @@ export function useChat({ sessionId, onMessage, onUserMessageId, onDone, onTitle
         if (!response.ok) throw new Error("Failed to regenerate");
 
         await readStream(response, {
+          onThinking: (status) => {
+            setThinkingStatus(status);
+            onThinking?.(status);
+          },
           onDelta: (delta) => {
+            setThinkingStatus(null);
             fullContent += delta;
             setStreamedContent(fullContent);
             onMessage?.(fullContent);
           },
-          onDone: (msgId) => onDone?.(msgId),
+          onDone: (msgId) => {
+            setThinkingStatus(null);
+            onDone?.(msgId);
+          },
           onError,
         });
       } catch (error) {
         onError?.(error instanceof Error ? error.message : "Unknown error");
       } finally {
         setIsStreaming(false);
+        setThinkingStatus(null);
       }
     },
-    [sessionId, onMessage, onDone, onError]
+    [sessionId, onMessage, onDone, onThinking, onError]
   );
 
-  return { sendMessage, regenerate, isStreaming, streamedContent };
+  return { sendMessage, regenerate, isStreaming, thinkingStatus, streamedContent };
 }
