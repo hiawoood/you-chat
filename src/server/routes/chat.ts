@@ -15,14 +15,29 @@ const chat = new Hono();
 
 // Helper: build chat history as Q&A pairs for You.com API
 function buildChatHistory(messages: { role: string; content: string }[]): Array<{ question: string; answer: string }> {
+  // Build Q&A pairs resilient to gaps from deleted messages.
+  // Walks through messages, collecting user→assistant pairs.
+  // Consecutive user messages get merged. Orphaned assistant messages are skipped.
   const pairs: Array<{ question: string; answer: string }> = [];
-  for (let i = 0; i < messages.length - 1; i += 2) {
-    const userMsg = messages[i];
-    const assistantMsg = messages[i + 1];
-    if (userMsg?.role === "user" && assistantMsg?.role === "assistant") {
-      pairs.push({ question: userMsg.content, answer: assistantMsg.content });
+  let pendingQuestion: string | null = null;
+
+  for (const msg of messages) {
+    if (msg.role === "user") {
+      // If we already have a pending question with no answer, merge them
+      if (pendingQuestion !== null) {
+        pendingQuestion += "\n\n" + msg.content;
+      } else {
+        pendingQuestion = msg.content;
+      }
+    } else if (msg.role === "assistant") {
+      if (pendingQuestion !== null) {
+        pairs.push({ question: pendingQuestion, answer: msg.content });
+        pendingQuestion = null;
+      }
+      // else: orphaned assistant message (preceding user was deleted) — skip
     }
   }
+  // Any trailing pendingQuestion without an answer is excluded (it's the current query)
   return pairs;
 }
 
