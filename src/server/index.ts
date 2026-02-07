@@ -3,10 +3,11 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { serveStatic } from "hono/bun";
 import { auth, createAdminIfNeeded } from "./auth";
-import { initDb, getUserAgents } from "./db";
+import { initDb } from "./db";
 import sessions from "./routes/sessions";
 import chat from "./routes/chat";
 import agentsRoute from "./routes/agents";
+import credentials from "./routes/credentials";
 
 // Initialize database
 initDb();
@@ -65,6 +66,7 @@ app.use("/api/*", async (c, next) => {
 });
 
 // API routes (protected)
+app.route("/api/credentials", credentials);
 app.route("/api/sessions", sessions);
 app.route("/api/chat", chat);
 app.route("/api/agents", agentsRoute);
