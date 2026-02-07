@@ -49,19 +49,40 @@ export default function Chat() {
     loadSessions();
   }, [loadSessions]);
 
-  // Poll for streaming messages that were interrupted
+  // Poll for streaming messages that were interrupted (e.g. page refresh during stream)
   const startPolling = useCallback((sessionId: string, messageId: string) => {
     if (pollingRef.current) clearInterval(pollingRef.current);
+
+    let lastContent = "";
+    let staleCount = 0;
+    const MAX_STALE = 120; // stop after ~3 minutes of no change (120 * 1.5s)
 
     pollingRef.current = setInterval(async () => {
       try {
         const msg = await api.getMessage(sessionId, messageId) as any;
         setMessages((prev) =>
-          prev.map((m) => (m.id === messageId ? { ...m, content: msg.content } : m))
+          prev.map((m) => (m.id === messageId ? { ...m, content: msg.content, status: msg.status } : m))
         );
         if (msg.status === "complete") {
           if (pollingRef.current) clearInterval(pollingRef.current);
           pollingRef.current = null;
+          return;
+        }
+        // Detect stale streaming — if content hasn't changed, increment counter
+        if (msg.content === lastContent) {
+          staleCount++;
+          if (staleCount >= MAX_STALE) {
+            console.warn("[polling] Message stuck in streaming state, giving up");
+            if (pollingRef.current) clearInterval(pollingRef.current);
+            pollingRef.current = null;
+            // Update message to show as complete locally
+            setMessages((prev) =>
+              prev.map((m) => (m.id === messageId ? { ...m, status: "complete" } : m))
+            );
+          }
+        } else {
+          lastContent = msg.content;
+          staleCount = 0;
         }
       } catch {
         if (pollingRef.current) clearInterval(pollingRef.current);

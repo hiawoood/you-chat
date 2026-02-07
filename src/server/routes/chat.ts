@@ -58,25 +58,29 @@ async function streamAndSave(
   let fullResponse = "";
   let lastSaveTime = Date.now();
 
-  for await (const event of streamChat(options)) {
-    if (event.type === "token") {
-      fullResponse += event.text;
+  try {
+    for await (const event of streamChat(options)) {
+      if (event.type === "token") {
+        fullResponse += event.text;
 
-      const now = Date.now();
-      if (now - lastSaveTime > SAVE_INTERVAL_MS) {
-        updateStreamingContent(assistantMsgId, fullResponse);
-        lastSaveTime = now;
+        const now = Date.now();
+        if (now - lastSaveTime > SAVE_INTERVAL_MS) {
+          updateStreamingContent(assistantMsgId, fullResponse);
+          lastSaveTime = now;
+        }
+      }
+
+      try {
+        await onEvent?.(event);
+      } catch {
+        // Client disconnected, keep going to save to DB
       }
     }
-
-    try {
-      await onEvent?.(event);
-    } catch {
-      // Client disconnected, keep going to save to DB
-    }
+  } finally {
+    // Always mark as complete, even on error — prevents stuck "streaming" messages
+    completeStreamingMessage(assistantMsgId, fullResponse);
   }
 
-  completeStreamingMessage(assistantMsgId, fullResponse);
   return fullResponse;
 }
 
