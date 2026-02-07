@@ -11,6 +11,7 @@ import {
   getMessage,
   forkSession,
   getSessionYouChatId,
+  updateSessionYouChatId,
   getUserCredentials,
 } from "../db";
 import { deleteThread } from "../lib/you-client";
@@ -131,6 +132,17 @@ sessions.patch("/:id/messages/:messageId", async (c) => {
 
   const updated = updateMessage(messageId, sessionId, content);
   if (!updated) return c.json({ error: "Message not found" }, 404);
+
+  // Invalidate You.com thread — edited history means the old thread context is stale.
+  // Next chat request will create a fresh thread with the corrected history.
+  const oldYouChatId = getSessionYouChatId(sessionId);
+  if (oldYouChatId) {
+    const creds = getUserCredentials(user.id);
+    if (creds) {
+      deleteThread(oldYouChatId, creds.ds_cookie, creds.dsr_cookie, creds.uuid_guest).catch(() => {});
+    }
+    updateSessionYouChatId(sessionId, "");
+  }
 
   return c.json(updated);
 });
