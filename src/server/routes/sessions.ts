@@ -130,6 +130,7 @@ sessions.patch("/:id/messages/:messageId", async (c) => {
   const session = getChatSession(sessionId, user.id);
   if (!session) return c.json({ error: "Not found" }, 404);
 
+  console.log(`[edit-msg] messageId=${messageId} sessionId=${sessionId}`);
   const updated = updateMessage(messageId, sessionId, content);
   if (!updated) return c.json({ error: "Message not found" }, 404);
 
@@ -160,6 +161,7 @@ sessions.delete("/:id/messages/:messageId", async (c) => {
   if (!session) return c.json({ error: "Not found" }, 404);
 
   // Delete the message
+  console.log(`[delete-msg] messageId=${messageId} sessionId=${sessionId} stack=${new Error().stack?.split('\n').slice(1,3).join(' | ')}`);
   deleteMessage(messageId, sessionId);
 
   // Invalidate You.com thread — history changed, old thread context is stale
