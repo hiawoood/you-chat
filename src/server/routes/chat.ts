@@ -32,9 +32,20 @@ chat.post("/stop", async (c) => {
   }
 
   // 2. Immediately delete any streaming messages from DB
-  //    (don't wait for streamAndSave's finally block)
   const deleted = deleteStreamingMessages(sessionId);
-  console.log(`[stop] session=${sessionId} aborted, deleted ${deleted} streaming message(s)`);
+
+  // 3. Delete the You.com thread and clear youChatId (rebase)
+  //    You.com doesn't stop on client disconnect, so nuke the thread
+  const oldYouChatId = getSessionYouChatId(sessionId);
+  if (oldYouChatId) {
+    const creds = getUserCredentials(user.id);
+    if (creds) {
+      deleteThread(oldYouChatId, creds.ds_cookie, creds.dsr_cookie, creds.uuid_guest).catch(() => {});
+    }
+    updateSessionYouChatId(sessionId, "");
+  }
+
+  console.log(`[stop] session=${sessionId} aborted, deleted ${deleted} msg(s), nuked You.com thread ${oldYouChatId || "none"}`);
 
   return c.json({ stopped: true });
 });
