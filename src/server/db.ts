@@ -133,6 +133,30 @@ export function initDb() {
     )
   `);
 
+  // Add you_chat_id column to chat_sessions if missing
+  try {
+    db.run(`ALTER TABLE chat_sessions ADD COLUMN you_chat_id TEXT`);
+  } catch {
+    // Column already exists
+  }
+
+  // User credentials for You.com cookies
+  db.run(`
+    CREATE TABLE IF NOT EXISTS user_credentials (
+      id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+      user_id TEXT NOT NULL UNIQUE,
+      ds_cookie TEXT NOT NULL,
+      dsr_cookie TEXT NOT NULL,
+      you_email TEXT,
+      you_name TEXT,
+      subscription_type TEXT,
+      validated_at INTEGER,
+      created_at INTEGER DEFAULT (unixepoch()),
+      updated_at INTEGER DEFAULT (unixepoch()),
+      FOREIGN KEY (user_id) REFERENCES user(id) ON DELETE CASCADE
+    )
+  `);
+
   // Indexes
   db.run(`CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id)`);
   db.run(`CREATE INDEX IF NOT EXISTS idx_chat_sessions_user ON chat_sessions(user_id)`);
@@ -343,4 +367,62 @@ export function updateUserAgent(id: string, userId: string, updates: { agent_id?
 
 export function deleteUserAgent(id: string, userId: string) {
   db.run(`DELETE FROM user_agents WHERE id = ? AND user_id = ?`, [id, userId]);
+}
+
+// ─── User Credentials CRUD (You.com cookies) ────────────────
+
+export interface UserCredentials {
+  id: string;
+  user_id: string;
+  ds_cookie: string;
+  dsr_cookie: string;
+  you_email: string | null;
+  you_name: string | null;
+  subscription_type: string | null;
+  validated_at: number | null;
+  created_at: number;
+  updated_at: number;
+}
+
+export function getUserCredentials(userId: string): UserCredentials | null {
+  return db.query(`SELECT * FROM user_credentials WHERE user_id = ?`).get(userId) as UserCredentials | null;
+}
+
+export function saveUserCredentials(
+  userId: string,
+  ds: string,
+  dsr: string,
+  youEmail?: string,
+  youName?: string,
+  subscription?: string
+) {
+  const now = Math.floor(Date.now() / 1000);
+  const existing = getUserCredentials(userId);
+  if (existing) {
+    db.run(
+      `UPDATE user_credentials SET ds_cookie = ?, dsr_cookie = ?, you_email = ?, you_name = ?, subscription_type = ?, validated_at = ?, updated_at = ? WHERE user_id = ?`,
+      [ds, dsr, youEmail || null, youName || null, subscription || null, now, now, userId]
+    );
+  } else {
+    const id = generateId();
+    db.run(
+      `INSERT INTO user_credentials (id, user_id, ds_cookie, dsr_cookie, you_email, you_name, subscription_type, validated_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, userId, ds, dsr, youEmail || null, youName || null, subscription || null, now, now, now]
+    );
+  }
+}
+
+export function deleteUserCredentials(userId: string) {
+  db.run(`DELETE FROM user_credentials WHERE user_id = ?`, [userId]);
+}
+
+// ─── Session You.com Thread ID ──────────────────────────────
+
+export function updateSessionYouChatId(sessionId: string, youChatId: string | null) {
+  db.run(`UPDATE chat_sessions SET you_chat_id = ? WHERE id = ?`, [youChatId, sessionId]);
+}
+
+export function getSessionYouChatId(sessionId: string): string | null {
+  const row = db.query(`SELECT you_chat_id FROM chat_sessions WHERE id = ?`).get(sessionId) as { you_chat_id: string | null } | null;
+  return row?.you_chat_id || null;
 }
