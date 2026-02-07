@@ -38,11 +38,10 @@ export interface Message {
 }
 
 export interface Agent {
-  id: string;       // the You.com agent ID (e.g. "express" or a UUID)
+  id: string;
   name: string;
   description: string;
-  _id: string;      // internal DB row id for edit/delete
-  position: number;
+  type: "agent" | "model";
 }
 
 export const api = {
@@ -64,12 +63,13 @@ export const api = {
     fetchAPI(`/sessions/${sessionId}/messages/${messageId}`, { method: "DELETE" }),
   forkSession: (sessionId: string, messageId: string): Promise<ChatSession> =>
     fetchAPI(`/sessions/${sessionId}/fork`, { method: "POST", body: JSON.stringify({ messageId }) }),
-  // Agents CRUD
+  // Agents (live from You.com API)
   getAgents: (): Promise<Agent[]> => fetchAPI("/agents"),
-  addAgent: (agent_id: string, name: string, description?: string): Promise<Agent> =>
-    fetchAPI("/agents", { method: "POST", body: JSON.stringify({ agent_id, name, description }) }),
-  updateAgent: (dbId: string, updates: { agent_id?: string; name?: string; description?: string }): Promise<Agent> =>
-    fetchAPI(`/agents/${dbId}`, { method: "PATCH", body: JSON.stringify(updates) }),
-  deleteAgent: (dbId: string): Promise<void> =>
-    fetchAPI(`/agents/${dbId}`, { method: "DELETE" }),
+  // Credentials
+  getCredentials: (): Promise<{ hasCredentials: boolean; email?: string; name?: string; subscription?: string }> =>
+    fetchAPI("/credentials"),
+  saveCredentials: (ds: string, dsr: string): Promise<{ email: string; name: string; subscription?: string }> =>
+    fetchAPI("/credentials", { method: "POST", body: JSON.stringify({ ds, dsr }) }),
+  deleteCredentials: (): Promise<void> =>
+    fetchAPI("/credentials", { method: "DELETE" }),
 };
