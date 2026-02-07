@@ -335,6 +335,7 @@ export async function deleteThread(
       method: "DELETE",
       headers: {
         "User-Agent": BROWSER_UA,
+        "Content-Type": "application/json",
         Cookie: cookieStr,
       },
     }
