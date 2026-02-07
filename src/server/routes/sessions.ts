@@ -161,6 +161,17 @@ sessions.delete("/:id/messages/:messageId", async (c) => {
 
   // Delete the message
   deleteMessage(messageId, sessionId);
+
+  // Invalidate You.com thread — history changed, old thread context is stale
+  const oldYouChatId = getSessionYouChatId(sessionId);
+  if (oldYouChatId) {
+    const creds = getUserCredentials(user.id);
+    if (creds) {
+      deleteThread(oldYouChatId, creds.ds_cookie, creds.dsr_cookie, creds.uuid_guest).catch(() => {});
+    }
+    updateSessionYouChatId(sessionId, "");
+  }
+
   return c.json({ success: true });
 });
 
