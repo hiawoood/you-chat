@@ -17,7 +17,9 @@ export default function Settings({ onBack }: SettingsProps) {
 
   // Cookie update form
   const [showUpdate, setShowUpdate] = useState(false);
-  const [cookieString, setCookieString] = useState("");
+  const [ds, setDs] = useState("");
+  const [dsr, setDsr] = useState("");
+  const [fullCookies, setFullCookies] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
@@ -37,35 +39,31 @@ export default function Settings({ onBack }: SettingsProps) {
     }
   };
 
-  const parseCookieValue = (raw: string, name: string): string => {
-    const match = raw.match(new RegExp(`(?:^|;\\s*)${name}=([^;]+)`));
-    return match?.[1]?.trim() ?? "";
-  };
-
   const handleUpdate = async () => {
-    const raw = cookieString.trim();
-    if (!raw) return;
-
-    const ds = parseCookieValue(raw, "DS");
-    const dsr = parseCookieValue(raw, "DSR");
-
-    if (!ds || !dsr) {
-      setError("Could not find DS and DSR cookies. Make sure you copied the full Cookie header.");
-      return;
-    }
-
+    if (!ds.trim() || !dsr.trim()) return;
     setSaving(true);
     setError("");
+
+    // Build allCookies: merge DS/DSR into the full string if provided
+    let allCookies = fullCookies.trim();
+    if (allCookies) {
+      if (!allCookies.includes("DS=")) allCookies = `DS=${ds.trim()}; ${allCookies}`;
+      if (!allCookies.includes("DSR=")) allCookies = `DSR=${dsr.trim()}; ${allCookies}`;
+    }
+
     try {
-      const result = await api.saveCredentials(ds, dsr, raw);
+      const result = await api.saveCredentials(ds.trim(), dsr.trim(), allCookies || undefined);
       setCredentials({
         hasCredentials: true,
         email: result.email,
         name: result.name,
         subscription: result.subscription,
+        hasFullCookies: !!allCookies,
       });
       setShowUpdate(false);
-      setCookieString("");
+      setDs("");
+      setDsr("");
+      setFullCookies("");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to update cookies");
     } finally {
@@ -86,19 +84,54 @@ export default function Settings({ onBack }: SettingsProps) {
     }
   };
 
+  const resetForm = () => {
+    setShowUpdate(false);
+    setDs("");
+    setDsr("");
+    setFullCookies("");
+    setError("");
+  };
+
   const CookieForm = ({ buttonLabel }: { buttonLabel: string }) => (
     <div className="space-y-3">
       <div>
         <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
-          Cookie Header Value
+          DS Cookie <span className="text-red-500">*</span>
+        </label>
+        <input
+          type="password"
+          value={ds}
+          onChange={(e) => setDs(e.target.value)}
+          placeholder="Paste DS cookie value (Application → Cookies → DS)"
+          className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-gray-400"
+        />
+      </div>
+      <div>
+        <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+          DSR Cookie <span className="text-red-500">*</span>
+        </label>
+        <input
+          type="password"
+          value={dsr}
+          onChange={(e) => setDsr(e.target.value)}
+          placeholder="Paste DSR cookie value (Application → Cookies → DSR)"
+          className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-gray-400"
+        />
+      </div>
+      <div>
+        <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+          Full Cookie Header <span className="text-gray-400 font-normal">(recommended)</span>
         </label>
         <textarea
-          value={cookieString}
-          onChange={(e) => setCookieString(e.target.value)}
-          placeholder="Paste the full Cookie header value from DevTools (Network tab → any request → Headers → Cookie)"
-          rows={4}
+          value={fullCookies}
+          onChange={(e) => setFullCookies(e.target.value)}
+          placeholder="Network tab → any you.com/api/ request → Cookie header value"
+          rows={3}
           className="w-full px-3 py-2 text-sm font-mono border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-gray-400 resize-none"
         />
+        <p className="mt-0.5 text-xs text-gray-400 dark:text-gray-500">
+          Enables You.com thread cleanup on delete. Copy from Network tab → any API request → Cookie header.
+        </p>
       </div>
       {error && (
         <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
@@ -106,13 +139,13 @@ export default function Settings({ onBack }: SettingsProps) {
       <div className="flex gap-2">
         <button
           onClick={handleUpdate}
-          disabled={!cookieString.trim() || saving}
+          disabled={!ds.trim() || !dsr.trim() || saving}
           className="px-3 py-1.5 text-sm bg-gray-900 dark:bg-gray-600 text-white rounded-md hover:bg-gray-800 dark:hover:bg-gray-500 disabled:opacity-50"
         >
           {saving ? "Validating..." : buttonLabel}
         </button>
         <button
-          onClick={() => { setShowUpdate(false); setCookieString(""); setError(""); }}
+          onClick={resetForm}
           className="px-3 py-1.5 text-sm text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
         >
           Cancel
@@ -174,9 +207,9 @@ export default function Settings({ onBack }: SettingsProps) {
               {/* Warning if full cookies missing */}
               {!credentials.hasFullCookies && (
                 <div className="p-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg">
-                  <p className="text-sm font-medium text-amber-800 dark:text-amber-200">⚠️ Cookie update needed</p>
+                  <p className="text-sm font-medium text-amber-800 dark:text-amber-200">⚠️ Full cookies not set</p>
                   <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
-                    Chat deletion requires full cookies. Click "Update Cookies" and paste the complete Cookie header from DevTools.
+                    Thread cleanup on delete won't work. Click "Update Cookies" and include the full Cookie header from the Network tab.
                   </p>
                 </div>
               )}
