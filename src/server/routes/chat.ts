@@ -212,13 +212,17 @@ chat.post("/regenerate", async (c) => {
   const newYouChatId = crypto.randomUUID();
   updateSessionYouChatId(sessionId, newYouChatId);
 
-  // Build history from remaining messages
+  // Build history from remaining messages (includes all up to + including the target user msg)
   const history = getMessages(sessionId) as { role: string; content: string }[];
-  const chatHistory = buildChatHistory(history);
 
   // The last user message is the query for regeneration
   const lastUserMsg = history.filter(m => m.role === "user").pop();
   const query = lastUserMsg?.content || "";
+
+  // Build chat history from completed pairs (user+assistant exchanges before the regenerated message)
+  // buildChatHistory only creates pairs from consecutive user/assistant messages,
+  // so the unpaired last user message is already excluded
+  const chatHistory = buildChatHistory(history);
 
   const assistantMsg = createStreamingMessage(sessionId, "assistant");
 
@@ -229,12 +233,12 @@ chat.post("/regenerate", async (c) => {
       await streamAndSave(
         {
           query,
-          chatHistory: chatHistory.slice(0, -1),
+          chatHistory, // all prior pairs — don't slice, the unpaired last user msg is already excluded
           chatId: newYouChatId,
           agentOrModel: session.agent,
           dsCookie: creds.ds_cookie,
           dsrCookie: creds.dsr_cookie,
-          pastChatLength: Math.max(0, chatHistory.length - 1),
+          pastChatLength: Math.max(0, chatHistory.length),
         },
         assistantMsg.id,
         async (event) => {
