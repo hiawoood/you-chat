@@ -27,10 +27,7 @@ export default function MessageInput({ onSend, disabled }: MessageInputProps) {
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      handleSubmit(e);
-    }
+    // Enter always inserts a newline; sending is done via the send button only
   };
 
   return (
