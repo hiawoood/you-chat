@@ -86,6 +86,46 @@ async function readStream(
   }
 }
 
+// Poll a message until it's complete (fallback when SSE stream disconnects)
+async function pollUntilDone(
+  messageId: string,
+  callbacks: {
+    onContent?: (content: string) => void;
+    onDone?: (messageId: string) => void;
+    onError?: (error: string) => void;
+  },
+  signal?: AbortSignal,
+) {
+  const POLL_INTERVAL = 1500;
+  let lastContent = "";
+
+  while (!signal?.aborted) {
+    try {
+      const res = await fetch(`/api/chat/poll/${messageId}`, { credentials: "include", signal });
+      if (!res.ok) {
+        callbacks.onError?.("Polling failed");
+        return;
+      }
+      const data = await res.json();
+
+      if (data.content && data.content !== lastContent) {
+        lastContent = data.content;
+        callbacks.onContent?.(data.content);
+      }
+
+      if (data.status !== "streaming") {
+        callbacks.onDone?.(messageId);
+        return;
+      }
+    } catch (err) {
+      if (signal?.aborted) return;
+      // Network error during poll — retry after interval
+    }
+
+    await new Promise((r) => setTimeout(r, POLL_INTERVAL));
+  }
+}
+
 export function useChat({ sessionId, onMessage, onUserMessageId, onDone, onTitleGenerated, onThinking, onError }: UseChatOptions) {
   const [isStreaming, setIsStreaming] = useState(false);
   const [thinkingStatus, setThinkingStatus] = useState<string | null>(null);
@@ -130,6 +170,8 @@ export function useChat({ sessionId, onMessage, onUserMessageId, onDone, onTitle
 
         if (!response.ok) throw new Error("Failed to send message");
 
+        let streamCompleted = false;
+
         await readStream(response, {
           onThinking: (status) => {
             setThinkingStatus(status);
@@ -144,16 +186,59 @@ export function useChat({ sessionId, onMessage, onUserMessageId, onDone, onTitle
           onUserMessageId,
           onAssistantMessageId: (id) => { assistantMsgId = id; },
           onDone: (messageId, generatedTitle) => {
+            streamCompleted = true;
             assistantMsgId = messageId;
             setThinkingStatus(null);
             onDone?.(messageId);
             if (generatedTitle) onTitleGenerated?.(generatedTitle);
           },
-          onError,
+          onError: (err) => {
+            streamCompleted = true;
+            onError?.(err);
+          },
         }, controller.signal);
+
+        // If stream ended without a done/error event and we have an assistant message ID,
+        // the connection was lost — fall back to polling
+        if (!streamCompleted && assistantMsgId && !controller.signal.aborted) {
+          console.log("[useChat] Stream disconnected, falling back to polling", assistantMsgId);
+          setThinkingStatus("Reconnecting…");
+          await pollUntilDone(assistantMsgId, {
+            onContent: (content) => {
+              setThinkingStatus(null);
+              fullContent = content;
+              setStreamedContent(content);
+              onMessage?.(content);
+            },
+            onDone: (msgId) => {
+              setThinkingStatus(null);
+              onDone?.(msgId);
+            },
+            onError,
+          }, controller.signal);
+        }
       } catch (error) {
         if (controller.signal.aborted) return; // Server handles cleanup
-        onError?.(error instanceof Error ? error.message : "Unknown error");
+        // Network error on initial fetch or during stream — try polling if we have assistant msg ID
+        if (assistantMsgId && !controller.signal.aborted) {
+          console.log("[useChat] Error during stream, falling back to polling", assistantMsgId);
+          setThinkingStatus("Reconnecting…");
+          await pollUntilDone(assistantMsgId, {
+            onContent: (content) => {
+              setThinkingStatus(null);
+              fullContent = content;
+              setStreamedContent(content);
+              onMessage?.(content);
+            },
+            onDone: (msgId) => {
+              setThinkingStatus(null);
+              onDone?.(msgId);
+            },
+            onError,
+          }, controller.signal);
+        } else {
+          onError?.(error instanceof Error ? error.message : "Unknown error");
+        }
       } finally {
         setIsStreaming(false);
         setStreamedContent("");
@@ -184,6 +269,9 @@ export function useChat({ sessionId, onMessage, onUserMessageId, onDone, onTitle
 
         if (!response.ok) throw new Error("Failed to regenerate");
 
+        let regenCompleted = false;
+        let regenMsgId: string | null = null;
+
         await readStream(response, {
           onThinking: (status) => {
             setThinkingStatus(status);
@@ -195,14 +283,38 @@ export function useChat({ sessionId, onMessage, onUserMessageId, onDone, onTitle
             setStreamedContent(fullContent);
             onMessage?.(fullContent);
           },
+          onAssistantMessageId: (id) => { regenMsgId = id; },
           onDone: (msgId) => {
+            regenCompleted = true;
             setThinkingStatus(null);
             onDone?.(msgId);
           },
-          onError,
+          onError: (err) => {
+            regenCompleted = true;
+            onError?.(err);
+          },
         }, controller.signal);
+
+        // Fall back to polling if stream disconnected
+        if (!regenCompleted && regenMsgId && !controller.signal.aborted) {
+          console.log("[useChat] Regenerate stream disconnected, polling", regenMsgId);
+          setThinkingStatus("Reconnecting…");
+          await pollUntilDone(regenMsgId, {
+            onContent: (content) => {
+              setThinkingStatus(null);
+              fullContent = content;
+              setStreamedContent(content);
+              onMessage?.(content);
+            },
+            onDone: (msgId) => {
+              setThinkingStatus(null);
+              onDone?.(msgId);
+            },
+            onError,
+          }, controller.signal);
+        }
       } catch (error) {
-        if (controller.signal.aborted) return; // Server handles cleanup
+        if (controller.signal.aborted) return;
         onError?.(error instanceof Error ? error.message : "Unknown error");
       } finally {
         setIsStreaming(false);

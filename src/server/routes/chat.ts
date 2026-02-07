@@ -251,6 +251,26 @@ chat.post("/", async (c) => {
   });
 });
 
+// Poll a message's current content and status (fallback when streaming disconnects)
+chat.get("/poll/:messageId", async (c) => {
+  const user = c.get("user");
+  if (!user) return c.json({ error: "Unauthorized" }, 401);
+
+  const messageId = c.req.param("messageId");
+  const msg = getMessage(messageId) as { id: string; session_id: string; content: string; status: string } | null;
+  if (!msg) return c.json({ error: "Message not found" }, 404);
+
+  // Verify user owns the session
+  const session = getChatSession(msg.session_id, user.id);
+  if (!session) return c.json({ error: "Not found" }, 404);
+
+  return c.json({
+    id: msg.id,
+    content: msg.content,
+    status: msg.status, // "streaming" or "complete"
+  });
+});
+
 // Regenerate from a specific message
 chat.post("/regenerate", async (c) => {
   const user = c.get("user");
