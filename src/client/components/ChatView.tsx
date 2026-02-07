@@ -159,11 +159,27 @@ export default function ChatView({
           disabled={isStreaming}
           className="text-sm px-2 py-1 bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-md text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-gray-400"
         >
-          {agents.map((agent) => (
-            <option key={agent.id} value={agent.id}>
-              {agent.name}
-            </option>
-          ))}
+          {agents.filter(a => a.type === "agent").length > 0 && (
+            <optgroup label="Custom Agents">
+              {agents.filter(a => a.type === "agent").map((agent) => (
+                <option key={agent.id} value={agent.id}>
+                  {agent.name}
+                </option>
+              ))}
+            </optgroup>
+          )}
+          {agents.filter(a => a.type === "model").length > 0 && (
+            <optgroup label="Models">
+              {agents.filter(a => a.type === "model").map((agent) => (
+                <option key={agent.id} value={agent.id}>
+                  {agent.name}
+                </option>
+              ))}
+            </optgroup>
+          )}
+          {agents.length === 0 && (
+            <option value={session.agent}>{session.agent}</option>
+          )}
         </select>
       </div>
       </div>
