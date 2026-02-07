@@ -12,6 +12,7 @@ export default function Settings({ onBack }: SettingsProps) {
     email?: string;
     name?: string;
     subscription?: string;
+    hasFullCookies?: boolean;
   } | null>(null);
 
   // Cookie update form
@@ -169,6 +170,16 @@ export default function Settings({ onBack }: SettingsProps) {
                   </p>
                 )}
               </div>
+
+              {/* Warning if full cookies missing */}
+              {!credentials.hasFullCookies && (
+                <div className="p-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg">
+                  <p className="text-sm font-medium text-amber-800 dark:text-amber-200">⚠️ Cookie update needed</p>
+                  <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
+                    Chat deletion requires full cookies. Click "Update Cookies" and paste the complete Cookie header from DevTools.
+                  </p>
+                </div>
+              )}
 
               {/* Update cookies form */}
               {showUpdate ? (

@@ -20,6 +20,7 @@ credentials.get("/", async (c) => {
     name: creds.you_name,
     subscription: creds.subscription_type,
     validatedAt: creds.validated_at,
+    hasFullCookies: !!(creds.all_cookies && creds.all_cookies.length > 10),
   });
 });
 
