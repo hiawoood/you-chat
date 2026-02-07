@@ -89,7 +89,20 @@ export default function MessageList({
             isDeleting={isDeleting}
             onEdit={onEditMessage && !isActivelyStreaming ? (content: string) => onEditMessage(item.id, content) : undefined}
             onDelete={onDeleteMessage && !isActivelyStreaming ? () => onDeleteMessage(item.id) : undefined}
-            onRegenerate={onRegenerate && !isActivelyStreaming && item.role === "user" ? () => onRegenerate(item.id) : undefined}
+            onRegenerate={onRegenerate && !isActivelyStreaming ? () => {
+              if (item.role === "user") {
+                onRegenerate(item.id);
+              } else {
+                // For assistant messages, find the preceding user message
+                const idx = items.indexOf(item);
+                for (let i = idx - 1; i >= 0; i--) {
+                  if (items[i].role === "user") {
+                    onRegenerate(items[i].id);
+                    return;
+                  }
+                }
+              }
+            } : undefined}
             onFork={onFork && !isActivelyStreaming ? () => onFork(item.id) : undefined}
             forceCollapsed={collapsedIds.has(item.id)}
             isSaving={actionLoading === `edit-msg-${item.id}`}
