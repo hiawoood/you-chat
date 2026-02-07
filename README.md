@@ -1,12 +1,12 @@
 # You-Chat
 
-A full-stack web app for interacting with [You.com](https://you.com) AI agents. Multiple chat sessions, streaming responses, agent switching, message management, markdown rendering.
+A full-stack web app for interacting with [You.com](https://you.com) AI agents and models. Multiple chat sessions, streaming responses, agent/model switching, message management, markdown rendering.
+
+## How It Works
+
+Each user connects their own You.com account by providing session cookies (DS and DSR). The app uses You.com's browser API to access all available AI models and custom agents from the user's account.
 
 ## Deploy to Railway
-
-### One-Click (via Railway Template)
-
-> If a published template exists, click the deploy button. Otherwise, follow the manual steps below.
 
 ### Manual Deploy
 
@@ -18,10 +18,9 @@ A full-stack web app for interacting with [You.com](https://you.com) AI agents. 
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `YOU_API_KEY` | ✅ | Your [You.com API key](https://you.com/api) |
-| `BETTER_AUTH_SECRET` | ✅ | Random secret (run `openssl rand -hex 32`) |
+| `BETTER_AUTH_SECRET` | Yes | Random secret (run `openssl rand -hex 32`) |
 | `ADMIN_EMAIL` | | Login email (default: `admin@local.dev`) |
-| `ADMIN_PASSWORD` | ✅ | Your login password |
+| `ADMIN_PASSWORD` | Yes | Your login password |
 | `PORT` | | Server port (default: `8080`) |
 | `DATABASE_DIR` | | DB directory (default: `/data`) |
 
@@ -30,20 +29,6 @@ A full-stack web app for interacting with [You.com](https://you.com) AI agents. 
 **Networking** — Settings tab → enable Public Networking (HTTP)
 
 4. Railway auto-deploys. You'll get a stable `*.up.railway.app` URL.
-
-### Creating a Railway Template (for one-click deploys)
-
-1. Go to [railway.com/workspace/templates](https://railway.com/workspace/templates)
-2. Click **New Template** → add service → select this repo
-3. **Variables tab**:
-   - `YOU_API_KEY` — leave empty (user provides)
-   - `BETTER_AUTH_SECRET` — set to `${{ secret(32) }}` (auto-generates)
-   - `ADMIN_EMAIL` — default `admin@local.dev`
-   - `ADMIN_PASSWORD` — leave empty (user provides)
-   - `PORT` — default `8080`
-4. Right-click service → **Attach Volume** → mount path `/data`
-5. **Settings** → enable Public Networking (HTTP)
-6. Click **Create Template** → share the deploy link
 
 ## Local Development
 
@@ -56,7 +41,7 @@ bun install
 
 # Create .env
 cp .env.example .env
-# Edit .env with your API key and secrets
+# Edit .env with your secrets
 
 # Dev mode (hot reload)
 bun run dev
@@ -66,6 +51,15 @@ bun run dev:client  # Vite on :5173
 bun run dev         # Server on :8080
 ```
 
+## First-Time Setup
+
+1. Log in with the admin credentials
+2. You'll be prompted to connect your You.com account
+3. Go to [you.com](https://you.com), sign in, open DevTools (F12)
+4. Go to Application → Cookies → you.com
+5. Copy the `DS` and `DSR` cookie values
+6. Paste them into the setup form
+
 ## Stack
 
 - **Runtime:** [Bun](https://bun.sh)
@@ -73,13 +67,13 @@ bun run dev         # Server on :8080
 - **Frontend:** React + Tailwind CSS v4
 - **Auth:** [better-auth](https://better-auth.com) (email/password)
 - **Database:** SQLite (bun:sqlite)
-- **AI:** [You.com Agents API](https://you.com/api)
+- **AI:** [You.com](https://you.com) browser API (cookie-based, per-user)
 
 ## Features
 
 - Multiple chat sessions with auto-generated titles
 - Streaming responses with resume on page refresh
-- User-configurable AI agents via Settings page
+- Access to all You.com models and custom agents from your account
 - Edit, delete, copy, collapse, fork, regenerate messages
 - Full markdown rendering
 - Mobile-friendly responsive UI

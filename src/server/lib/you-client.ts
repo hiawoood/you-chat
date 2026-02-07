@@ -288,9 +288,9 @@ export async function refreshCookies(
 
     for (const cookie of setCookies) {
       if (cookie.startsWith("DS=")) {
-        newDs = cookie.split(";")[0].slice(3);
+        newDs = cookie.split(";")[0]!.slice(3);
       } else if (cookie.startsWith("DSR=")) {
-        newDsr = cookie.split(";")[0].slice(4);
+        newDsr = cookie.split(";")[0]!.slice(4);
       }
     }
 
