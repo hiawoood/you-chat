@@ -287,6 +287,7 @@ export default function Chat() {
             onDeleteMessage={handleDeleteMessage}
             onTruncateAfter={handleTruncateAfter}
             onFork={handleFork}
+            onStopGeneration={() => { if (activeSessionId) loadMessages(activeSessionId); }}
             actionLoading={actionLoading}
           />
         ) : (

@@ -18,6 +18,7 @@ interface ChatViewProps {
   onDeleteMessage?: (messageId: string) => void;
   onTruncateAfter?: (messageId: string) => void;
   onFork?: (messageId: string) => void;
+  onStopGeneration?: () => void;
   actionLoading?: string | null;
 }
 
@@ -34,6 +35,7 @@ export default function ChatView({
   onDeleteMessage,
   onTruncateAfter,
   onFork,
+  onStopGeneration,
   actionLoading,
 }: ChatViewProps) {
   const [streamingContent, setStreamingContent] = useState("");
@@ -72,7 +74,7 @@ export default function ChatView({
 
   const [thinkingStatus, setThinkingStatus] = useState<string | null>(null);
 
-  const { sendMessage, regenerate, isStreaming } = useChat({
+  const { sendMessage, regenerate, stopGeneration, isStreaming } = useChat({
     sessionId: session.id,
     onUserMessageId: (realId) => {
       if (pendingTempIdRef.current) {
@@ -255,8 +257,20 @@ export default function ChatView({
 
       {/* Input - h-14 fixed to align with sidebar bottom */}
       <div className="h-14 flex items-center border-t border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 flex-shrink-0">
-        <div className="max-w-3xl mx-auto w-full px-4">
-          <MessageInput onSend={handleSend} disabled={isStreaming} />
+        <div className="max-w-3xl mx-auto w-full px-4 flex items-center gap-2">
+          {isStreaming ? (
+            <button
+              onClick={() => { stopGeneration(); setStreamingContent(""); setThinkingStatus(null); onStopGeneration?.(); }}
+              className="w-full h-9 flex items-center justify-center gap-2 rounded-md bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-900/40 transition-colors text-sm"
+            >
+              <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                <rect x="6" y="6" width="12" height="12" rx="2" />
+              </svg>
+              Stop generating
+            </button>
+          ) : (
+            <MessageInput onSend={handleSend} disabled={isStreaming} />
+          )}
         </div>
       </div>
     </div>
