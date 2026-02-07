@@ -23,9 +23,6 @@ try {
 }
 
 // Validate required env vars
-if (!process.env.YOU_API_KEY) {
-  console.error("⚠️  YOU_API_KEY is not set! Set it as an environment variable.");
-}
 if (!process.env.BETTER_AUTH_SECRET) {
   console.error("⚠️  BETTER_AUTH_SECRET is not set! Set it as an environment variable.");
 }
