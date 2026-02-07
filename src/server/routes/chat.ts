@@ -124,6 +124,9 @@ chat.post("/", async (c) => {
     try {
       await stream.writeSSE({ data: JSON.stringify({ userMessageId: userMsg.id, assistantMessageId: assistantMsg.id }) });
 
+      // Show thinking indicator while waiting for first token
+      await stream.writeSSE({ data: JSON.stringify({ thinking: "Thinking" }) });
+
       await streamAndSave(
         {
           query: message,
@@ -244,6 +247,9 @@ chat.post("/regenerate", async (c) => {
   return streamSSE(c, async (stream) => {
     try {
       await stream.writeSSE({ data: JSON.stringify({ assistantMessageId: assistantMsg.id }) });
+
+      // Show thinking indicator while waiting for first token
+      await stream.writeSSE({ data: JSON.stringify({ thinking: "Thinking" }) });
 
       await streamAndSave(
         {
