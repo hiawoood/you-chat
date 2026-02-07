@@ -152,21 +152,11 @@ export function useChat({ sessionId, onMessage, onUserMessageId, onDone, onTitle
           onError,
         }, controller.signal);
       } catch (error) {
-        if (controller.signal.aborted) {
-          // User stopped generation — delete the partial assistant message
-          if (assistantMsgId) {
-            try {
-              await fetch(`/api/sessions/${sessionId}/messages/${assistantMsgId}`, {
-                method: "DELETE",
-                credentials: "include",
-              });
-            } catch { /* best effort */ }
-          }
-          return;
-        }
+        if (controller.signal.aborted) return; // Server handles cleanup
         onError?.(error instanceof Error ? error.message : "Unknown error");
       } finally {
         setIsStreaming(false);
+        setStreamedContent("");
         setThinkingStatus(null);
         abortRef.current = null;
       }
@@ -182,7 +172,6 @@ export function useChat({ sessionId, onMessage, onUserMessageId, onDone, onTitle
       setStreamedContent("");
       setThinkingStatus(null);
       let fullContent = "";
-      let assistantMsgId: string | null = null;
 
       try {
         const response = await fetch("/api/chat/regenerate", {
@@ -206,29 +195,18 @@ export function useChat({ sessionId, onMessage, onUserMessageId, onDone, onTitle
             setStreamedContent(fullContent);
             onMessage?.(fullContent);
           },
-          onAssistantMessageId: (id) => { assistantMsgId = id; },
           onDone: (msgId) => {
-            assistantMsgId = msgId;
             setThinkingStatus(null);
             onDone?.(msgId);
           },
           onError,
         }, controller.signal);
       } catch (error) {
-        if (controller.signal.aborted) {
-          if (assistantMsgId) {
-            try {
-              await fetch(`/api/sessions/${sessionId}/messages/${assistantMsgId}`, {
-                method: "DELETE",
-                credentials: "include",
-              });
-            } catch { /* best effort */ }
-          }
-          return;
-        }
+        if (controller.signal.aborted) return; // Server handles cleanup
         onError?.(error instanceof Error ? error.message : "Unknown error");
       } finally {
         setIsStreaming(false);
+        setStreamedContent("");
         setThinkingStatus(null);
         abortRef.current = null;
       }

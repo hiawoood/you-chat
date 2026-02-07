@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import {
   getChatSession, createMessage, getMessages, updateChatSession,
-  deleteMessagesAfter, getMessage,
+  deleteMessagesAfter, getMessage, deleteMessage,
   createStreamingMessage, updateStreamingContent, completeStreamingMessage,
   getUserCredentials, getSessionYouChatId, updateSessionYouChatId,
 } from "../db";
@@ -73,6 +73,7 @@ async function streamAndSave(
     pastChatLength: number;
   },
   assistantMsgId: string,
+  sessionId: string,
   onEvent?: (event: StreamEvent) => Promise<void>,
   abortSignal?: AbortSignal,
 ): Promise<string> {
@@ -101,8 +102,13 @@ async function streamAndSave(
       }
     }
   } finally {
-    // Always mark as complete, even on error — prevents stuck "streaming" messages
-    completeStreamingMessage(assistantMsgId, fullResponse);
+    if (abortSignal?.aborted) {
+      // Explicit stop — delete the partial message entirely
+      deleteMessage(assistantMsgId, sessionId);
+    } else {
+      // Normal completion or client disconnect — save what we have
+      completeStreamingMessage(assistantMsgId, fullResponse);
+    }
   }
 
   return fullResponse;
@@ -170,6 +176,7 @@ chat.post("/", async (c) => {
           pastChatLength: chatHistory.length,
         },
         assistantMsg.id,
+        sessionId,
         async (event) => {
           if (event.type === "thinking") {
             await stream.writeSSE({ data: JSON.stringify({ thinking: event.message }) });
@@ -301,6 +308,7 @@ chat.post("/regenerate", async (c) => {
           pastChatLength: Math.max(0, chatHistory.length),
         },
         assistantMsg.id,
+        sessionId,
         async (event) => {
           if (event.type === "thinking") {
             await stream.writeSSE({ data: JSON.stringify({ thinking: event.message }) });
