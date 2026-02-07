@@ -287,10 +287,7 @@ export default function Chat() {
             onDeleteMessage={handleDeleteMessage}
             onTruncateAfter={handleTruncateAfter}
             onFork={handleFork}
-            onStopGeneration={() => {
-              // Give server a moment to delete the partial message, then reload
-              setTimeout(() => { if (activeSessionId) loadMessages(activeSessionId); }, 500);
-            }}
+            onStopGeneration={() => { if (activeSessionId) loadMessages(activeSessionId); }}
             actionLoading={actionLoading}
           />
         ) : (

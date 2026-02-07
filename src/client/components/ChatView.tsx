@@ -260,7 +260,7 @@ export default function ChatView({
         <div className="max-w-3xl mx-auto w-full px-4">
           {isStreaming ? (
             <button
-              onClick={() => { stopGeneration(); setStreamingContent(""); setThinkingStatus(null); onStopGeneration?.(); }}
+              onClick={async () => { await stopGeneration(); setStreamingContent(""); setThinkingStatus(null); onStopGeneration?.(); }}
               className="w-full h-9 flex items-center justify-center gap-2 rounded-md bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-900/40 transition-colors text-sm"
             >
               <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">

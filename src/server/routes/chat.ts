@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import {
   getChatSession, createMessage, getMessages, updateChatSession,
-  deleteMessagesAfter, getMessage, deleteMessage,
+  deleteMessagesAfter, getMessage, deleteMessage, deleteStreamingMessages,
   createStreamingMessage, updateStreamingContent, completeStreamingMessage,
   getUserCredentials, getSessionYouChatId, updateSessionYouChatId,
 } from "../db";
@@ -24,11 +24,17 @@ chat.post("/stop", async (c) => {
   const { sessionId } = await c.req.json();
   if (!sessionId) return c.json({ error: "sessionId required" }, 400);
 
+  // 1. Abort the You.com stream
   const controller = activeStreams.get(sessionId);
   if (controller) {
     controller.abort();
     activeStreams.delete(sessionId);
   }
+
+  // 2. Immediately delete any streaming messages from DB
+  //    (don't wait for streamAndSave's finally block)
+  const deleted = deleteStreamingMessages(sessionId);
+  console.log(`[stop] session=${sessionId} aborted, deleted ${deleted} streaming message(s)`);
 
   return c.json({ stopped: true });
 });
@@ -103,8 +109,8 @@ async function streamAndSave(
     }
   } finally {
     if (abortSignal?.aborted) {
-      // Explicit stop — delete the partial message entirely
-      deleteMessage(assistantMsgId, sessionId);
+      // Explicit stop — /stop endpoint already deleted it, but clean up just in case
+      try { deleteMessage(assistantMsgId, sessionId); } catch { /* already deleted */ }
     } else {
       // Normal completion or client disconnect — save what we have
       completeStreamingMessage(assistantMsgId, fullResponse);

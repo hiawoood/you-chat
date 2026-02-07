@@ -275,6 +275,11 @@ export function deleteMessage(messageId: string, sessionId: string) {
   db.run(`DELETE FROM messages WHERE id = ? AND session_id = ?`, [messageId, sessionId]);
 }
 
+export function deleteStreamingMessages(sessionId: string) {
+  const result = db.run(`DELETE FROM messages WHERE session_id = ? AND status = 'streaming'`, [sessionId]);
+  return result.changes;
+}
+
 // Delete all messages after a given message (by created_at). Keeps the target message.
 export function deleteMessagesAfter(messageId: string, sessionId: string) {
   const msg = db.query(`SELECT created_at FROM messages WHERE id = ? AND session_id = ?`).get(messageId, sessionId) as { created_at: number } | null;
