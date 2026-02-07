@@ -149,9 +149,12 @@ export async function validateCookies(
   ds: string,
   dsr: string
 ): Promise<{ email: string; name: string; subscription?: string }> {
-  const response = await fetch("https://you.com/api/user/me", {
-    headers: commonHeaders(ds, dsr),
-  });
+  // /api/user/me returns 500 — use custom_assistants endpoint instead,
+  // which includes creator info (name, email) in the response
+  const response = await fetch(
+    "https://you.com/api/custom_assistants/assistants?filter_type=all&page[size]=1&page[number]=1",
+    { headers: commonHeaders(ds, dsr) }
+  );
 
   if (!response.ok) {
     throw new Error(`Cookie validation failed: ${response.status}`);
@@ -159,25 +162,51 @@ export async function validateCookies(
 
   const data = await response.json();
 
-  // Try to get subscription info
+  // Extract user info from the first agent's creator_info
+  let email = "";
+  let name = "";
+  const agents = data.user_chat_modes || [];
+  if (agents.length > 0 && agents[0].creator_info) {
+    const info = agents[0].creator_info;
+    email = info.email || "";
+    name = info.name || `${info.first_name || ""} ${info.last_name || ""}`.trim();
+  }
+
+  // If no agents exist, try the org tenant endpoint for the name
+  if (!name) {
+    try {
+      const tenantRes = await fetch("https://you.com/api/organization/tenant", {
+        headers: commonHeaders(ds, dsr),
+      });
+      if (tenantRes.ok) {
+        const tenants = await tenantRes.json();
+        if (Array.isArray(tenants) && tenants.length > 0) {
+          name = tenants[0].name || "";
+        }
+      }
+    } catch {
+      // optional
+    }
+  }
+
+  // Get subscription info
   let subscription: string | undefined;
   try {
-    const subRes = await fetch("https://you.com/api/subscriptions/user", {
+    const subRes = await fetch("https://you.com/api/user/getYouProState", {
       headers: commonHeaders(ds, dsr),
     });
     if (subRes.ok) {
       const subData = await subRes.json();
-      subscription = subData.subscription_type || subData.plan || undefined;
+      const orgSubs = subData.org_subscriptions || [];
+      if (orgSubs.length > 0) {
+        subscription = orgSubs[0].plan_name || orgSubs[0].service || undefined;
+      }
     }
   } catch {
     // subscription info is optional
   }
 
-  return {
-    email: data.email || data.data?.email || "",
-    name: data.name || data.data?.name || data.username || "",
-    subscription,
-  };
+  return { email, name, subscription };
 }
 
 // ─── List Custom Agents ─────────────────────────────────────
