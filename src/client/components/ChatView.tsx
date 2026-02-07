@@ -255,9 +255,9 @@ export default function ChatView({
         )}
       </div>
 
-      {/* Input - h-14 fixed to align with sidebar bottom */}
-      <div className="h-14 flex items-center border-t border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 flex-shrink-0">
-        <div className="max-w-3xl mx-auto w-full px-4 flex items-center gap-2">
+      {/* Input */}
+      <div className="min-h-[3.5rem] flex items-end border-t border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 flex-shrink-0 py-2">
+        <div className="max-w-3xl mx-auto w-full px-4">
           {isStreaming ? (
             <button
               onClick={() => { stopGeneration(); setStreamingContent(""); setThinkingStatus(null); onStopGeneration?.(); }}

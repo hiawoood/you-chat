@@ -11,7 +11,27 @@ import type { StreamEvent } from "../lib/you-client";
 
 const SAVE_INTERVAL_MS = 1000;
 
+// Active streaming sessions — allows server-side abort when user clicks "Stop"
+const activeStreams = new Map<string, AbortController>();
+
 const chat = new Hono();
+
+// Stop generation endpoint
+chat.post("/stop", async (c) => {
+  const user = c.get("user");
+  if (!user) return c.json({ error: "Unauthorized" }, 401);
+
+  const { sessionId } = await c.req.json();
+  if (!sessionId) return c.json({ error: "sessionId required" }, 400);
+
+  const controller = activeStreams.get(sessionId);
+  if (controller) {
+    controller.abort();
+    activeStreams.delete(sessionId);
+  }
+
+  return c.json({ stopped: true });
+});
 
 // Helper: build chat history as Q&A pairs for You.com API
 function buildChatHistory(messages: { role: string; content: string }[]): Array<{ question: string; answer: string }> {
@@ -54,12 +74,16 @@ async function streamAndSave(
   },
   assistantMsgId: string,
   onEvent?: (event: StreamEvent) => Promise<void>,
+  abortSignal?: AbortSignal,
 ): Promise<string> {
   let fullResponse = "";
   let lastSaveTime = Date.now();
 
   try {
     for await (const event of streamChat(options)) {
+      // Check if stop was requested
+      if (abortSignal?.aborted) break;
+
       if (event.type === "token") {
         fullResponse += event.text;
 
@@ -73,7 +97,7 @@ async function streamAndSave(
       try {
         await onEvent?.(event);
       } catch {
-        // Client disconnected, keep going to save to DB
+        // Client disconnected (e.g. refresh) — keep going to save to DB
       }
     }
   } finally {
@@ -124,6 +148,10 @@ chat.post("/", async (c) => {
 
   const assistantMsg = createStreamingMessage(sessionId, "assistant");
 
+  // Register abort controller for this session (allows /stop to abort)
+  const abortController = new AbortController();
+  activeStreams.set(sessionId, abortController);
+
   return streamSSE(c, async (stream) => {
     try {
       await stream.writeSSE({ data: JSON.stringify({ userMessageId: userMsg.id, assistantMessageId: assistantMsg.id }) });
@@ -149,6 +177,7 @@ chat.post("/", async (c) => {
             await stream.writeSSE({ data: JSON.stringify({ delta: event.text }) });
           }
         },
+        abortController.signal,
       );
 
       // Auto-generate title if first message
@@ -192,6 +221,8 @@ chat.post("/", async (c) => {
       } catch {
         // Client already gone
       }
+    } finally {
+      activeStreams.delete(sessionId);
     }
   });
 });
@@ -248,6 +279,10 @@ chat.post("/regenerate", async (c) => {
 
   const assistantMsg = createStreamingMessage(sessionId, "assistant");
 
+  // Register abort controller for this session
+  const abortController = new AbortController();
+  activeStreams.set(sessionId, abortController);
+
   return streamSSE(c, async (stream) => {
     try {
       await stream.writeSSE({ data: JSON.stringify({ assistantMessageId: assistantMsg.id }) });
@@ -273,6 +308,7 @@ chat.post("/regenerate", async (c) => {
             await stream.writeSSE({ data: JSON.stringify({ delta: event.text }) });
           }
         },
+        abortController.signal,
       );
 
       await stream.writeSSE({
@@ -283,6 +319,8 @@ chat.post("/regenerate", async (c) => {
       try {
         await stream.writeSSE({ data: JSON.stringify({ error: errorMessage }) });
       } catch { /* client gone */ }
+    } finally {
+      activeStreams.delete(sessionId);
     }
   });
 });

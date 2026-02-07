@@ -92,12 +92,22 @@ export function useChat({ sessionId, onMessage, onUserMessageId, onDone, onTitle
   const [streamedContent, setStreamedContent] = useState("");
   const abortRef = useRef<AbortController | null>(null);
 
-  const stopGeneration = useCallback(() => {
+  const stopGeneration = useCallback(async () => {
+    // Tell server to abort the You.com stream
+    try {
+      await fetch("/api/chat/stop", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId }),
+      });
+    } catch { /* best effort */ }
+
     if (abortRef.current) {
       abortRef.current.abort();
       abortRef.current = null;
     }
-  }, []);
+  }, [sessionId]);
 
   const sendMessage = useCallback(
     async (message: string) => {
