@@ -61,7 +61,7 @@ export default function MessageList({
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages.length, streamingContent, thinkingStatus]);
+  }, [messages.length]);
 
   if (items.length === 0) {
     return (
