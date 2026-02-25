@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { ChatSession } from "../lib/api";
+import type { ChatSession } from "../lib/api";
 
 interface SidebarProps {
   sessions: ChatSession[];

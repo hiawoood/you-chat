@@ -15,8 +15,9 @@ import {
   getUserCredentials,
 } from "../db";
 import { deleteThread } from "../lib/you-client";
+import type { AppVariables } from "../types";
 
-const sessions = new Hono();
+const sessions = new Hono<{ Variables: AppVariables }>();
 
 // List all sessions for user
 sessions.get("/", async (c) => {

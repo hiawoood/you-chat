@@ -1,8 +1,9 @@
 import { Hono } from "hono";
 import { getUserCredentials } from "../db";
 import { listAgents, listModels } from "../lib/you-client";
+import type { AppVariables } from "../types";
 
-const agents = new Hono();
+const agents = new Hono<{ Variables: AppVariables }>();
 
 // List agents and models from You.com API
 agents.get("/", async (c) => {

@@ -15,6 +15,7 @@ function commonHeaders(ds: string, dsr: string): Record<string, string> {
 function parseDsClaims(ds: string): Record<string, unknown> {
   try {
     const payload = ds.split(".")[1];
+    if (!payload) return {};
     const padded = payload.replace(/-/g, "+").replace(/_/g, "/");
     return JSON.parse(atob(padded));
   } catch {

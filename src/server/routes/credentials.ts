@@ -1,8 +1,9 @@
 import { Hono } from "hono";
 import { getUserCredentials, saveUserCredentials, deleteUserCredentials } from "../db";
 import { validateCookies } from "../lib/you-client";
+import type { AppVariables } from "../types";
 
-const credentials = new Hono();
+const credentials = new Hono<{ Variables: AppVariables }>();
 
 // Check if user has valid credentials
 credentials.get("/", async (c) => {

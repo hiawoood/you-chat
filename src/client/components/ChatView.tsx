@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { ChatSession, Message, Agent, api } from "../lib/api";
+import { api } from "../lib/api";
+import type { ChatSession, Message, Agent } from "../lib/api";
 import { useChat } from "../hooks/useChat";
 import { useScrollDirection } from "../hooks/useScrollDirection";
 import MessageList from "./MessageList";

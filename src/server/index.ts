@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { serveStatic } from "hono/bun";
 import { auth, createAdminIfNeeded } from "./auth";
+import type { AppVariables } from "./types";
 import { initDb } from "./db";
 import sessions from "./routes/sessions";
 import chat from "./routes/chat";
@@ -12,21 +13,21 @@ import credentials from "./routes/credentials";
 // Initialize database
 initDb();
 
-const app = new Hono();
+const app = new Hono<{ Variables: AppVariables }>();
 
 // CORS - allow localhost and cloudflare tunnels
 app.use(
   "/api/*",
   cors({
     origin: (origin) => {
-      if (!origin) return true; // Allow same-origin
-      if (origin.includes("localhost")) return true;
-      if (origin.includes("trycloudflare.com")) return true;
-      if (origin.includes("ngrok-free.app")) return true;
-      if (origin.includes("ngrok-free.dev")) return true;
-      if (origin.includes("ngrok.io")) return true;
-      if (origin.includes("up.railway.app")) return true;
-      return false;
+      if (!origin) return origin; // Allow same-origin
+      if (origin.includes("localhost")) return origin;
+      if (origin.includes("trycloudflare.com")) return origin;
+      if (origin.includes("ngrok-free.app")) return origin;
+      if (origin.includes("ngrok-free.dev")) return origin;
+      if (origin.includes("ngrok.io")) return origin;
+      if (origin.includes("up.railway.app")) return origin;
+      return null;
     },
     credentials: true,
   })

@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { signOut } from "../lib/auth";
-import { api, ChatSession, Message } from "../lib/api";
+import { api } from "../lib/api";
+import type { ChatSession, Message } from "../lib/api";
 import Sidebar from "../components/Sidebar";
 import ChatView from "../components/ChatView";
 import Settings from "./Settings";
@@ -24,7 +25,7 @@ export default function Chat() {
       const data = await api.getSessions();
       setSessions(data);
       if (data.length > 0 && !activeSessionId) {
-        setActiveSessionId(data[0].id);
+        setActiveSessionId(data[0]?.id || null);
       }
     } catch (error) {
       console.error("Failed to load sessions:", error);

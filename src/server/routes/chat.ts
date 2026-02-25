@@ -8,13 +8,14 @@ import {
 } from "../db";
 import { streamChat, callChat, deleteThread } from "../lib/you-client";
 import type { StreamEvent } from "../lib/you-client";
+import type { AppVariables } from "../types";
 
 const SAVE_INTERVAL_MS = 1000;
 
 // Active streaming sessions — allows server-side abort when user clicks "Stop"
 const activeStreams = new Map<string, AbortController>();
 
-const chat = new Hono();
+const chat = new Hono<{ Variables: AppVariables }>();
 
 // Stop generation endpoint
 chat.post("/stop", async (c) => {

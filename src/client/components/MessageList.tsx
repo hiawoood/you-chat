@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Message } from "../lib/api";
+import type { Message } from "../lib/api";
 
 const COLLAPSE_HEIGHT = 72;
 const COLLAPSE_LINE_COUNT = 3;
@@ -96,8 +96,9 @@ export default function MessageList({
                 // For assistant messages, find the preceding user message
                 const idx = items.indexOf(item);
                 for (let i = idx - 1; i >= 0; i--) {
-                  if (items[i].role === "user") {
-                    onRegenerate(items[i].id);
+                  const prevItem = items[i];
+                  if (prevItem?.role === "user") {
+                    onRegenerate(prevItem.id);
                     return;
                   }
                 }
