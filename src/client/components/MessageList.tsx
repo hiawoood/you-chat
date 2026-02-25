@@ -21,6 +21,7 @@ interface MessageListProps {
   collapsedIds?: Set<string>;
   suppressAutoScrollOnNextAppend?: boolean;
   onAutoScrollSuppressed?: () => void;
+  disableAutoScroll?: boolean;
 }
 
 function formatTime(ts: number): string {
@@ -49,6 +50,7 @@ export default function MessageList({
   collapsedIds = new Set(),
   suppressAutoScrollOnNextAppend = false,
   onAutoScrollSuppressed,
+  disableAutoScroll = false,
 }: MessageListProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const prevMessageLengthRef = useRef(messages.length);
@@ -72,14 +74,19 @@ export default function MessageList({
     const nextLength = messages.length;
     const isAppend = nextLength > prevLength;
 
-    if (suppressAutoScrollOnNextAppend && isAppend) {
+    if (!isAppend) {
+      prevMessageLengthRef.current = nextLength;
+      return;
+    }
+
+    if (suppressAutoScrollOnNextAppend || disableAutoScroll) {
       onAutoScrollSuppressed?.();
-    } else {
+    } else if (isAppend) {
       bottomRef.current?.scrollIntoView({ behavior: "smooth" });
     }
 
     prevMessageLengthRef.current = nextLength;
-  }, [messages.length, suppressAutoScrollOnNextAppend, onAutoScrollSuppressed]);
+  }, [messages.length, suppressAutoScrollOnNextAppend, disableAutoScroll, onAutoScrollSuppressed]);
 
   if (items.length === 0) {
     return (

@@ -272,6 +272,7 @@ export default function ChatView({
               collapsedIds={collapsedIds}
               suppressAutoScrollOnNextAppend={suppressMessageAutoScroll}
               onAutoScrollSuppressed={() => setSuppressMessageAutoScroll(false)}
+              disableAutoScroll={hasActiveStream}
             />
           </div>
         )}
