@@ -54,6 +54,12 @@ export default function ChatView({
   const [showScrollBtn, setShowScrollBtn] = useState(false);
   const [suppressMessageAutoScroll, setSuppressMessageAutoScroll] = useState(false);
 
+  const getLastWords = (content: string, count: number) => {
+    const words = content.trim().split(/\s+/).filter(Boolean);
+    if (words.length <= count) return words.join(" ");
+    return words.slice(-count).join(" ");
+  };
+
   useEffect(() => {
     const el = scrollContainerRef.current;
     if (!el) return;
@@ -147,6 +153,11 @@ export default function ChatView({
     pendingTempIdRef.current = tempId;
     onMessageSent(userMessage);
     await sendMessage(content);
+  };
+
+  const handleContinue = async (assistantMessage: string) => {
+    const snippet = getLastWords(assistantMessage, 20);
+    await handleSend(`continue responding starting from ${snippet}`);
   };
 
   const hasMessages = messages.length > 0;
@@ -268,11 +279,13 @@ export default function ChatView({
               onDeleteMessage={onDeleteMessage}
               onRegenerate={handleRegenerate}
               onFork={onFork}
+              onContinue={handleContinue}
               actionLoading={actionLoading}
               collapsedIds={collapsedIds}
               suppressAutoScrollOnNextAppend={suppressMessageAutoScroll}
               onAutoScrollSuppressed={() => setSuppressMessageAutoScroll(false)}
               disableAutoScroll={hasActiveStream}
+              disableQuickContinue={hasActiveStream}
             />
           </div>
         )}

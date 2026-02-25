@@ -17,11 +17,13 @@ interface MessageListProps {
   onDeleteMessage?: (messageId: string) => void;
   onRegenerate?: (messageId: string) => void;
   onFork?: (messageId: string) => void;
+  onContinue?: (messageContent: string) => void;
   actionLoading?: string | null;
   collapsedIds?: Set<string>;
   suppressAutoScrollOnNextAppend?: boolean;
   onAutoScrollSuppressed?: () => void;
   disableAutoScroll?: boolean;
+  disableQuickContinue?: boolean;
 }
 
 function formatTime(ts: number): string {
@@ -46,11 +48,13 @@ export default function MessageList({
   onDeleteMessage,
   onRegenerate,
   onFork,
+  onContinue,
   actionLoading,
   collapsedIds = new Set(),
   suppressAutoScrollOnNextAppend = false,
   onAutoScrollSuppressed,
   disableAutoScroll = false,
+  disableQuickContinue = false,
 }: MessageListProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const prevMessageLengthRef = useRef(messages.length);
@@ -106,6 +110,7 @@ export default function MessageList({
       {items.map((item) => {
         const isDeleting = actionLoading === `delete-msg-${item.id}`;
         const isActivelyStreaming = !!item.isStreaming || item.status === "streaming";
+        const isUserItem = item.role === "user";
         return (
           <MessageBubble
             key={item.id}
@@ -130,9 +135,11 @@ export default function MessageList({
               }
             } : undefined}
             onFork={onFork && !isActivelyStreaming ? () => onFork(item.id) : undefined}
+            onContinue={onContinue && !isActivelyStreaming && !isUserItem ? () => onContinue(item.content) : undefined}
             forceCollapsed={collapsedIds.has(item.id)}
             isSaving={actionLoading === `edit-msg-${item.id}`}
             isForking={actionLoading === `fork-${item.id}`}
+            disableContinue={disableQuickContinue}
           />
         );
       })}
@@ -192,16 +199,18 @@ function CopyButton({ text, label }: { text: string; label?: string }) {
   );
 }
 
-function IconButton({ onClick, title, children, className = "" }: {
+function IconButton({ onClick, title, children, className = "", disabled = false }: {
   onClick: (e: React.MouseEvent) => void;
   title: string;
   children: React.ReactNode;
   className?: string;
+  disabled?: boolean;
 }) {
   return (
     <button
       onClick={onClick}
-      className={`flex items-center gap-1 px-1.5 py-0.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 transition-colors rounded text-xs ${className}`}
+      className={`flex items-center gap-1 px-1.5 py-0.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 transition-colors rounded text-xs ${disabled ? "opacity-50 cursor-not-allowed" : ""} ${className}`}
+      disabled={disabled}
       title={title}
     >
       {children}
@@ -219,6 +228,8 @@ function MessageBubble({
   onDelete,
   onRegenerate,
   onFork,
+  onContinue,
+  disableContinue = false,
   forceCollapsed = false,
 }: {
   message: Message;
@@ -230,6 +241,8 @@ function MessageBubble({
   onDelete?: () => void;
   onRegenerate?: () => void;
   onFork?: () => void;
+  onContinue?: (messageContent: string) => void;
+  disableContinue?: boolean;
   forceCollapsed?: boolean;
 }) {
   const isUser = message.role === "user";
@@ -439,6 +452,22 @@ function MessageBubble({
               <IconButton onClick={(e) => { e.stopPropagation(); onFork(); }} title="Fork chat from here" className="hover:!text-purple-500">
                 <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
+                </svg>
+              </IconButton>
+            )}
+
+            {onContinue && !isUser && (
+              <IconButton
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onContinue(message.content);
+                }}
+                title="Continue"
+                disabled={disableContinue}
+                className="hover:!text-sky-500"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 5l7 7-7 7M5 12h14" />
                 </svg>
               </IconButton>
             )}
