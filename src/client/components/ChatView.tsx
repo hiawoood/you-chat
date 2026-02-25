@@ -243,7 +243,11 @@ export default function ChatView({
       </div>
 
       {/* Messages */}
-      <div ref={scrollContainerRef} className="flex-1 overflow-y-auto bg-gray-50 dark:bg-gray-950">
+      <div
+        ref={scrollContainerRef}
+        data-chat-scroll-container
+        className="flex-1 overflow-y-auto bg-gray-50 dark:bg-gray-950"
+      >
         {messagesLoading ? (
           <div className="flex items-center justify-center h-full">
             <div className="flex flex-col items-center gap-2">

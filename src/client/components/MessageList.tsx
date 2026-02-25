@@ -5,6 +5,9 @@ import type { Message } from "../lib/api";
 
 const COLLAPSE_HEIGHT = 72;
 const COLLAPSE_LINE_COUNT = 3;
+const EDIT_TEXTAREA_MOBILE_MAX_HEIGHT = 260;
+const EDIT_TEXTAREA_MAX_HEIGHT = 520;
+const MOBILE_EDIT_MEDIA_QUERY = "(max-width: 768px), (pointer: coarse)";
 
 interface MessageListProps {
   messages: Message[];
@@ -230,6 +233,29 @@ function MessageBubble({
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState("");
   const [confirmAction, setConfirmAction] = useState<"delete" | "regenerate" | null>(null);
+  const [isMobileEditMode, setIsMobileEditMode] = useState(false);
+
+  const resizeEditTextarea = (textarea: HTMLTextAreaElement) => {
+    textarea.style.height = "auto";
+    const maxHeight = isMobileEditMode ? EDIT_TEXTAREA_MOBILE_MAX_HEIGHT : EDIT_TEXTAREA_MAX_HEIGHT;
+    textarea.style.height = `${Math.min(textarea.scrollHeight, maxHeight)}px`;
+    textarea.style.overflowY = textarea.scrollHeight > maxHeight ? "auto" : "hidden";
+  };
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const mediaQuery = window.matchMedia(MOBILE_EDIT_MEDIA_QUERY);
+    const handleChange = () => setIsMobileEditMode(mediaQuery.matches);
+    handleChange();
+
+    if (mediaQuery.addEventListener) {
+      mediaQuery.addEventListener("change", handleChange);
+      return () => mediaQuery.removeEventListener("change", handleChange);
+    }
+
+    mediaQuery.addListener(handleChange);
+    return () => mediaQuery.removeListener(handleChange);
+  }, []);
 
   useEffect(() => {
     if (contentRef.current && !editing) {
@@ -245,9 +271,30 @@ function MessageBubble({
 
   useEffect(() => {
     if (editing && textareaRef.current) {
-      textareaRef.current.focus();
-      textareaRef.current.style.height = "auto";
-      textareaRef.current.style.height = textareaRef.current.scrollHeight + "px";
+      const textarea = textareaRef.current;
+      const scrollContainer = textarea.closest("[data-chat-scroll-container]") as HTMLElement | null;
+      const prevScrollTop = scrollContainer?.scrollTop;
+      const prevWindowY = window.scrollY;
+
+      try {
+        textarea.focus({ preventScroll: true });
+      } catch {
+        textarea.focus();
+      }
+      resizeEditTextarea(textarea);
+
+      if (scrollContainer) {
+        requestAnimationFrame(() => {
+          if (prevScrollTop !== undefined && prevScrollTop !== null) {
+            scrollContainer.scrollTop = prevScrollTop;
+          }
+        });
+        return;
+      }
+
+      requestAnimationFrame(() => {
+        window.scrollTo({ top: prevWindowY, behavior: "auto" });
+      });
     }
   }, [editing]);
 
@@ -287,8 +334,7 @@ function MessageBubble({
               value={editValue}
               onChange={(e) => {
                 setEditValue(e.target.value);
-                e.target.style.height = "auto";
-                e.target.style.height = e.target.scrollHeight + "px";
+                resizeEditTextarea(e.target);
               }}
               onKeyDown={handleEditKeyDown}
               className={`w-full text-sm resize-none rounded-md p-2 focus:outline-none focus:ring-1 focus:ring-blue-500 ${
