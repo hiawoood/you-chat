@@ -24,6 +24,7 @@ interface MessageListProps {
   onAutoScrollSuppressed?: () => void;
   disableAutoScroll?: boolean;
   disableQuickContinue?: boolean;
+  isNearBottom?: () => boolean;
 }
 
 function formatTime(ts: number): string {
@@ -55,6 +56,7 @@ export default function MessageList({
   onAutoScrollSuppressed,
   disableAutoScroll = false,
   disableQuickContinue = false,
+  isNearBottom,
 }: MessageListProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const prevMessageLengthRef = useRef(messages.length);
@@ -78,19 +80,27 @@ export default function MessageList({
     const nextLength = messages.length;
     const isAppend = nextLength > prevLength;
 
-    if (!isAppend) {
-      prevMessageLengthRef.current = nextLength;
-      return;
-    }
+    const shouldAutoScroll = (() => {
+      if (!isAppend) return false;
+      if (suppressAutoScrollOnNextAppend || disableAutoScroll) return false;
 
-    if (suppressAutoScrollOnNextAppend || disableAutoScroll) {
-      onAutoScrollSuppressed?.();
-    } else if (isAppend) {
+      // For the very first append into an empty list, let it auto-scroll like before.
+      if (prevLength === 0) return true;
+
+      // Otherwise only auto-scroll when the user is already near the bottom.
+      if (!isNearBottom) return true;
+
+      return isNearBottom();
+    })();
+
+    if (isAppend && shouldAutoScroll) {
       bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    } else if (isAppend) {
+      onAutoScrollSuppressed?.();
     }
 
     prevMessageLengthRef.current = nextLength;
-  }, [messages.length, suppressAutoScrollOnNextAppend, disableAutoScroll, onAutoScrollSuppressed]);
+  }, [messages.length, suppressAutoScrollOnNextAppend, disableAutoScroll, isNearBottom, onAutoScrollSuppressed]);
 
   if (items.length === 0) {
     return (

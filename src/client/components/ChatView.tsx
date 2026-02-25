@@ -6,6 +6,8 @@ import { useScrollDirection } from "../hooks/useScrollDirection";
 import MessageList from "./MessageList";
 import MessageInput from "./MessageInput";
 
+const SCROLL_TRIGGER_BUFFER_PX = 200;
+
 interface ChatViewProps {
   session: ChatSession;
   messages: Message[];
@@ -54,6 +56,12 @@ export default function ChatView({
   const [showScrollBtn, setShowScrollBtn] = useState(false);
   const [suppressMessageAutoScroll, setSuppressMessageAutoScroll] = useState(false);
 
+  const isNearBottom = useCallback(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return true;
+    return el.scrollHeight - el.clientHeight - el.scrollTop <= SCROLL_TRIGGER_BUFFER_PX;
+  }, []);
+
   const getLastWords = (content: string, count: number) => {
     const words = content.trim().split(/\s+/).filter(Boolean);
     if (words.length <= count) return words.join(" ");
@@ -65,7 +73,7 @@ export default function ChatView({
     if (!el) return;
     const handleScroll = () => {
       const distFromBottom = el.scrollHeight - el.clientHeight - el.scrollTop;
-      setShowScrollBtn(distFromBottom > 200);
+      setShowScrollBtn(distFromBottom > SCROLL_TRIGGER_BUFFER_PX);
     };
     el.addEventListener("scroll", handleScroll, { passive: true });
     return () => el.removeEventListener("scroll", handleScroll);
@@ -104,7 +112,7 @@ export default function ChatView({
     },
     onDone: (messageId) => {
       setThinkingStatus(null);
-      setSuppressMessageAutoScroll(true);
+      setSuppressMessageAutoScroll((prev) => prev || !isNearBottom());
       onMessageReceived({
         id: messageId,
         session_id: session.id,
@@ -285,6 +293,7 @@ export default function ChatView({
               suppressAutoScrollOnNextAppend={suppressMessageAutoScroll}
               onAutoScrollSuppressed={() => setSuppressMessageAutoScroll(false)}
               disableAutoScroll={hasActiveStream}
+              isNearBottom={isNearBottom}
               disableQuickContinue={hasActiveStream}
             />
           </div>
