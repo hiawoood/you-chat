@@ -52,6 +52,7 @@ export default function ChatView({
   const scrollDirection = useScrollDirection(scrollContainerRef);
   const hideHeader = scrollDirection === "down";
   const [showScrollBtn, setShowScrollBtn] = useState(false);
+  const [suppressMessageAutoScroll, setSuppressMessageAutoScroll] = useState(false);
 
   useEffect(() => {
     const el = scrollContainerRef.current;
@@ -97,6 +98,7 @@ export default function ChatView({
     },
     onDone: (messageId) => {
       setThinkingStatus(null);
+      setSuppressMessageAutoScroll(true);
       onMessageReceived({
         id: messageId,
         session_id: session.id,
@@ -264,6 +266,8 @@ export default function ChatView({
               onFork={onFork}
               actionLoading={actionLoading}
               collapsedIds={collapsedIds}
+              suppressAutoScrollOnNextAppend={suppressMessageAutoScroll}
+              onAutoScrollSuppressed={() => setSuppressMessageAutoScroll(false)}
             />
           </div>
         )}

@@ -16,6 +16,8 @@ interface MessageListProps {
   onFork?: (messageId: string) => void;
   actionLoading?: string | null;
   collapsedIds?: Set<string>;
+  suppressAutoScrollOnNextAppend?: boolean;
+  onAutoScrollSuppressed?: () => void;
 }
 
 function formatTime(ts: number): string {
@@ -42,8 +44,11 @@ export default function MessageList({
   onFork,
   actionLoading,
   collapsedIds = new Set(),
+  suppressAutoScrollOnNextAppend = false,
+  onAutoScrollSuppressed,
 }: MessageListProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
+  const prevMessageLengthRef = useRef(messages.length);
 
   const items: (Message & { isStreaming?: boolean })[] = [
     ...messages,
@@ -60,8 +65,18 @@ export default function MessageList({
   ];
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages.length]);
+    const prevLength = prevMessageLengthRef.current;
+    const nextLength = messages.length;
+    const isAppend = nextLength > prevLength;
+
+    if (suppressAutoScrollOnNextAppend && isAppend) {
+      onAutoScrollSuppressed?.();
+    } else {
+      bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
+
+    prevMessageLengthRef.current = nextLength;
+  }, [messages.length, suppressAutoScrollOnNextAppend, onAutoScrollSuppressed]);
 
   if (items.length === 0) {
     return (
