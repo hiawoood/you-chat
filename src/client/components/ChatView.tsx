@@ -283,10 +283,11 @@ export default function ChatView({
           {hasActiveStream ? (
             <button
               onClick={async () => {
-                await stopGeneration();
+                const stopRequest = onStopGeneration?.();
+                stopGeneration();
                 setStreamingContent("");
                 setThinkingStatus(null);
-                onStopGeneration?.();
+                await stopRequest;
               }}
               className="w-full h-9 flex items-center justify-center gap-2 rounded-md bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-900/40 transition-colors text-sm"
             >

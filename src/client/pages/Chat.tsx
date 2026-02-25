@@ -23,6 +23,10 @@ export default function Chat() {
   const activeSession = sessions.find((s) => s.id === activeSessionId);
   const isMobile = typeof window !== "undefined" && window.innerWidth < 1024;
 
+  const clearActiveStreamingMessages = useCallback(() => {
+    setMessages((prev) => prev.filter((m) => m.status !== "streaming"));
+  }, []);
+
   const loadSessions = useCallback(async () => {
     try {
       const data = await api.getSessions();
@@ -141,15 +145,16 @@ export default function Chat() {
   const stopActiveSessionGeneration = useCallback(async () => {
     if (!activeSessionId) return;
 
+    // Local-first stop for immediate UX; avoid refetching all messages.
+    clearActiveStreamingMessages();
+    stopPolling();
+
     try {
       await api.stopGeneration(activeSessionId);
     } catch (error) {
       console.error("Failed to stop generation:", error);
-    } finally {
-      stopPolling();
-      await loadMessages(activeSessionId);
     }
-  }, [activeSessionId, loadMessages, stopPolling]);
+  }, [activeSessionId, clearActiveStreamingMessages, stopPolling]);
 
   const stopThenRun = useCallback(
     async (action: () => Promise<void>) => {
