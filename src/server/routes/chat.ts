@@ -13,7 +13,50 @@ import type { AppVariables } from "../types";
 const SAVE_INTERVAL_MS = 1000;
 
 // Active streaming sessions — allows server-side abort when user clicks "Stop"
-const activeStreams = new Map<string, AbortController>();
+type SessionStreams = Set<AbortController>;
+const activeStreams = new Map<string, SessionStreams>();
+
+function getSessionStreams(sessionId: string): SessionStreams {
+  const existing = activeStreams.get(sessionId);
+  if (existing) return existing;
+
+  const created = new Set<AbortController>();
+  activeStreams.set(sessionId, created);
+  return created;
+}
+
+function registerStream(sessionId: string, controller: AbortController) {
+  getSessionStreams(sessionId).add(controller);
+}
+
+function unregisterStream(sessionId: string, controller: AbortController) {
+  const controllers = activeStreams.get(sessionId);
+  if (!controllers) return;
+
+  controllers.delete(controller);
+  if (controllers.size === 0) {
+    activeStreams.delete(sessionId);
+  }
+}
+
+function stopSessionStreams(sessionId: string): number {
+  const controllers = activeStreams.get(sessionId);
+  if (!controllers) return 0;
+
+  let stopped = 0;
+  for (const controller of controllers) {
+    if (controller.signal.aborted) continue;
+    try {
+      controller.abort();
+      stopped++;
+    } catch {
+      // ignore
+    }
+  }
+
+  activeStreams.delete(sessionId);
+  return stopped;
+}
 
 const chat = new Hono<{ Variables: AppVariables }>();
 
@@ -22,15 +65,15 @@ chat.post("/stop", async (c) => {
   const user = c.get("user");
   if (!user) return c.json({ error: "Unauthorized" }, 401);
 
-  const { sessionId } = await c.req.json();
+  const body = await c.req.json().catch(() => ({} as { sessionId?: string }));
+  const { sessionId } = body;
   if (!sessionId) return c.json({ error: "sessionId required" }, 400);
 
+  const session = getChatSession(sessionId, user.id);
+  if (!session) return c.json({ error: "Session not found" }, 404);
+
   // 1. Abort the You.com stream
-  const controller = activeStreams.get(sessionId);
-  if (controller) {
-    controller.abort();
-    activeStreams.delete(sessionId);
-  }
+  const stoppedControllers = stopSessionStreams(sessionId);
 
   // 2. Immediately delete any streaming messages from DB
   const deleted = deleteStreamingMessages(sessionId);
@@ -46,7 +89,9 @@ chat.post("/stop", async (c) => {
     updateSessionYouChatId(sessionId, "");
   }
 
-  console.log(`[stop] session=${sessionId} aborted, deleted ${deleted} msg(s), nuked You.com thread ${oldYouChatId || "none"}`);
+  console.log(
+    `[stop] session=${sessionId} abortedControllers=${stoppedControllers}, deleted ${deleted} msg(s), nuked You.com thread ${oldYouChatId || "none"}`,
+  );
 
   return c.json({ stopped: true });
 });
@@ -174,7 +219,7 @@ chat.post("/", async (c) => {
 
   // Register abort controller for this session (allows /stop to abort)
   const abortController = new AbortController();
-  activeStreams.set(sessionId, abortController);
+  registerStream(sessionId, abortController);
 
   return streamSSE(c, async (stream) => {
     try {
@@ -247,7 +292,7 @@ chat.post("/", async (c) => {
         // Client already gone
       }
     } finally {
-      activeStreams.delete(sessionId);
+      unregisterStream(sessionId, abortController);
     }
   });
 });
@@ -326,7 +371,7 @@ chat.post("/regenerate", async (c) => {
 
   // Register abort controller for this session
   const abortController = new AbortController();
-  activeStreams.set(sessionId, abortController);
+  registerStream(sessionId, abortController);
 
   return streamSSE(c, async (stream) => {
     try {
@@ -366,7 +411,7 @@ chat.post("/regenerate", async (c) => {
         await stream.writeSSE({ data: JSON.stringify({ error: errorMessage }) });
       } catch { /* client gone */ }
     } finally {
-      activeStreams.delete(sessionId);
+      unregisterStream(sessionId, abortController);
     }
   });
 });

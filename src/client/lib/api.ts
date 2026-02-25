@@ -59,6 +59,8 @@ export const api = {
     fetchAPI(`/sessions/${sessionId}/messages/${messageId}`, { method: "PATCH", body: JSON.stringify({ content }) }),
   getMessage: (sessionId: string, messageId: string): Promise<Message & { status?: string }> =>
     fetchAPI(`/sessions/${sessionId}/messages/${messageId}`),
+  stopGeneration: (sessionId: string): Promise<{ stopped: boolean }> =>
+    fetchAPI("/chat/stop", { method: "POST", body: JSON.stringify({ sessionId }) }),
   deleteMessage: (sessionId: string, messageId: string): Promise<void> =>
     fetchAPI(`/sessions/${sessionId}/messages/${messageId}`, { method: "DELETE" }),
   forkSession: (sessionId: string, messageId: string): Promise<ChatSession> =>

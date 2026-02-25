@@ -15,7 +15,10 @@ export default function Chat() {
   const [loading, setLoading] = useState(true);
   const [messagesLoading, setMessagesLoading] = useState(false);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollingSessionRef = useRef<string | null>(null);
+  const pollingMessageRef = useRef<string | null>(null);
 
   const activeSession = sessions.find((s) => s.id === activeSessionId);
   const isMobile = typeof window !== "undefined" && window.innerWidth < 1024;
@@ -50,9 +53,22 @@ export default function Chat() {
     loadSessions();
   }, [loadSessions]);
 
+  const stopPolling = useCallback(() => {
+    if (pollingRef.current) {
+      clearInterval(pollingRef.current);
+      pollingRef.current = null;
+    }
+
+    pollingSessionRef.current = null;
+    pollingMessageRef.current = null;
+  }, []);
+
   // Poll for streaming messages that were interrupted (e.g. page refresh during stream)
   const startPolling = useCallback((sessionId: string, messageId: string) => {
-    if (pollingRef.current) clearInterval(pollingRef.current);
+    stopPolling();
+
+    pollingSessionRef.current = sessionId;
+    pollingMessageRef.current = messageId;
 
     let lastContent = "";
     let staleCount = 0;
@@ -60,22 +76,22 @@ export default function Chat() {
 
     pollingRef.current = setInterval(async () => {
       try {
-        const msg = await api.getMessage(sessionId, messageId) as any;
+        const msg = await api.getMessage(sessionId, messageId) as Message;
         setMessages((prev) =>
           prev.map((m) => (m.id === messageId ? { ...m, content: msg.content, status: msg.status } : m))
         );
-        if (msg.status === "complete") {
-          if (pollingRef.current) clearInterval(pollingRef.current);
-          pollingRef.current = null;
+
+        if (msg.status !== "streaming") {
+          stopPolling();
           return;
         }
+
         // Detect stale streaming — if content hasn't changed, increment counter
         if (msg.content === lastContent) {
           staleCount++;
           if (staleCount >= MAX_STALE) {
             console.warn("[polling] Message stuck in streaming state, giving up");
-            if (pollingRef.current) clearInterval(pollingRef.current);
-            pollingRef.current = null;
+            stopPolling();
             // Update message to show as complete locally
             setMessages((prev) =>
               prev.map((m) => (m.id === messageId ? { ...m, status: "complete" } : m))
@@ -86,32 +102,66 @@ export default function Chat() {
           staleCount = 0;
         }
       } catch {
-        if (pollingRef.current) clearInterval(pollingRef.current);
-        pollingRef.current = null;
+        stopPolling();
       }
     }, 1500);
-  }, []);
+  }, [stopPolling]);
 
   useEffect(() => {
     if (activeSessionId) {
       loadMessages(activeSessionId);
     } else {
       setMessages([]);
+      stopPolling();
     }
+
     // Cleanup polling on session change
     return () => {
-      if (pollingRef.current) { clearInterval(pollingRef.current); pollingRef.current = null; }
+      stopPolling();
     };
-  }, [activeSessionId, loadMessages]);
+  }, [activeSessionId, loadMessages, stopPolling]);
 
-  // Check for streaming messages after load
+  // Check for streaming messages after load / message updates
   useEffect(() => {
-    if (!activeSessionId || messages.length === 0) return;
-    const streamingMsg = messages.find((m: any) => m.status === "streaming");
-    if (streamingMsg) {
+    if (!activeSessionId || messagesLoading) return;
+
+    const streamingMsg = messages.find((m: Message) => m.status === "streaming");
+    if (!streamingMsg) {
+      if (pollingSessionRef.current === activeSessionId) {
+        stopPolling();
+      }
+      return;
+    }
+
+    if (pollingMessageRef.current !== streamingMsg.id) {
       startPolling(activeSessionId, streamingMsg.id);
     }
-  }, [activeSessionId, messagesLoading, startPolling]); // only when loading finishes
+  }, [activeSessionId, messagesLoading, messages, startPolling, stopPolling]);
+
+  const stopActiveSessionGeneration = useCallback(async () => {
+    if (!activeSessionId) return;
+
+    try {
+      await api.stopGeneration(activeSessionId);
+    } catch (error) {
+      console.error("Failed to stop generation:", error);
+    } finally {
+      stopPolling();
+      await loadMessages(activeSessionId);
+    }
+  }, [activeSessionId, loadMessages, stopPolling]);
+
+  const stopThenRun = useCallback(
+    async (action: () => Promise<void>) => {
+      if (activeSessionId) {
+        await stopActiveSessionGeneration();
+      }
+      await action();
+    },
+    [activeSessionId, stopActiveSessionGeneration],
+  );
+
+  const hasInFlightStream = messages.some((message) => message.status === "streaming");
 
   const handleSelectSession = (id: string) => {
     setActiveSessionId(id);
@@ -163,9 +213,7 @@ export default function Chat() {
   };
 
   const handleUpdateMessageId = (tempId: string, realId: string) => {
-    setMessages((prev) =>
-      prev.map((m) => (m.id === tempId ? { ...m, id: realId } : m))
-    );
+    setMessages((prev) => prev.map((m) => (m.id === tempId ? { ...m, id: realId } : m)));
   };
 
   const handleMessageReceived = (assistantMessage: Message) => {
@@ -174,33 +222,35 @@ export default function Chat() {
   };
 
   const handleEditMessage = async (messageId: string, content: string) => {
-    if (!activeSessionId) return;
-    setActionLoading(`edit-msg-${messageId}`);
-    try {
-      const updated = await api.editMessage(activeSessionId, messageId, content);
-      setMessages((prev) =>
-        prev.map((m) => (m.id === messageId ? { ...m, content: updated.content } : m))
-      );
-    } catch (error) {
-      console.error("Failed to edit message:", error);
-    } finally {
-      setActionLoading(null);
-    }
+    await stopThenRun(async () => {
+      if (!activeSessionId) return;
+      setActionLoading(`edit-msg-${messageId}`);
+      try {
+        const updated = await api.editMessage(activeSessionId, messageId, content);
+        setMessages((prev) => prev.map((m) => (m.id === messageId ? { ...m, content: updated.content } : m)));
+      } catch (error) {
+        console.error("Failed to edit message:", error);
+      } finally {
+        setActionLoading(null);
+      }
+    });
   };
 
   const handleFork = async (messageId: string) => {
-    if (!activeSessionId) return;
-    setActionLoading(`fork-${messageId}`);
-    try {
-      const newSession = await api.forkSession(activeSessionId, messageId);
-      setSessions((prev) => [newSession, ...prev]);
-      setActiveSessionId(newSession.id);
-      if (isMobile) setSidebarOpen(false);
-    } catch (error) {
-      console.error("Failed to fork session:", error);
-    } finally {
-      setActionLoading(null);
-    }
+    await stopThenRun(async () => {
+      if (!activeSessionId) return;
+      setActionLoading(`fork-${messageId}`);
+      try {
+        const newSession = await api.forkSession(activeSessionId, messageId);
+        setSessions((prev) => [newSession, ...prev]);
+        setActiveSessionId(newSession.id);
+        if (isMobile) setSidebarOpen(false);
+      } catch (error) {
+        console.error("Failed to fork session:", error);
+      } finally {
+        setActionLoading(null);
+      }
+    });
   };
 
   const handleTruncateAfter = (messageId: string) => {
@@ -211,16 +261,18 @@ export default function Chat() {
   };
 
   const handleDeleteMessage = async (messageId: string) => {
-    if (!activeSessionId) return;
-    setActionLoading(`delete-msg-${messageId}`);
-    try {
-      await api.deleteMessage(activeSessionId, messageId);
-      setMessages((prev) => prev.filter((m) => m.id !== messageId));
-    } catch (error) {
-      console.error("Failed to delete message:", error);
-    } finally {
-      setActionLoading(null);
-    }
+    await stopThenRun(async () => {
+      if (!activeSessionId) return;
+      setActionLoading(`delete-msg-${messageId}`);
+      try {
+        await api.deleteMessage(activeSessionId, messageId);
+        setMessages((prev) => prev.filter((m) => m.id !== messageId));
+      } catch (error) {
+        console.error("Failed to delete message:", error);
+      } finally {
+        setActionLoading(null);
+      }
+    });
   };
 
   const handleSignOut = async () => {
@@ -288,7 +340,9 @@ export default function Chat() {
             onDeleteMessage={handleDeleteMessage}
             onTruncateAfter={handleTruncateAfter}
             onFork={handleFork}
-            onStopGeneration={() => { if (activeSessionId) loadMessages(activeSessionId); }}
+            onBeforeRegenerate={stopThenRun}
+            onStopGeneration={stopActiveSessionGeneration}
+            hasInFlightStream={hasInFlightStream}
             actionLoading={actionLoading}
           />
         ) : (

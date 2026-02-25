@@ -20,6 +20,8 @@ interface ChatViewProps {
   onTruncateAfter?: (messageId: string) => void;
   onFork?: (messageId: string) => void;
   onStopGeneration?: () => void;
+  onBeforeRegenerate?: (action: () => Promise<void>) => Promise<void>;
+  hasInFlightStream?: boolean;
   actionLoading?: string | null;
 }
 
@@ -37,6 +39,8 @@ export default function ChatView({
   onTruncateAfter,
   onFork,
   onStopGeneration,
+  onBeforeRegenerate,
+  hasInFlightStream = false,
   actionLoading,
 }: ChatViewProps) {
   const [streamingContent, setStreamingContent] = useState("");
@@ -116,9 +120,17 @@ export default function ChatView({
 
   const handleRegenerate = async (messageId: string) => {
     // Remove messages after this one from UI
-    onTruncateAfter?.(messageId);
-    // Stream a new response
-    await regenerate(messageId);
+    const runRegeneration = async () => {
+      onTruncateAfter?.(messageId);
+      await regenerate(messageId);
+    };
+
+    if (onBeforeRegenerate) {
+      await onBeforeRegenerate(runRegeneration);
+      return;
+    }
+
+    await runRegeneration();
   };
 
   const handleSend = async (content: string) => {
@@ -136,6 +148,7 @@ export default function ChatView({
   };
 
   const hasMessages = messages.length > 0;
+  const hasActiveStream = isStreaming || hasInFlightStream;
 
   return (
     <div className="flex flex-col h-full bg-white dark:bg-gray-900">
@@ -197,10 +210,10 @@ export default function ChatView({
 
         <select
           value={session.agent}
-          onChange={(e) => handleAgentChange(e.target.value)}
-          disabled={isStreaming}
-          className="text-sm px-2 py-1 bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-md text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-gray-400 max-w-[120px] sm:max-w-none"
-        >
+            onChange={(e) => handleAgentChange(e.target.value)}
+            disabled={hasActiveStream}
+            className="text-sm px-2 py-1 bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-md text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-gray-400 max-w-[120px] sm:max-w-none"
+          >
           {agents.filter(a => a.type === "agent").length > 0 && (
             <optgroup label="Custom Agents">
               {agents.filter(a => a.type === "agent").map((agent) => (
@@ -259,9 +272,14 @@ export default function ChatView({
       {/* Input */}
       <div className="min-h-[3.5rem] flex items-end border-t border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 flex-shrink-0 py-2">
         <div className="max-w-3xl mx-auto w-full px-4">
-          {isStreaming ? (
+          {hasActiveStream ? (
             <button
-              onClick={async () => { await stopGeneration(); setStreamingContent(""); setThinkingStatus(null); onStopGeneration?.(); }}
+              onClick={async () => {
+                await stopGeneration();
+                setStreamingContent("");
+                setThinkingStatus(null);
+                onStopGeneration?.();
+              }}
               className="w-full h-9 flex items-center justify-center gap-2 rounded-md bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-900/40 transition-colors text-sm"
             >
               <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
@@ -270,7 +288,7 @@ export default function ChatView({
               Stop generating
             </button>
           ) : (
-            <MessageInput onSend={handleSend} disabled={isStreaming} />
+            <MessageInput onSend={handleSend} disabled={hasActiveStream} />
           )}
         </div>
       </div>
