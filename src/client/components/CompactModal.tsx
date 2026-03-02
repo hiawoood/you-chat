@@ -37,11 +37,11 @@ function ComparisonPanel({
   markdownClass: string;
 }) {
   return (
-    <section className="border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800">
-      <div className="px-3 py-2 border-b border-gray-200 dark:border-gray-700 text-xs font-semibold text-gray-600 dark:text-gray-300">{title}</div>
-      <div className="p-3 h-[180px] overflow-y-auto">
+    <section className="border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100">
+      <div className="px-3 py-2 border-b border-gray-200 dark:border-gray-700 text-xs font-semibold text-gray-700 dark:text-gray-200">{title}</div>
+      <div className="p-3 h-[180px] overflow-y-auto bg-gray-50/60 dark:bg-gray-900/40">
         {loading ? (
-          <div className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+          <div className="flex items-center gap-2 text-xs text-gray-600 dark:text-gray-300">
             <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
               <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
               <path className="opacity-75" fill="currentColor" d="M12 2a10 10 0 018 4.5A10 10 0 0112 22v-2a8 8 0 000-16v2A6 6 0 0118 12a6 6 0 01-6 6 0 01-6-6 6 6 0 013.12-5.1V7h-2v3h3V8.8A8 8 0 0012 20a8 8 0 008-8z" />
@@ -49,9 +49,9 @@ function ComparisonPanel({
             Streaming...
           </div>
         ) : isEmpty ? (
-          <p className="text-xs text-gray-500 dark:text-gray-400">No result yet.</p>
+          <p className="text-xs text-gray-600 dark:text-gray-300">No result yet.</p>
         ) : (
-          <div className={`markdown-content text-sm ${markdownClass}`}>
+          <div className={`markdown-content text-sm text-gray-900 dark:text-gray-100 ${markdownClass}`}>
             <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
           </div>
         )}
@@ -188,9 +188,9 @@ export default function CompactModal({
             </section>
 
             <section>
-              <label className="text-xs font-semibold text-gray-600 dark:text-gray-300 block mb-1">Original message (read-only)</label>
+              <label className="text-xs font-semibold text-gray-700 dark:text-gray-200 block mb-1">Original message (read-only)</label>
               <div className="rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 p-2 h-[186px] overflow-y-auto">
-                <div className="text-sm markdown-content">
+                <div className="text-sm markdown-content text-gray-900 dark:text-gray-100">
                   <ReactMarkdown remarkPlugins={[remarkGfm]}>{sourceMessage.content}</ReactMarkdown>
                 </div>
               </div>
