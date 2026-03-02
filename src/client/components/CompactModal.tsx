@@ -3,6 +3,24 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Agent, Message } from "../lib/api";
 
+function countWords(content: string): number {
+  const trimmed = content.trim();
+
+  if (!trimmed) {
+    return 0;
+  }
+
+  return trimmed.split(/\s+/).filter(Boolean).length;
+}
+
+function clampPercentage(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+
+  return Math.max(0, Math.min(100, value));
+}
+
 export const DEFAULT_COMPACT_PROMPT =
   "Rewrite the message below to be more concise and clearer while preserving its meaning and tone. Return only the revised message.";
 
@@ -76,6 +94,7 @@ export default function CompactModal({
   const [generatedContent, setGeneratedContent] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState("");
+  const sourceContent = sourceMessage?.content ?? "";
 
   useEffect(() => {
     if (isOpen) {
@@ -89,6 +108,20 @@ export default function CompactModal({
 
   const hasResult = generatedContent.trim().length > 0;
   const isGeneratingAny = isBusy || isGenerating;
+
+  const beforeWordCount = useMemo(() => countWords(sourceContent), [sourceContent]);
+  const afterWordCount = useMemo(
+    () => (hasResult ? countWords(generatedContent) : 0),
+    [generatedContent, hasResult],
+  );
+  const reductionPercent = useMemo(() => {
+    if (!hasResult || beforeWordCount === 0) {
+      return 0;
+    }
+
+    const rawReduction = ((beforeWordCount - afterWordCount) / beforeWordCount) * 100;
+    return clampPercentage(rawReduction);
+  }, [beforeWordCount, afterWordCount, hasResult]);
 
   const modelOptions = useMemo(
     () => ({
@@ -197,11 +230,27 @@ export default function CompactModal({
             </section>
           </div>
 
-          <section>
-            <label className="text-xs font-semibold text-gray-600 dark:text-gray-300 block mb-2">Before / After</label>
-            <div className="grid gap-3 md:grid-cols-2">
-              <ComparisonPanel
-                title="Before"
+            <section>
+              <label className="text-xs font-semibold text-gray-600 dark:text-gray-300 block mb-2">Before / After</label>
+              <div className="mb-3 rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-3 text-xs text-gray-700 dark:text-gray-200">
+                <div className="grid gap-2 sm:grid-cols-3">
+                  <div>
+                    <p className="text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400">Before words</p>
+                    <p className="mt-0.5 text-sm font-semibold text-gray-900 dark:text-white">{beforeWordCount}</p>
+                  </div>
+                  <div>
+                    <p className="text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400">After words</p>
+                    <p className="mt-0.5 text-sm font-semibold text-gray-900 dark:text-white">{afterWordCount}</p>
+                  </div>
+                  <div>
+                    <p className="text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400">Reduction</p>
+                    <p className="mt-0.5 text-sm font-semibold text-emerald-600 dark:text-emerald-400">{reductionPercent.toFixed(1)}%</p>
+                  </div>
+                </div>
+              </div>
+              <div className="grid gap-3 md:grid-cols-2">
+                <ComparisonPanel
+                  title="Before"
                 content={sourceMessage.content}
                 loading={false}
                 isEmpty={false}
