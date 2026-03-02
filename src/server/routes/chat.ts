@@ -369,6 +369,7 @@ chat.post("/compact", async (c) => {
   const selectedModel = typeof agentOrModel === "string" && agentOrModel.trim().length > 0
     ? agentOrModel
     : session.agent;
+  const compactChatId = crypto.randomUUID();
 
   const abortController = new AbortController();
   registerStream(sessionId, abortController);
@@ -380,7 +381,7 @@ chat.post("/compact", async (c) => {
         await streamToSSE(
           {
             query: compactPrompt,
-            chatId: crypto.randomUUID(),
+            chatId: compactChatId,
             chatHistory: [],
             agentOrModel: selectedModel,
             dsCookie: creds.ds_cookie,
@@ -406,6 +407,12 @@ chat.post("/compact", async (c) => {
       }
     } finally {
       unregisterStream(sessionId, abortController);
+      try {
+        await deleteThread(compactChatId, creds.ds_cookie, creds.dsr_cookie, creds.uuid_guest);
+        console.log(`[compact] Cleaned up You.com thread ${compactChatId}`);
+      } catch (cleanupError) {
+        console.error(`[compact] Failed to cleanup You.com thread ${compactChatId}:`, cleanupError);
+      }
     }
   });
 });
