@@ -15,6 +15,7 @@ const DEFAULT_COMPACT_PROMPT =
   "Compact this text aggressively: reduce word count by at least 50%. " +
   "Do NOT lose any fact, event, number, name, date, or anything substantive. " +
   "Remove only fluff and things that can be easily inferred. " +
+  "Avoid repeating yourself: if a fact or event is already mentioned, do not mention it again. " +
   "It is okay to use incomplete sentences, shorthand, and imperfect/broken grammar if needed to keep all substance while making it much shorter. " +
   "Return only the revised text.";
 
