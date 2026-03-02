@@ -5,6 +5,7 @@ import { useChat } from "../hooks/useChat";
 import { useScrollDirection } from "../hooks/useScrollDirection";
 import MessageList from "./MessageList";
 import MessageInput from "./MessageInput";
+import CompactModal from "./CompactModal";
 
 const SCROLL_TRIGGER_BUFFER_PX = 200;
 
@@ -17,7 +18,7 @@ interface ChatViewProps {
   onUpdateMessageId: (tempId: string, realId: string) => void;
   onUpdateSession: (id: string, updates: { title?: string; agent?: string }) => void;
   onToggleSidebar?: () => void;
-  onEditMessage?: (messageId: string, content: string) => void;
+  onEditMessage?: (messageId: string, content: string) => Promise<void>;
   onDeleteMessage?: (messageId: string) => void;
   onTruncateAfter?: (messageId: string) => void;
   onFork?: (messageId: string) => void;
@@ -48,6 +49,7 @@ export default function ChatView({
   const [streamingContent, setStreamingContent] = useState("");
   const [agents, setAgents] = useState<Agent[]>([]);
   const [collapsedIds, setCollapsedIds] = useState<Set<string>>(new Set());
+  const [compactTarget, setCompactTarget] = useState<Message | null>(null);
   const streamingContentRef = useRef("");
   const pendingTempIdRef = useRef<string | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -94,7 +96,7 @@ export default function ChatView({
 
   const [thinkingStatus, setThinkingStatus] = useState<string | null>(null);
 
-  const { sendMessage, regenerate, stopGeneration, isStreaming } = useChat({
+  const { sendMessage, regenerate, compactMessage, stopGeneration, isStreaming, isCompacting } = useChat({
     sessionId: session.id,
     onUserMessageId: (realId) => {
       if (pendingTempIdRef.current) {
@@ -168,97 +170,133 @@ export default function ChatView({
     await handleSend(`continue responding starting from ${snippet}`);
   };
 
+  const handleOpenCompact = (messageId: string) => {
+    const target = messages.find((message) => message.id === messageId);
+    if (!target) return;
+
+    setCompactTarget(target);
+  };
+
+  const handleCompactGenerate = async ({
+    messageId,
+    prompt,
+    agentOrModel,
+    onDelta,
+  }: {
+    messageId: string;
+    prompt: string;
+    agentOrModel: string;
+    onDelta?: (content: string) => void;
+  }): Promise<string> => {
+    return compactMessage({
+      messageId,
+      prompt,
+      agentOrModel,
+      onMessage: onDelta,
+    });
+  };
+
+  const handleCompactCommit = async (content: string) => {
+    if (!compactTarget || !onEditMessage) return;
+    await onEditMessage(compactTarget.id, content);
+    closeCompact();
+  };
+
+  const closeCompact = () => {
+    setCompactTarget(null);
+  };
+
   const hasMessages = messages.length > 0;
-  const hasActiveStream = isStreaming || hasInFlightStream;
+  const hasActiveStream = isStreaming || isCompacting || hasInFlightStream;
 
   return (
     <div className="flex flex-col h-full bg-white dark:bg-gray-900">
       {/* Header wrapper - collapses on mobile scroll-down */}
       <div className={`overflow-hidden transition-all duration-300 ease-in-out flex-shrink-0 lg:!max-h-12 ${hideHeader ? "max-h-0" : "max-h-12"}`}>
-      <div className="h-12 flex items-center px-3 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 gap-2">
-        {onToggleSidebar && (
-          <button
-            onClick={onToggleSidebar}
-            className="p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-md text-gray-700 dark:text-gray-200"
-          >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
-            </svg>
-          </button>
-        )}
-        <h2 className="font-semibold text-sm truncate flex-1 min-w-0 text-gray-900 dark:text-white">{session.title}</h2>
-
-        <div className="flex items-center gap-1 flex-shrink-0">
-        {/* Scroll to bottom */}
-        {showScrollBtn && (
-          <button
-            onClick={scrollToBottom}
-            className="p-1.5 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-md text-gray-500 dark:text-gray-400"
-            title="Scroll to bottom"
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 14l-7 7m0 0l-7-7m7 7V3" />
-            </svg>
-          </button>
-        )}
-
-        {/* Collapse/Expand All toggle */}
-        {hasMessages && (
-          <button
-            onClick={() => {
-              if (collapsedIds.size > 0) {
-                // Expand all
-                setCollapsedIds(new Set());
-              } else {
-                // Collapse all current messages
-                setCollapsedIds(new Set(messages.map((m) => m.id)));
-              }
-            }}
-            className="p-1.5 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-md text-gray-500 dark:text-gray-400 text-xs flex items-center gap-1"
-            title={collapsedIds.size > 0 ? "Expand all" : "Collapse all"}
-          >
-            {collapsedIds.size > 0 ? (
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
+        <div className="h-12 flex items-center px-3 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 gap-2">
+          {onToggleSidebar && (
+            <button
+              onClick={onToggleSidebar}
+              className="p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-md text-gray-700 dark:text-gray-200"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
               </svg>
-            ) : (
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 9V4.5M9 9H4.5M9 9L3.5 3.5M15 9h4.5M15 9V4.5M15 9l5.5-5.5M9 15v4.5M9 15H4.5M9 15l-5.5 5.5M15 15h4.5M15 15v4.5m0-4.5l5.5 5.5" />
-              </svg>
+            </button>
+          )}
+          <h2 className="font-semibold text-sm truncate flex-1 min-w-0 text-gray-900 dark:text-white">{session.title}</h2>
+
+          <div className="flex items-center gap-1 flex-shrink-0">
+            {/* Scroll to bottom */}
+            {showScrollBtn && (
+              <button
+                onClick={scrollToBottom}
+                className="p-1.5 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-md text-gray-500 dark:text-gray-400"
+                title="Scroll to bottom"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 14l-7 7m0 0l-7-7m7 7V3" />
+                </svg>
+              </button>
             )}
-          </button>
-        )}
 
-        <select
-          value={session.agent}
-            onChange={(e) => handleAgentChange(e.target.value)}
-            disabled={hasActiveStream}
-            className="text-sm px-2 py-1 bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-md text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-gray-400 max-w-[120px] sm:max-w-none"
-          >
-          {agents.filter(a => a.type === "agent").length > 0 && (
-            <optgroup label="Custom Agents">
-              {agents.filter(a => a.type === "agent").map((agent) => (
-                <option key={agent.id} value={agent.id}>
-                  {agent.name}
-                </option>
-              ))}
-            </optgroup>
-          )}
-          {agents.filter(a => a.type === "model").length > 0 && (
-            <optgroup label="Models">
-              {agents.filter(a => a.type === "model").map((agent) => (
-                <option key={agent.id} value={agent.id}>
-                  {agent.name}
-                </option>
-              ))}
-            </optgroup>
-          )}
-          {agents.length === 0 && (
-            <option value={session.agent}>{session.agent}</option>
-          )}
-        </select>
+            {/* Collapse/Expand All toggle */}
+            {hasMessages && (
+              <button
+                onClick={() => {
+                  if (collapsedIds.size > 0) {
+                    // Expand all
+                    setCollapsedIds(new Set());
+                  } else {
+                    // Collapse all current messages
+                    setCollapsedIds(new Set(messages.map((m) => m.id)));
+                  }
+                }}
+                className="p-1.5 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-md text-gray-500 dark:text-gray-400 text-xs flex items-center gap-1"
+                title={collapsedIds.size > 0 ? "Expand all" : "Collapse all"}
+              >
+                {collapsedIds.size > 0 ? (
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
+                  </svg>
+                ) : (
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 9V4.5M9 9H4.5M9 9l-5.5-5.5M15 9h4.5M15 9V4.5M15 9l5.5-5.5M9 15v4.5M9 15H4.5M9 15l-5.5 5.5M15 15h4.5M15 15v4.5m0-4.5l5.5 5.5" />
+                  </svg>
+                )}
+              </button>
+            )}
+
+            <select
+              value={session.agent}
+              onChange={(e) => handleAgentChange(e.target.value)}
+              disabled={hasActiveStream}
+              className="text-sm px-2 py-1 bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-md text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-gray-400 max-w-[120px] sm:max-w-none"
+            >
+              {agents.filter((a) => a.type === "agent").length > 0 && (
+                <optgroup label="Custom Agents">
+                  {agents.filter((a) => a.type === "agent").map((agent) => (
+                    <option key={agent.id} value={agent.id}>
+                      {agent.name}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+              {agents.filter((a) => a.type === "model").length > 0 && (
+                <optgroup label="Models">
+                  {agents.filter((a) => a.type === "model").map((agent) => (
+                    <option key={agent.id} value={agent.id}>
+                      {agent.name}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+              {agents.length === 0 && (
+                <option value={session.agent}>{session.agent}</option>
+              )}
+            </select>
+          </div>
         </div>
-      </div>
       </div>
 
       {/* Messages */}
@@ -288,6 +326,7 @@ export default function ChatView({
               onRegenerate={handleRegenerate}
               onFork={onFork}
               onContinue={handleContinue}
+              onCompact={handleOpenCompact}
               actionLoading={actionLoading}
               collapsedIds={collapsedIds}
               suppressAutoScrollOnNextAppend={suppressMessageAutoScroll}
@@ -295,10 +334,25 @@ export default function ChatView({
               disableAutoScroll={hasActiveStream}
               isNearBottom={isNearBottom}
               disableQuickContinue={hasActiveStream}
+              compactBusy={isCompacting}
             />
           </div>
         )}
       </div>
+
+      {compactTarget && (
+        <CompactModal
+          isOpen
+          sourceMessage={compactTarget}
+          sessionAgent={session.agent}
+          agents={agents}
+          isBusy={isCompacting}
+          onClose={closeCompact}
+          onGenerate={handleCompactGenerate}
+          onCommit={handleCompactCommit}
+          onStop={() => { void stopGeneration(); }}
+        />
+      )}
 
       {/* Input */}
       <div className="min-h-[3.5rem] flex items-end border-t border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 flex-shrink-0 py-2">

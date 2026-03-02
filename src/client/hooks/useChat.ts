@@ -10,6 +10,15 @@ interface UseChatOptions {
   onError?: (error: string) => void;
 }
 
+interface CompactOptions {
+  messageId: string;
+  prompt: string;
+  agentOrModel: string;
+  onMessage?: (content: string) => void;
+  onDone?: (content: string) => void;
+  onError?: (error: string) => void;
+}
+
 // Shared SSE stream reader
 async function readStream(
   response: Response,
@@ -128,6 +137,7 @@ async function pollUntilDone(
 
 export function useChat({ sessionId, onMessage, onUserMessageId, onDone, onTitleGenerated, onThinking, onError }: UseChatOptions) {
   const [isStreaming, setIsStreaming] = useState(false);
+  const [isCompacting, setIsCompacting] = useState(false);
   const [thinkingStatus, setThinkingStatus] = useState<string | null>(null);
   const [streamedContent, setStreamedContent] = useState("");
   const abortRef = useRef<AbortController | null>(null);
@@ -316,5 +326,94 @@ export function useChat({ sessionId, onMessage, onUserMessageId, onDone, onTitle
     [sessionId, onMessage, onDone, onThinking, onError]
   );
 
-  return { sendMessage, regenerate, stopGeneration, isStreaming, thinkingStatus, streamedContent };
+  const compactMessage = useCallback(
+    async ({
+      messageId,
+      prompt,
+      agentOrModel,
+      onMessage: onCompactMessage,
+      onDone: onCompactDone,
+    }: CompactOptions) => {
+      const controller = new AbortController();
+      abortRef.current = controller;
+      setIsCompacting(true);
+      let fullContent = "";
+
+      return (async () => {
+        try {
+          const response = await fetch("/api/chat/compact", {
+            method: "POST",
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              sessionId,
+              messageId,
+              prompt,
+              agentOrModel,
+            }),
+            signal: controller.signal,
+          });
+
+          if (!response.ok) throw new Error("Failed to compact message");
+
+          let compactCompleted = false;
+
+          await readStream(
+            response,
+            {
+              onThinking: (status) => {
+                setThinkingStatus(status);
+              },
+              onDelta: (delta) => {
+                setThinkingStatus(null);
+                fullContent += delta;
+                onCompactMessage?.(fullContent);
+              },
+              onDone: () => {
+                compactCompleted = true;
+                setThinkingStatus(null);
+                onCompactDone?.(fullContent);
+              },
+              onError: (error) => {
+                compactCompleted = true;
+                onError?.(error);
+              },
+            },
+            controller.signal,
+          );
+
+          if (!compactCompleted && !controller.signal.aborted) {
+            // No DB-backed fallback for compact; stream was interrupted mid-flight
+            // and we already have the best-known partial content.
+            onCompactDone?.(fullContent);
+          }
+
+          return fullContent;
+        } catch (error) {
+          if (controller.signal.aborted) return fullContent;
+          const message = error instanceof Error ? error.message : "Unknown error";
+          onError?.(message);
+          return fullContent;
+        } finally {
+          setIsCompacting(false);
+          setThinkingStatus(null);
+          if (abortRef.current === controller) {
+            abortRef.current = null;
+          }
+        }
+      })();
+    },
+    [onError, sessionId],
+  );
+
+  return {
+    sendMessage,
+    regenerate,
+    compactMessage,
+    stopGeneration,
+    isStreaming,
+    isCompacting,
+    thinkingStatus,
+    streamedContent,
+  };
 }

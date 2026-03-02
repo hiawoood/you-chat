@@ -18,6 +18,7 @@ interface MessageListProps {
   onRegenerate?: (messageId: string) => void;
   onFork?: (messageId: string) => void;
   onContinue?: (messageContent: string) => void;
+  onCompact?: (messageId: string) => void;
   actionLoading?: string | null;
   collapsedIds?: Set<string>;
   suppressAutoScrollOnNextAppend?: boolean;
@@ -25,6 +26,7 @@ interface MessageListProps {
   disableAutoScroll?: boolean;
   disableQuickContinue?: boolean;
   isNearBottom?: () => boolean;
+  compactBusy?: boolean;
 }
 
 function formatTime(ts: number): string {
@@ -50,6 +52,7 @@ export default function MessageList({
   onRegenerate,
   onFork,
   onContinue,
+  onCompact,
   actionLoading,
   collapsedIds = new Set(),
   suppressAutoScrollOnNextAppend = false,
@@ -57,6 +60,7 @@ export default function MessageList({
   disableAutoScroll = false,
   disableQuickContinue = false,
   isNearBottom,
+  compactBusy = false,
 }: MessageListProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const prevMessageLengthRef = useRef(messages.length);
@@ -121,6 +125,7 @@ export default function MessageList({
         const isDeleting = actionLoading === `delete-msg-${item.id}`;
         const isActivelyStreaming = !!item.isStreaming || item.status === "streaming";
         const isUserItem = item.role === "user";
+
         return (
           <MessageBubble
             key={item.id}
@@ -146,13 +151,16 @@ export default function MessageList({
             } : undefined}
             onFork={onFork && !isActivelyStreaming ? () => onFork(item.id) : undefined}
             onContinue={onContinue && !isActivelyStreaming && !isUserItem ? () => onContinue(item.content) : undefined}
+            onCompact={onCompact && !isActivelyStreaming ? () => onCompact(item.id) : undefined}
             forceCollapsed={collapsedIds.has(item.id)}
             isSaving={actionLoading === `edit-msg-${item.id}`}
             isForking={actionLoading === `fork-${item.id}`}
             disableContinue={disableQuickContinue}
+            actionDisabled={compactBusy}
           />
         );
       })}
+
       {/* Thinking indicator */}
       {thinkingStatus && !streamingContent && (
         <div className="flex flex-col items-start">
@@ -166,6 +174,7 @@ export default function MessageList({
           </div>
         </div>
       )}
+
       <div ref={bottomRef} />
     </div>
   );
@@ -194,7 +203,7 @@ function CopyButton({ text, label }: { text: string; label?: string }) {
     <button
       onClick={handleCopy}
       className="flex items-center gap-1 px-1.5 py-0.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 transition-colors rounded text-xs"
-      title={copied ? "Copied!" : "Copy"}
+      title={copied ? "Copied!" : label || "Copy"}
     >
       {copied ? (
         <svg className="w-3.5 h-3.5 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -239,8 +248,10 @@ function MessageBubble({
   onRegenerate,
   onFork,
   onContinue,
+  onCompact,
   disableContinue = false,
   forceCollapsed = false,
+  actionDisabled = false,
 }: {
   message: Message;
   isStreaming?: boolean;
@@ -252,8 +263,10 @@ function MessageBubble({
   onRegenerate?: () => void;
   onFork?: () => void;
   onContinue?: (messageContent: string) => void;
+  onCompact?: () => void;
   disableContinue?: boolean;
   forceCollapsed?: boolean;
+  actionDisabled?: boolean;
 }) {
   const isUser = message.role === "user";
   const contentRef = useRef<HTMLDivElement>(null);
@@ -340,7 +353,7 @@ function MessageBubble({
   };
 
   const isCollapsed = collapsed && isLong && !editing;
-  const isBusy = isDeleting || isSaving || isForking;
+  const isBusy = isDeleting || isSaving || isForking || actionDisabled;
 
   return (
     <div className={`group ${isUser ? "flex flex-col items-end" : "flex flex-col items-start"} ${isBusy ? "opacity-50" : ""}`}>
@@ -396,6 +409,7 @@ function MessageBubble({
                 } pointer-events-none`} />
               )}
             </div>
+
             {isLong && (
               <button
                 onClick={() => setCollapsed((prev) => !prev)}
@@ -478,6 +492,14 @@ function MessageBubble({
               >
                 <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 5l7 7-7 7M5 12h14" />
+                </svg>
+              </IconButton>
+            )}
+
+            {onCompact && (
+              <IconButton onClick={(e) => { e.stopPropagation(); onCompact?.(); }} title="Compact" className="hover:!text-blue-500">
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 7h16M12 3v18M7 13l5-5 5 5" />
                 </svg>
               </IconButton>
             )}

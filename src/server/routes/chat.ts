@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
+import type { AppEnv } from "../context";
 import {
   getChatSession, createMessage, getMessages, updateChatSession,
   deleteMessagesAfter, getMessage, deleteMessage, deleteStreamingMessages,
@@ -8,9 +9,11 @@ import {
 } from "../db";
 import { streamChat, callChat, deleteThread } from "../lib/you-client";
 import type { StreamEvent } from "../lib/you-client";
-import type { AppVariables } from "../types";
 
 const SAVE_INTERVAL_MS = 1000;
+const DEFAULT_COMPACT_PROMPT =
+  "Rewrite the message below to be more concise and clearer while preserving its meaning and tone. " +
+  "Return only the revised message with no preamble.";
 
 // Active streaming sessions — allows server-side abort when user clicks "Stop"
 type SessionStreams = Set<AbortController>;
@@ -57,8 +60,7 @@ function stopSessionStreams(sessionId: string): number {
   activeStreams.delete(sessionId);
   return stopped;
 }
-
-const chat = new Hono<{ Variables: AppVariables }>();
+const chat = new Hono<AppEnv>();
 
 // Stop generation endpoint
 chat.post("/stop", async (c) => {
@@ -124,6 +126,11 @@ function buildChatHistory(messages: { role: string; content: string }[]): Array<
   return pairs;
 }
 
+function buildCompactPrompt(template: string, originalMessage: string): string {
+  const cleanedTemplate = template.trim() || DEFAULT_COMPACT_PROMPT;
+  return `${cleanedTemplate}\n\nOriginal message:\n${originalMessage}`;
+}
+
 // Helper: stream from You.com, save progressively, and pipe to SSE client
 async function streamAndSave(
   options: {
@@ -175,6 +182,36 @@ async function streamAndSave(
   }
 
   return fullResponse;
+}
+
+// Helper: stream from You.com and pipe to SSE client (no DB writes)
+async function streamToSSE(
+  options: {
+    query: string;
+    chatHistory: Array<{ question: string; answer: string }>;
+    chatId: string;
+    agentOrModel: string;
+    dsCookie: string;
+    dsrCookie: string;
+  },
+  onEvent?: (event: StreamEvent) => Promise<void>,
+  abortSignal?: AbortSignal,
+): Promise<string> {
+  let fullResponse = "";
+
+  try {
+    for await (const event of streamChat(options)) {
+      if (abortSignal?.aborted) break;
+
+      if (event.type === "token") {
+        fullResponse += event.text;
+      }
+
+      await onEvent?.(event);
+    }
+  } finally {
+    return fullResponse;
+  }
 }
 
 chat.post("/", async (c) => {
@@ -290,6 +327,82 @@ chat.post("/", async (c) => {
         await stream.writeSSE({ data: JSON.stringify({ error: errorMessage }) });
       } catch {
         // Client already gone
+      }
+    } finally {
+      unregisterStream(sessionId, abortController);
+    }
+  });
+});
+
+// Compact a single message (non-chat-transform)
+chat.post("/compact", async (c) => {
+  const user = c.get("user");
+  if (!user) return c.json({ error: "Unauthorized" }, 401);
+
+  const creds = getUserCredentials(user.id);
+  if (!creds) {
+    return c.json({ error: "You.com credentials required" }, 403);
+  }
+
+  const body = await c.req.json().catch(() => ({} as Record<string, unknown>));
+  const { sessionId, messageId, prompt, agentOrModel } = body;
+
+  if (typeof sessionId !== "string" || typeof messageId !== "string") {
+    return c.json({ error: "sessionId and messageId required" }, 400);
+  }
+
+  const session = getChatSession(sessionId, user.id) as { id: string; agent: string } | null;
+  if (!session) {
+    return c.json({ error: "Session not found" }, 404);
+  }
+
+  const target = getMessage(messageId, sessionId) as { id: string; content: string; status?: string } | null;
+  if (!target) {
+    return c.json({ error: "Message not found" }, 404);
+  }
+
+  if (target.status === "streaming") {
+    return c.json({ error: "Cannot compact message while streaming" }, 409);
+  }
+
+  const compactPrompt = buildCompactPrompt(typeof prompt === "string" ? prompt : "", target.content);
+  const selectedModel = typeof agentOrModel === "string" && agentOrModel.trim().length > 0
+    ? agentOrModel
+    : session.agent;
+
+  const abortController = new AbortController();
+  registerStream(sessionId, abortController);
+
+  return streamSSE(c, async (stream) => {
+    try {
+      await stream.writeSSE({ data: JSON.stringify({ thinking: "Preparing compact" }) });
+
+        await streamToSSE(
+          {
+            query: compactPrompt,
+            chatId: crypto.randomUUID(),
+            chatHistory: [],
+            agentOrModel: selectedModel,
+            dsCookie: creds.ds_cookie,
+            dsrCookie: creds.dsr_cookie,
+          },
+        async (event) => {
+          if (event.type === "thinking") {
+            await stream.writeSSE({ data: JSON.stringify({ thinking: event.message }) });
+          } else if (event.type === "token") {
+            await stream.writeSSE({ data: JSON.stringify({ delta: event.text }) });
+          }
+        },
+        abortController.signal,
+      );
+
+      await stream.writeSSE({ data: JSON.stringify({ done: true }) });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : "Unknown error";
+      try {
+        await stream.writeSSE({ data: JSON.stringify({ error: errorMessage }) });
+      } catch {
+        // client disconnected
       }
     } finally {
       unregisterStream(sessionId, abortController);

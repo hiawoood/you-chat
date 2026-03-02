@@ -3,8 +3,8 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { serveStatic } from "hono/bun";
 import { auth, createAdminIfNeeded } from "./auth";
-import type { AppVariables } from "./types";
 import { initDb } from "./db";
+import type { AppEnv } from "./context";
 import sessions from "./routes/sessions";
 import chat from "./routes/chat";
 import agentsRoute from "./routes/agents";
@@ -13,7 +13,7 @@ import credentials from "./routes/credentials";
 // Initialize database
 initDb();
 
-const app = new Hono<{ Variables: AppVariables }>();
+const app = new Hono<AppEnv>();
 
 // CORS - allow localhost and cloudflare tunnels
 app.use(
