@@ -22,7 +22,7 @@ function clampPercentage(value: number): number {
 }
 
 export const DEFAULT_COMPACT_PROMPT =
-  "Rewrite the message below to be more concise and clearer while preserving its meaning and tone. Return only the revised message.";
+  "Compact this text aggressively: reduce word count by at least 50%. Do NOT lose any fact, event, number, name, date, or anything substantive. Remove only fluff and things that can be easily inferred. It is okay to use incomplete sentences, shorthand, and imperfect/broken grammar if needed to keep all substance while making it much shorter. Return only the revised text.";
 
 interface CompactModalProps {
   isOpen: boolean;
