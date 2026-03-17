@@ -1,5 +1,19 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 
+// Lazy-loaded Kokoro module
+let kokoroModulePromise: Promise<typeof import("kokoro-js")> | null = null;
+
+function getKokoroModule(): Promise<typeof import("kokoro-js")> {
+  if (!kokoroModulePromise) {
+    kokoroModulePromise = import("kokoro-js").catch((err) => {
+      console.error("Failed to load kokoro-js module:", err);
+      kokoroModulePromise = null;
+      throw err;
+    });
+  }
+  return kokoroModulePromise;
+}
+
 // Kokoro TTS types
 interface KokoroTTS {
   generate: (text: string, options: { voice: string }) => Promise<{ audio: Float32Array; sampleRate: number }>;
@@ -67,8 +81,9 @@ export function useTTS() {
     setState((prev) => ({ ...prev, isModelLoading: true, progress: 0 }));
 
     try {
-      // Dynamic import to avoid loading on initial page load
-      const { KokoroTTS } = await import("kokoro-js");
+      // Use module-level import to avoid re-loading
+      const mod = await getKokoroModule();
+      const { KokoroTTS } = mod;
 
       // Create a custom progress handler
       const progressCallback = (progress: { loaded: number; total: number }) => {
