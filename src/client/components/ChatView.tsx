@@ -2,10 +2,12 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { api } from "../lib/api";
 import type { ChatSession, Message, Agent } from "../lib/api";
 import { useChat } from "../hooks/useChat";
+import { useTTS } from "../hooks/useTTS";
 import { useScrollDirection } from "../hooks/useScrollDirection";
 import MessageList from "./MessageList";
 import MessageInput from "./MessageInput";
 import CompactModal from "./CompactModal";
+import { TTSPlayer } from "./TTSPlayer";
 
 const SCROLL_TRIGGER_BUFFER_PX = 200;
 
@@ -57,6 +59,9 @@ export default function ChatView({
   const hideHeader = scrollDirection === "down";
   const [showScrollBtn, setShowScrollBtn] = useState(false);
   const [suppressMessageAutoScroll, setSuppressMessageAutoScroll] = useState(false);
+
+  // Initialize TTS hook
+  const tts = useTTS();
 
   const isNearBottom = useCallback(() => {
     const el = scrollContainerRef.current;
@@ -175,6 +180,10 @@ export default function ChatView({
     if (!target) return;
 
     setCompactTarget(target);
+  };
+
+  const handleToggleTTS = (messageId: string, content: string) => {
+    void tts.toggle(content, messageId);
   };
 
   const handleCompactGenerate = async ({
@@ -327,6 +336,7 @@ export default function ChatView({
               onFork={onFork}
               onContinue={handleContinue}
               onCompact={handleOpenCompact}
+              onToggleTTS={handleToggleTTS}
               actionLoading={actionLoading}
               collapsedIds={collapsedIds}
               suppressAutoScrollOnNextAppend={suppressMessageAutoScroll}
@@ -335,6 +345,9 @@ export default function ChatView({
               isNearBottom={isNearBottom}
               disableQuickContinue={hasActiveStream}
               compactBusy={isCompacting}
+              activeTTSMessageId={tts.activeMessageId}
+              ttsIsPlaying={tts.isPlaying}
+              ttsIsLoading={tts.isLoading || tts.isModelLoading}
             />
           </div>
         )}
@@ -351,6 +364,23 @@ export default function ChatView({
           onGenerate={handleCompactGenerate}
           onCommit={handleCompactCommit}
           onStop={() => { void stopGeneration(); }}
+        />
+      )}
+
+      {/* TTS Player */}
+      {tts.activeText && (
+        <TTSPlayer
+          isPlaying={tts.isPlaying}
+          isLoading={tts.isLoading}
+          isModelLoading={tts.isModelLoading}
+          progress={tts.progress}
+          currentTime={tts.currentTime}
+          totalDuration={tts.totalDuration}
+          activeText={tts.activeText}
+          onPlay={tts.resume}
+          onPause={tts.pause}
+          onStop={tts.stop}
+          onSeek={tts.seek}
         />
       )}
 
