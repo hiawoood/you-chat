@@ -2,12 +2,11 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { api } from "../lib/api";
 import type { ChatSession, Message, Agent } from "../lib/api";
 import { useChat } from "../hooks/useChat";
-import { useTTS } from "../hooks/useTTS";
+import { useVastTTS } from "../hooks/useVastTTS";
 import { useScrollDirection } from "../hooks/useScrollDirection";
 import MessageList from "./MessageList";
 import MessageInput from "./MessageInput";
 import CompactModal from "./CompactModal";
-import { TTSPlayer } from "./TTSPlayer";
 
 const SCROLL_TRIGGER_BUFFER_PX = 200;
 
@@ -60,8 +59,17 @@ export default function ChatView({
   const [showScrollBtn, setShowScrollBtn] = useState(false);
   const [suppressMessageAutoScroll, setSuppressMessageAutoScroll] = useState(false);
 
-  // Initialize TTS hook
-  const tts = useTTS();
+  // Initialize Vast TTS hook
+  const { 
+    status: ttsStatus, 
+    isActive: ttsIsActive, 
+    isHealthy: ttsIsHealthy,
+    isStarting: ttsIsStarting,
+    startInstance: startTTSInstance,
+    stopInstance: stopTTSInstance,
+    speak: ttsSpeak,
+    playAudio: ttsPlayAudio,
+  } = useVastTTS();
 
   const isNearBottom = useCallback(() => {
     const el = scrollContainerRef.current;
@@ -182,8 +190,20 @@ export default function ChatView({
     setCompactTarget(target);
   };
 
-  const handleToggleTTS = (messageId: string, content: string) => {
-    void tts.toggle(content, messageId);
+  const handleToggleTTS = async (messageId: string, content: string) => {
+    if (!ttsIsActive || !ttsIsHealthy) {
+      // Don't play if GPU not ready - UI will show warning
+      return;
+    }
+    
+    try {
+      const result = await ttsSpeak(content);
+      if (result.success && result.audio) {
+        await ttsPlayAudio(result.audio);
+      }
+    } catch (err) {
+      console.error("TTS playback failed:", err);
+    }
   };
 
   const handleCompactGenerate = async ({
@@ -304,6 +324,56 @@ export default function ChatView({
                 <option value={session.agent}>{session.agent}</option>
               )}
             </select>
+
+            {/* GPU TTS Status Indicator */}
+            <div className="flex items-center gap-1 ml-2">
+              {ttsIsStarting ? (
+                <span className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-yellow-600 bg-yellow-50 dark:bg-yellow-900/20 rounded-full">
+                  <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                  </svg>
+                  Starting GPU...
+                </span>
+              ) : ttsIsActive && ttsIsHealthy ? (
+                <span className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-green-600 bg-green-50 dark:bg-green-900/20 rounded-full">
+                  <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
+                  </svg>
+                  {ttsStatus?.instance?.gpuName || "GPU Ready"}
+                  {ttsStatus?.instance?.hourlyRate && (
+                    <span className="text-green-500">${ttsStatus.instance.hourlyRate}/hr</span>
+                  )}
+                  <button
+                    onClick={() => void stopTTSInstance()}
+                    className="ml-1 p-0.5 hover:bg-green-200 dark:hover:bg-green-800 rounded"
+                    title="Stop GPU"
+                  >
+                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <rect x="6" y="6" width="12" height="12" rx="2" strokeWidth="2" />
+                    </svg>
+                  </button>
+                </span>
+              ) : ttsIsActive && !ttsIsHealthy ? (
+                <span className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-orange-600 bg-orange-50 dark:bg-orange-900/20 rounded-full">
+                  <svg className="w-3 h-3 animate-pulse" fill="currentColor" viewBox="0 0 24 24">
+                    <circle cx="12" cy="12" r="10" />
+                  </svg>
+                  Initializing...
+                </span>
+              ) : (
+                <button
+                  onClick={() => void startTTSInstance()}
+                  className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 dark:text-gray-300 rounded-full transition-colors"
+                  title="Start GPU for TTS"
+                >
+                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                  </svg>
+                  Start GPU
+                </button>
+              )}
+            </div>
           </div>
         </div>
       </div>
@@ -336,7 +406,7 @@ export default function ChatView({
               onFork={onFork}
               onContinue={handleContinue}
               onCompact={handleOpenCompact}
-              onToggleTTS={handleToggleTTS}
+              onToggleTTS={ttsIsActive && ttsIsHealthy ? handleToggleTTS : undefined}
               actionLoading={actionLoading}
               collapsedIds={collapsedIds}
               suppressAutoScrollOnNextAppend={suppressMessageAutoScroll}
@@ -345,9 +415,7 @@ export default function ChatView({
               isNearBottom={isNearBottom}
               disableQuickContinue={hasActiveStream}
               compactBusy={isCompacting}
-              activeTTSMessageId={tts.activeMessageId}
-              ttsIsPlaying={tts.isPlaying}
-              ttsIsLoading={tts.isLoading || tts.isModelLoading}
+              ttsEnabled={ttsIsActive && ttsIsHealthy}
             />
           </div>
         )}

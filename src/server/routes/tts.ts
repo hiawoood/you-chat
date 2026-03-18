@@ -41,7 +41,6 @@ tts.post("/speak", async (c) => {
         return c.json(
           { 
             error: "Failed to start TTS instance",
-            fallback: true,
             message: error instanceof Error ? error.message : "Unknown error"
           }, 
           503
@@ -78,7 +77,6 @@ tts.post("/speak", async (c) => {
       return c.json(
         {
           error: "Speech generation failed",
-          fallback: true,
           instanceHealthy: isHealthy,
           message: error instanceof Error ? error.message : "Unknown error",
         },
@@ -90,7 +88,6 @@ tts.post("/speak", async (c) => {
     return c.json(
       { 
         error: "Internal server error",
-        fallback: true,
         message: error instanceof Error ? error.message : "Unknown error"
       }, 
       500

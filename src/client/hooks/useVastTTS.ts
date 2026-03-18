@@ -30,7 +30,6 @@ export interface SpeakResult {
   audio?: string; // base64
   duration?: number;
   sampleRate?: number;
-  fallback?: boolean;
   error?: string;
   instance?: {
     id: string;
@@ -38,9 +37,6 @@ export interface SpeakResult {
     hourlyRate?: number;
   };
 }
-
-// Kokoro TTS fallback (local/offline)
-const KOKORO_API_URL = import.meta.env.VITE_KOKORO_URL || "http://localhost:8880";
 
 export function useVastTTS() {
   const [isLoading, setIsLoading] = useState(false);
@@ -118,7 +114,7 @@ export function useVastTTS() {
   }, []);
 
   /**
-   * Generate speech using Vast.ai (with Kokoro fallback)
+   * Generate speech using Vast.ai
    */
   const speak = useCallback(async (
     text: string,
@@ -128,7 +124,6 @@ export function useVastTTS() {
     setError(null);
 
     try {
-      // Try Vast.ai first
       const response = await api.post("/tts/speak", {
         text,
         voice: options.voice,
@@ -146,86 +141,18 @@ export function useVastTTS() {
         };
       }
 
-      // If Vast.ai fails but suggests fallback
-      if (response.fallback) {
-        console.log("[TTS] Vast.ai unavailable, falling back to Kokoro...");
-        return await speakWithKokoro(text, options);
-      }
-
       throw new Error(response.error || "Speech generation failed");
     } catch (err) {
-      console.log("[TTS] Vast.ai failed, trying Kokoro fallback...");
-      
-      // Fallback to Kokoro
-      try {
-        return await speakWithKokoro(text, options);
-      } catch (kokoroErr) {
-        const message = kokoroErr instanceof Error ? kokoroErr.message : "All TTS services failed";
-        setError(message);
-        return {
-          success: false,
-          fallback: true,
-          error: message,
-        };
-      }
+      const message = err instanceof Error ? err.message : "TTS failed";
+      setError(message);
+      return {
+        success: false,
+        error: message,
+      };
     } finally {
       setIsLoading(false);
     }
   }, []);
-
-  /**
-   * Generate speech using local Kokoro TTS
-   */
-  const speakWithKokoro = async (
-    text: string,
-    options: TTSOptions = {}
-  ): Promise<SpeakResult> => {
-    try {
-      const response = await fetch(`${KOKORO_API_URL}/v1/audio/speech`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: "kokoro",
-          input: text,
-          voice: options.voice || "af_bella",
-          speed: options.speed || 1.0,
-          response_format: "mp3",
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error(`Kokoro TTS failed: ${response.statusText}`);
-      }
-
-      // Convert blob to base64
-      const blob = await response.blob();
-      const reader = new FileReader();
-      
-      const base64Audio = await new Promise<string | undefined>((resolve, reject) => {
-        reader.onloadend = () => {
-          const base64 = reader.result as string;
-          // Remove data URL prefix
-          resolve(base64?.split(",")[1]);
-        };
-        reader.onerror = reject;
-        reader.readAsDataURL(blob);
-      });
-
-      if (!base64Audio) {
-        throw new Error("Failed to convert audio to base64");
-      }
-
-      return {
-        success: true,
-        audio: base64Audio,
-        fallback: true,
-      };
-    } catch (err) {
-      throw err;
-    }
-  };
 
   /**
    * Play audio from base64 string
@@ -273,13 +200,7 @@ export function useVastTTS() {
       const response = await api.get("/tts/voices");
       return response.voices || ["default"];
     } catch {
-      // Fallback to Kokoro voices
-      return [
-        "af_bella", "af_heart", "af_alloy", "af_aoede", "af_jessica",
-        "af_kore", "af_nicole", "af_nova", "af_river", "af_sarah",
-        "af_sky", "am_adam", "am_echo", "am_eric", "am_fenrir",
-        "am_liam", "am_michael", "am_onyx", "am_puck", "am_santa",
-      ];
+      return ["default"];
     }
   }, []);
 
@@ -313,9 +234,6 @@ export function useVastTTS() {
     checkStatus,
     getVoices,
     getPricing,
-
-    // Direct fallback access
-    speakWithKokoro,
   };
 }
 
