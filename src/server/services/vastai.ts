@@ -80,20 +80,21 @@ export async function searchCheapestGPU(
 
 /**
  * Create a new Vast.ai instance with Chatterbox TTS Server
+ * Uses PUT /asks/{id}/ to accept an ask contract
  */
 export async function createInstance(
   offerId: string,
   image: string = "devnen/chatterbox-tts-server:latest"
 ): Promise<VastInstance> {
-  // Create the instance
-  const response = await fetch(`${VAST_API_URL}/instances/`, {
-    method: "POST",
+  // Accept the ask contract to create instance
+  const response = await fetch(`${VAST_API_URL}/asks/${offerId}/`, {
+    method: "PUT",
     headers: {
       Authorization: `Bearer ${VAST_API_KEY}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      offer_id: offerId,
+      client_id: "me",
       image: image,
       env: {},
       onstart: "",
@@ -108,7 +109,7 @@ export async function createInstance(
   }
 
   const data = await response.json();
-  const instanceId = data.new_contract.toString();
+  const instanceId = data.new_contract?.toString() || data.instance_id?.toString();
 
   // Wait a moment for the instance to initialize
   await new Promise((resolve) => setTimeout(resolve, 5000));
