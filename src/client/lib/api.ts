@@ -74,4 +74,10 @@ export const api = {
     fetchAPI("/credentials", { method: "POST", body: JSON.stringify({ ds, dsr, uuidGuest }) }),
   deleteCredentials: (): Promise<void> =>
     fetchAPI("/credentials", { method: "DELETE" }),
+  
+  // Generic methods for TTS and other features
+  get: (path: string): Promise<any> => fetchAPI(path),
+  post: (path: string, body: any): Promise<any> => fetchAPI(path, { method: "POST", body: JSON.stringify(body) }),
+  patch: (path: string, body: any): Promise<any> => fetchAPI(path, { method: "PATCH", body: JSON.stringify(body) }),
+  del: (path: string): Promise<any> => fetchAPI(path, { method: "DELETE" }),
 };

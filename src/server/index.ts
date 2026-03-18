@@ -9,6 +9,7 @@ import sessions from "./routes/sessions";
 import chat from "./routes/chat";
 import agentsRoute from "./routes/agents";
 import credentials from "./routes/credentials";
+import tts from "./routes/tts";
 
 // Initialize database
 initDb();
@@ -71,6 +72,7 @@ app.route("/api/credentials", credentials);
 app.route("/api/sessions", sessions);
 app.route("/api/chat", chat);
 app.route("/api/agents", agentsRoute);
+app.route("/api/tts", tts);
 
 // Serve static files in production
 app.use("/*", serveStatic({ root: "./dist" }));
