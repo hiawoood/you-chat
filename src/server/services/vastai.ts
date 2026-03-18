@@ -81,12 +81,16 @@ export async function searchCheapestGPU(
 /**
  * Create a new Vast.ai instance with Chatterbox TTS Server
  * Uses PUT /asks/{id}/ to accept an ask contract
+ * Downloads and runs setup script from GitHub on startup
  */
 export async function createInstance(
-  offerId: string,
-  image: string = "devnen/chatterbox-tts-server:latest"
+  offerId: string
 ): Promise<VastInstance> {
+  // Setup script URL (raw GitHub)
+  const setupScriptUrl = "https://raw.githubusercontent.com/hiawoood/you-chat/main/scripts/setup-chatterbox.sh";
+  
   // Accept the ask contract to create instance
+  // Use PyTorch base image and download/run our setup script on startup
   const response = await fetch(`${VAST_API_URL}/asks/${offerId}/`, {
     method: "PUT",
     headers: {
@@ -95,10 +99,10 @@ export async function createInstance(
     },
     body: JSON.stringify({
       client_id: "me",
-      image: image,
+      image: "pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime",
       env: {},
-      onstart: "",
-      disk: 10, // GB
+      onstart: `curl -fsSL ${setupScriptUrl} | bash`,
+      disk: 30,
       image_login: null,
     }),
   });
@@ -414,11 +418,8 @@ export async function startCheapestInstance(): Promise<VastInstance> {
   const cheapest = offers[0];
   console.log(`[VastTTS] Selected GPU: ${cheapest.gpu_name} at $${cheapest.dph_total}/hour`);
 
-  // Create instance with Chatterbox TTS Server image
-  const instance = await createInstance(
-    cheapest.id.toString(),
-    "devnen/chatterbox-tts-server:latest"
-  );
+  // Create instance with setup script
+  const instance = await createInstance(cheapest.id.toString());
 
   // Wait for the instance to be fully running
   let attempts = 0;
