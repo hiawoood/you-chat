@@ -435,23 +435,6 @@ export default function ChatView({
         />
       )}
 
-      {/* TTS Player */}
-      {tts.activeText && (
-        <TTSPlayer
-          isPlaying={tts.isPlaying}
-          isLoading={tts.isLoading}
-          isModelLoading={tts.isModelLoading}
-          progress={tts.progress}
-          currentTime={tts.currentTime}
-          totalDuration={tts.totalDuration}
-          activeText={tts.activeText}
-          onPlay={tts.resume}
-          onPause={tts.pause}
-          onStop={tts.stop}
-          onSeek={tts.seek}
-        />
-      )}
-
       {/* Input */}
       <div className="min-h-[3.5rem] flex items-end border-t border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 flex-shrink-0 py-2">
         <div className="max-w-3xl mx-auto w-full px-4">
