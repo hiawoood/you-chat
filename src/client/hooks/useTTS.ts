@@ -1,6 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 
-// Kokoro TTS types
 interface KokoroTTS {
   generate: (text: string, options: { voice: string }) => Promise<{ audio: Float32Array; sampleRate: number }>;
 }
@@ -33,32 +32,19 @@ const DEFAULT_VOICE = "af_heart";
 function stripMarkdown(text: string): string {
   return (
     text
-      // Headers (# Header)
       .replace(/^#{1,6}\s+/gm, "")
-      // Bold/italic (**text**, *text*, __text__, _text_)
       .replace(/(\*{1,2}|_{1,2})(.+?)\1/g, "$2")
-      // Strikethrough (~~text~~)
       .replace(/~~(.+?)~~/g, "$1")
-      // Links [text](url) -> just text
       .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
-      // Images ![alt](url) -> just alt text
       .replace(/!\[([^\]]*)\]\([^)]+\)/g, "$1")
-      // Code blocks (```code```)
       .replace(/```[\s\S]*?```/g, "")
-      // Inline code (`code`)
       .replace(/`([^`]+)`/g, "$1")
-      // Blockquotes (> text)
       .replace(/^\s*>\s*/gm, "")
-      // List markers (- item, * item, 1. item)
       .replace(/^\s*[-*+]\s+/gm, "")
       .replace(/^\s*\d+\.\s+/gm, "")
-      // Horizontal rules (---, ***, ___)
       .replace(/^\s*[-*_]{3,}\s*$/gm, "")
-      // HTML tags
-      .replace(/<[^>]+>/g, "")
-      // Multiple newlines -> single
+      .replace(/<[^\u003e]+>/g, "")
       .replace(/\n{3,}/g, "\n\n")
-      // Trim
       .trim()
   );
 }
@@ -82,15 +68,57 @@ export function useTTS() {
   const chunksRef = useRef<TTSChunk[]>([]);
   const currentChunkIndexRef = useRef(0);
   const startTimeRef = useRef<number>(0);
-  const pausedAtRef = useRef<number>(0);
   const animationFrameRef = useRef<number>(0);
   const isCancelledRef = useRef(false);
   const moduleRef = useRef<typeof import("kokoro-js") | null>(null);
+  const hasStartedPlayingRef = useRef(false);
+
+  // Stop everything - SYNCHRONOUS cleanup
+  const stop = useCallback(() => {
+    isCancelledRef.current = true;
+    hasStartedPlayingRef.current = false;
+
+    // Stop audio immediately
+    if (sourceNodeRef.current) {
+      try {
+        sourceNodeRef.current.onended = null;
+        sourceNodeRef.current.stop();
+      } catch {}
+      sourceNodeRef.current = null;
+    }
+
+    // Cancel animation frame
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current);
+      animationFrameRef.current = 0;
+    }
+
+    // Reset refs
+    chunksRef.current = [];
+    currentChunkIndexRef.current = 0;
+    startTimeRef.current = 0;
+
+    // Reset state
+    setState({
+      isLoading: false,
+      isPlaying: false,
+      isModelLoading: false,
+      progress: 0,
+      currentTime: 0,
+      totalDuration: 0,
+      activeText: null,
+      activeMessageId: null,
+      error: null,
+    });
+  }, []);
 
   // Initialize AudioContext
   const initAudioContext = useCallback(() => {
-    if (!audioContextRef.current) {
+    if (!audioContextRef.current || audioContextRef.current.state === "closed") {
       audioContextRef.current = new AudioContext();
+    }
+    if (audioContextRef.current.state === "suspended") {
+      audioContextRef.current.resume();
     }
     return audioContextRef.current;
   }, []);
@@ -102,7 +130,6 @@ export function useTTS() {
     setState((prev) => ({ ...prev, isModelLoading: true, progress: 0 }));
 
     try {
-      // Load module if not cached
       if (!moduleRef.current) {
         moduleRef.current = await import("kokoro-js");
       }
@@ -126,7 +153,7 @@ export function useTTS() {
       setState((prev) => ({
         ...prev,
         isModelLoading: false,
-        error: "Failed to load TTS model. Please try again.",
+        error: "Failed to load TTS model",
       }));
       return null;
     }
@@ -167,30 +194,10 @@ export function useTTS() {
     return chunks;
   }, []);
 
-  // Generate audio for a chunk
-  const generateChunkAudio = useCallback(async (
-    tts: KokoroTTS,
-    chunk: TTSChunk
-  ): Promise<Float32Array | null> => {
-    try {
-      const result = await tts.generate(chunk.text, { voice: DEFAULT_VOICE });
-      return result.audio;
-    } catch (error) {
-      console.error("Failed to generate audio for chunk:", error);
-      return null;
-    }
-  }, []);
-
-  // Calculate audio duration
-  const getAudioDuration = useCallback((audio: Float32Array, sampleRate: number): number => {
-    return audio.length / sampleRate;
-  }, []);
-
   // Update progress
   const startProgressUpdates = useCallback(() => {
     const updateProgress = () => {
       if (!state.isPlaying || !audioContextRef.current) {
-        animationFrameRef.current = requestAnimationFrame(updateProgress);
         return;
       }
 
@@ -202,7 +209,6 @@ export function useTTS() {
         for (let i = 0; i < currentChunkIndexRef.current; i++) {
           totalElapsed += chunksRef.current[i]?.duration || 0;
         }
-
         totalElapsed += Math.min(elapsedInChunk, currentChunk.duration);
         setState((prev) => ({ ...prev, currentTime: Math.max(0, totalElapsed) }));
       }
@@ -213,28 +219,23 @@ export function useTTS() {
     animationFrameRef.current = requestAnimationFrame(updateProgress);
   }, [state.isPlaying]);
 
-  // Stop progress updates
-  const stopProgressUpdates = useCallback(() => {
-    if (animationFrameRef.current) {
-      cancelAnimationFrame(animationFrameRef.current);
-      animationFrameRef.current = 0;
-    }
-  }, []);
-
   // Play a chunk
   const playChunk = useCallback(async (chunkIndex: number) => {
+    if (isCancelledRef.current) return;
+
     const audioContext = initAudioContext();
     const chunk = chunksRef.current[chunkIndex];
 
-    if (!chunk || !chunk.audio || isCancelledRef.current) {
-      if (chunkIndex >= chunksRef.current.length || isCancelledRef.current) {
-        setState((prev) => ({
-          ...prev,
-          isPlaying: false,
-          currentTime: prev.totalDuration,
-        }));
+    if (!chunk || !chunk.audio) {
+      // Try next chunk if available
+      const nextIndex = chunkIndex + 1;
+      if (nextIndex < chunksRef.current.length) {
+        // Wait a bit and try next chunk
+        setTimeout(() => playChunk(nextIndex), 100);
         return;
       }
+      // No more chunks
+      setState((prev) => ({ ...prev, isPlaying: false }));
       return;
     }
 
@@ -250,7 +251,6 @@ export function useTTS() {
 
     source.start(0);
     startTimeRef.current = audioContext.currentTime;
-
     setState((prev) => ({ ...prev, isPlaying: true }));
 
     source.onended = () => {
@@ -259,49 +259,19 @@ export function useTTS() {
       if (nextIndex < chunksRef.current.length) {
         playChunk(nextIndex);
       } else {
-        setState((prev) => ({
-          ...prev,
-          isPlaying: false,
-          currentTime: prev.totalDuration,
-        }));
+        setState((prev) => ({ ...prev, isPlaying: false }));
       }
     };
   }, [initAudioContext]);
 
-  // Stop playback
-  const stop = useCallback(async () => {
-    isCancelledRef.current = true;
-
-    if (sourceNodeRef.current) {
-      try {
-        sourceNodeRef.current.stop();
-      } catch {}
-      sourceNodeRef.current = null;
-    }
-
-    stopProgressUpdates();
-
-    chunksRef.current = [];
-    currentChunkIndexRef.current = 0;
-    startTimeRef.current = 0;
-    pausedAtRef.current = 0;
-
-    setState((prev) => ({
-      ...prev,
-      isLoading: false,
-      isPlaying: false,
-      currentTime: 0,
-      totalDuration: 0,
-      activeText: null,
-      activeMessageId: null,
-    }));
-  }, [stopProgressUpdates]);
-
-  // Start TTS
+  // Start TTS - begins immediately with first chunk
   const play = useCallback(async (text: string, messageId: string) => {
-    await stop();
+    // Stop any current playback first
+    stop();
 
     isCancelledRef.current = false;
+    hasStartedPlayingRef.current = false;
+
     setState((prev) => ({
       ...prev,
       isLoading: true,
@@ -318,62 +288,89 @@ export function useTTS() {
       return;
     }
 
-    // Strip markdown for clean TTS audio
     const plainText = stripMarkdown(text);
-
     const chunks = createChunks(plainText);
     chunksRef.current = chunks;
 
-    const estimatedDuration = chunks.length * 3;
-    setState((prev) => ({ ...prev, totalDuration: estimatedDuration }));
+    // Set estimated total duration
+    setState((prev) => ({
+      ...prev,
+      totalDuration: chunks.length * 3,
+      isLoading: false, // Stop loading since we start playing immediately
+    }));
 
-    const generationPromises = chunks.map(async (chunk, index) => {
-      if (isCancelledRef.current) return;
+    // Start generating and playing FIRST chunk immediately
+    // Other chunks generate in background
+    const firstChunk = chunks[0];
+    if (firstChunk) {
+      firstChunk.status = "generating";
+
+      // Fire generation for first chunk
+      tts.generate(firstChunk.text, { voice: DEFAULT_VOICE })
+        .then((result) => {
+          if (isCancelledRef.current) return;
+          firstChunk.audio = result.audio;
+          firstChunk.duration = result.audio.length / 24000;
+          firstChunk.status = "ready";
+
+          // Update total duration
+          const totalDuration = chunks.reduce((sum, c) => sum + (c.duration || 3), 0);
+          setState((prev) => ({ ...prev, totalDuration }));
+
+          // Start playing if not already started and not cancelled
+          if (!hasStartedPlayingRef.current && !isCancelledRef.current) {
+            hasStartedPlayingRef.current = true;
+            playChunk(0);
+            startProgressUpdates();
+          }
+        })
+        .catch((err) => {
+          console.error("Failed to generate first chunk:", err);
+          firstChunk.status = "error";
+        });
+    }
+
+    // Generate remaining chunks in background (fire and forget)
+    for (let i = 1; i < chunks.length; i++) {
+      const chunk = chunks[i];
+      if (!chunk) continue;
 
       chunk.status = "generating";
-      const audio = await generateChunkAudio(tts, chunk);
+      tts.generate(chunk.text, { voice: DEFAULT_VOICE })
+        .then((result) => {
+          if (isCancelledRef.current) return;
+          chunk.audio = result.audio;
+          chunk.duration = result.audio.length / 24000;
+          chunk.status = "ready";
 
-      if (isCancelledRef.current) return;
-
-      if (audio) {
-        chunk.audio = audio;
-        chunk.duration = getAudioDuration(audio, 24000);
-        chunk.status = "ready";
-
-        const totalDuration = chunksRef.current.reduce((sum, c) => sum + (c.duration || 0), 0);
-        setState((prev) => ({ ...prev, totalDuration }));
-
-        if (index === 0 && !state.isPlaying && !isCancelledRef.current) {
-          setState((prev) => ({ ...prev, isLoading: false }));
-          playChunk(0);
-          startProgressUpdates();
-        }
-      } else {
-        chunk.status = "error";
-      }
-    });
-
-    await Promise.all(generationPromises);
-
-    if (!state.isPlaying && !isCancelledRef.current && chunks[0]?.status === "ready") {
-      setState((prev) => ({ ...prev, isLoading: false }));
-      playChunk(0);
-      startProgressUpdates();
+          // Update total duration
+          const totalDuration = chunks.reduce((sum, c) => sum + (c.duration || 3), 0);
+          setState((prev) => ({ ...prev, totalDuration }));
+        })
+        .catch((err) => {
+          console.error(`Failed to generate chunk ${i}:`, err);
+          chunk.status = "error";
+        });
     }
-  }, [loadModel, createChunks, generateChunkAudio, getAudioDuration, playChunk, startProgressUpdates, stop, state.isPlaying]);
+  }, [loadModel, createChunks, playChunk, startProgressUpdates, stop]);
 
   // Pause playback
   const pause = useCallback(() => {
     if (sourceNodeRef.current) {
       try {
+        sourceNodeRef.current.onended = null;
         sourceNodeRef.current.stop();
       } catch {}
       sourceNodeRef.current = null;
     }
 
-    stopProgressUpdates();
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current);
+      animationFrameRef.current = 0;
+    }
+
     setState((prev) => ({ ...prev, isPlaying: false }));
-  }, [stopProgressUpdates]);
+  }, []);
 
   // Resume playback
   const resume = useCallback(() => {
@@ -398,21 +395,28 @@ export function useTTS() {
     }
   }, [state.activeMessageId, state.isPlaying, pause, resume, play]);
 
-  // Seek
+  // Seek (simplified)
   const seek = useCallback((time: number) => {
-    // Seek implementation simplified
     setState((prev) => ({ ...prev, currentTime: time }));
   }, []);
 
-  // Cleanup
+  // Cleanup on unmount
   useEffect(() => {
     return () => {
-      stop();
+      if (sourceNodeRef.current) {
+        try {
+          sourceNodeRef.current.onended = null;
+          sourceNodeRef.current.stop();
+        } catch {}
+      }
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+      }
       if (audioContextRef.current) {
         audioContextRef.current.close();
       }
     };
-  }, [stop]);
+  }, []);
 
   // Keyboard shortcuts
   useEffect(() => {
