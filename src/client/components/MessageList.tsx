@@ -130,6 +130,8 @@ export default function MessageList({
         const isActivelyStreaming = !!item.isStreaming || item.status === "streaming";
         const isUserItem = item.role === "user";
 
+        const isTTSActive = activeTTSMessageId === item.id;
+
         return (
           <MessageBubble
             key={item.id}
@@ -156,11 +158,15 @@ export default function MessageList({
             onFork={onFork && !isActivelyStreaming ? () => onFork(item.id) : undefined}
             onContinue={onContinue && !isActivelyStreaming && !isUserItem ? () => onContinue(item.content) : undefined}
             onCompact={onCompact && !isActivelyStreaming ? () => onCompact(item.id) : undefined}
+            onToggleTTS={onToggleTTS && !isActivelyStreaming && !isUserItem ? () => onToggleTTS(item.id, item.content) : undefined}
             forceCollapsed={collapsedIds.has(item.id)}
             isSaving={actionLoading === `edit-msg-${item.id}`}
             isForking={actionLoading === `fork-${item.id}`}
             disableContinue={disableQuickContinue}
             actionDisabled={compactBusy}
+            isTTSActive={isTTSActive}
+            isTTSPlaying={isTTSActive && ttsIsPlaying}
+            isTTSLoading={isTTSActive && ttsIsLoading}
           />
         );
       })}
