@@ -41,30 +41,41 @@ export async function searchCheapestGPU(
   minCuda: number = 8.6,
   minMemoryGB: number = 8
 ): Promise<any[]> {
-  const query = new URLSearchParams({
-    q: JSON.stringify({
-      order: [["dph_total", "asc"]],
-      type: "on-demand",
-      gpu_name: ["RTX 3060", "RTX 4060", "RTX 4060 Ti", "A4000", "RTX 3070", "RTX 3080"],
-      cuda_max: { gte: minCuda },
-      gpu_ram: { gte: minMemoryGB * 1024 }, // MB
-      verified: { eq: true },
-      rentable: { eq: true },
-    }),
+  // Build query string manually - Vast.ai expects specific format
+  const queryParams = new URLSearchParams({
+    order: "dph_total",
+    order_direction: "asc",
+    type: "on-demand",
+    gpu_ram: (minMemoryGB * 1024).toString(),
+    cuda_vers: minCuda.toString(),
+    verified: "true",
+    rentable: "true",
   });
 
-  const response = await fetch(`${VAST_API_URL}/bundles/?${query}`, {
+  const response = await fetch(`${VAST_API_URL}/bundles/?${queryParams}`, {
     headers: {
       Authorization: `Bearer ${VAST_API_KEY}`,
     },
   });
 
   if (!response.ok) {
+    const errorText = await response.text();
+    console.error("[VastTTS] Search failed:", response.status, errorText);
     throw new Error(`Failed to search instances: ${response.statusText}`);
   }
 
   const data = await response.json();
-  return data.offers || [];
+  const offers = data.offers || [];
+  
+  // Filter for compatible GPUs
+  const compatibleGPUs = ["RTX 3060", "RTX 4060", "RTX 4060 Ti", "A4000", "RTX 3070", "RTX 3080", "RTX 3090", "A5000"];
+  const filtered = offers.filter((offer: any) => {
+    const gpuName = (offer.gpu_name || "").toUpperCase();
+    return compatibleGPUs.some(gpu => gpuName.includes(gpu.toUpperCase()));
+  });
+  
+  console.log(`[VastTTS] Found ${filtered.length} compatible offers out of ${offers.length} total`);
+  return filtered;
 }
 
 /**
