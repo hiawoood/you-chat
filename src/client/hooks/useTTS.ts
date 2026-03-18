@@ -21,6 +21,7 @@ interface TTSState {
 }
 
 const CHUNK_SIZE = 500;
+const FIRST_CHUNK_SIZE = 200; // Smaller first chunk for faster start
 const SAMPLE_RATE = 24000;
 
 // Strip markdown formatting for TTS
@@ -44,15 +45,19 @@ function stripMarkdown(text: string): string {
   );
 }
 
-// Split text into chunks
+// Split text into chunks - first chunk is smaller for faster initial playback
 function createChunks(text: string): TTSChunk[] {
   const sentences = text.match(/[^.!?]+[.!?]+["']?|[^.!?]+$/g) || [text];
   const chunks: TTSChunk[] = [];
   let currentChunk = "";
   let chunkId = 0;
+  let isFirstChunk = true;
+  const maxChunkSize = isFirstChunk ? FIRST_CHUNK_SIZE : CHUNK_SIZE;
 
   for (const sentence of sentences) {
-    if ((currentChunk + sentence).length > CHUNK_SIZE && currentChunk.length > 0) {
+    const currentMax = chunkId === 0 ? FIRST_CHUNK_SIZE : CHUNK_SIZE;
+    
+    if ((currentChunk + sentence).length > currentMax && currentChunk.length > 0) {
       chunks.push({
         id: chunkId++,
         text: currentChunk.trim(),
@@ -61,6 +66,7 @@ function createChunks(text: string): TTSChunk[] {
         status: "pending",
       });
       currentChunk = sentence;
+      isFirstChunk = false;
     } else {
       currentChunk += " " + sentence;
     }
@@ -155,6 +161,11 @@ export function useTTS() {
   const stop = useCallback(() => {
     isCancelledRef.current = true;
     hasStartedPlayingRef.current = false;
+
+    // Clear worker queue
+    if (workerRef.current) {
+      workerRef.current.postMessage({ type: "clear" });
+    }
 
     if (sourceNodeRef.current) {
       try {
@@ -355,7 +366,21 @@ export function useTTS() {
     setState((prev) => ({ ...prev, currentTime: time }));
   }, []);
 
-  // Cleanup
+  // Initialize worker and preload model on first interaction
+  useEffect(() => {
+    const worker = getWorker();
+    
+    // Preload model after a short delay (on mount)
+    const preloadTimer = setTimeout(() => {
+      worker.postMessage({ type: "preload" });
+    }, 1000);
+
+    return () => {
+      clearTimeout(preloadTimer);
+    };
+  }, [getWorker]);
+
+  // Cleanup on unmount
   useEffect(() => {
     return () => {
       if (sourceNodeRef.current) {
