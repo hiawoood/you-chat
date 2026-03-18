@@ -29,6 +29,40 @@ const CHUNK_SIZE = 500;
 const MODEL_ID = "onnx-community/Kokoro-82M-v1.0-ONNX";
 const DEFAULT_VOICE = "af_heart";
 
+// Strip markdown formatting for TTS
+function stripMarkdown(text: string): string {
+  return (
+    text
+      // Headers (# Header)
+      .replace(/^#{1,6}\s+/gm, "")
+      // Bold/italic (**text**, *text*, __text__, _text_)
+      .replace(/(\*{1,2}|_{1,2})(.+?)\1/g, "$2")
+      // Strikethrough (~~text~~)
+      .replace(/~~(.+?)~~/g, "$1")
+      // Links [text](url) -> just text
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+      // Images ![alt](url) -> just alt text
+      .replace(/!\[([^\]]*)\]\([^)]+\)/g, "$1")
+      // Code blocks (```code```)
+      .replace(/```[\s\S]*?```/g, "")
+      // Inline code (`code`)
+      .replace(/`([^`]+)`/g, "$1")
+      // Blockquotes (> text)
+      .replace(/^\s*>\s*/gm, "")
+      // List markers (- item, * item, 1. item)
+      .replace(/^\s*[-*+]\s+/gm, "")
+      .replace(/^\s*\d+\.\s+/gm, "")
+      // Horizontal rules (---, ***, ___)
+      .replace(/^\s*[-*_]{3,}\s*$/gm, "")
+      // HTML tags
+      .replace(/<[^>]+>/g, "")
+      // Multiple newlines -> single
+      .replace(/\n{3,}/g, "\n\n")
+      // Trim
+      .trim()
+  );
+}
+
 export function useTTS() {
   const [state, setState] = useState<TTSState>({
     isLoading: false,
@@ -284,7 +318,10 @@ export function useTTS() {
       return;
     }
 
-    const chunks = createChunks(text);
+    // Strip markdown for clean TTS audio
+    const plainText = stripMarkdown(text);
+
+    const chunks = createChunks(plainText);
     chunksRef.current = chunks;
 
     const estimatedDuration = chunks.length * 3;
