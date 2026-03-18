@@ -79,18 +79,18 @@ export async function searchCheapestGPU(
 }
 
 /**
- * Create a new Vast.ai instance with Chatterbox TTS Server
- * Uses Vast.ai template approach with PROVISIONING_SCRIPT
- * See: https://docs.vast.ai/documentation/templates/advanced-setup
+ * Create a new Vast.ai instance using the Chatterbox TTS template
+ * Uses template_hash_id for consistent configuration
+ * See: https://docs.vast.ai/api-reference/creating-and-using-templates-with-api
  */
 export async function createInstance(
   offerId: string
 ): Promise<VastInstance> {
-  // Provisioning script URL (raw GitHub)
-  const provisionScriptUrl = "https://raw.githubusercontent.com/hiawoood/you-chat/main/scripts/vastai-provision.sh";
+  // Template hash for Chatterbox Turbo TTS Server
+  // Template includes: vastai/pytorch image, port 8000, provisioning script
+  const TEMPLATE_HASH_ID = "fed19d255cef8f304ed67e8f361f3034";
   
-  // Accept the ask contract to create instance
-  // Use vastai/pytorch base image with PROVISIONING_SCRIPT for automatic setup
+  // Create instance from template
   const response = await fetch(`${VAST_API_URL}/asks/${offerId}/`, {
     method: "PUT",
     headers: {
@@ -99,14 +99,8 @@ export async function createInstance(
     },
     body: JSON.stringify({
       client_id: "me",
-      image: "vastai/pytorch:2.6.0-cuda-12.6.3-py312",  // Vast.ai official PyTorch image
-      disk: 30,
-      env: {
-        PROVISIONING_SCRIPT: provisionScriptUrl,  // Runs automatically on boot
-        PORTAL_CONFIG: "localhost:8000:18000:/:TTS Server"  // Exposes port 8000
-      },
-      onstart: "",  // Not needed - PROVISIONING_SCRIPT handles setup
-      image_login: null,
+      template_hash_id: TEMPLATE_HASH_ID,  // Use pre-configured template
+      disk: 30,  // Override template disk size if needed
     }),
   });
 
