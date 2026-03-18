@@ -80,17 +80,17 @@ export async function searchCheapestGPU(
 
 /**
  * Create a new Vast.ai instance with Chatterbox TTS Server
- * Uses PUT /asks/{id}/ to accept an ask contract
- * Downloads and runs setup script from GitHub on startup
+ * Uses Vast.ai template approach with PROVISIONING_SCRIPT
+ * See: https://docs.vast.ai/documentation/templates/advanced-setup
  */
 export async function createInstance(
   offerId: string
 ): Promise<VastInstance> {
-  // Setup script URL (raw GitHub)
-  const setupScriptUrl = "https://raw.githubusercontent.com/hiawoood/you-chat/main/scripts/setup-chatterbox.sh";
+  // Provisioning script URL (raw GitHub)
+  const provisionScriptUrl = "https://raw.githubusercontent.com/hiawoood/you-chat/main/scripts/vastai-provision.sh";
   
   // Accept the ask contract to create instance
-  // Use PyTorch base image and download/run our setup script on startup
+  // Use vastai/pytorch base image with PROVISIONING_SCRIPT for automatic setup
   const response = await fetch(`${VAST_API_URL}/asks/${offerId}/`, {
     method: "PUT",
     headers: {
@@ -99,10 +99,13 @@ export async function createInstance(
     },
     body: JSON.stringify({
       client_id: "me",
-      image: "pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime",
-      env: {},
-      onstart: `curl -fsSL ${setupScriptUrl} | bash`,
+      image: "vastai/pytorch:2.6.0-cuda-12.6.3-py312",  // Vast.ai official PyTorch image
       disk: 30,
+      env: {
+        PROVISIONING_SCRIPT: provisionScriptUrl,  // Runs automatically on boot
+        PORTAL_CONFIG: "localhost:8000:18000:/:TTS Server"  // Exposes port 8000
+      },
+      onstart: "",  // Not needed - PROVISIONING_SCRIPT handles setup
       image_login: null,
     }),
   });
