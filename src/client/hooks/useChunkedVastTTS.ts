@@ -121,6 +121,23 @@ export function useChunkedVastTTS() {
     }
   }, []);
 
+  // Sync progress to backend
+  const saveProgress = useCallback(async (messageId: string, index: number) => {
+    try {
+      await api.patch(`/tts/progress/${messageId}`, { chunkIndex: index });
+    } catch { /* ignore */ }
+  }, []);
+
+  // Fetch progress
+  const fetchProgress = useCallback(async (messageId: string): Promise<number> => {
+    try {
+      const res = await api.get(`/tts/progress/${messageId}`);
+      return res.chunkIndex || 0;
+    } catch {
+      return 0;
+    }
+  }, []);
+
   // Full reset
   const reset = useCallback(() => {
     cancelledRef.current = true;
@@ -235,6 +252,11 @@ export function useChunkedVastTTS() {
       // Prefetch next chunk in background
       if (i + 1 < chunksRef.current.length) {
         void prefetchChunk(i + 1);
+      }
+
+      // Save progress to backend
+      if (messageIdRef.current) {
+        void saveProgress(messageIdRef.current, i);
       }
 
       // Play audio and wait for it to finish
