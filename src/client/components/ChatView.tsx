@@ -74,6 +74,8 @@ export default function ChatView({
     pause: ttsPause,
     resume: ttsResume,
     toggle: ttsToggle,
+    nextChunk: ttsNextChunk,
+    prevChunk: ttsPrevChunk,
     startFromWord,
     stop: ttsStop,
   } = useChunkedVastTTS();
@@ -350,13 +352,26 @@ export default function ChatView({
                 </span>
               ) : ttsIsPlaying ? (
                 <span className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-green-600 bg-green-50 dark:bg-green-900/20 rounded-full">
-                  <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
-                    <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02z" />
-                  </svg>
-                  {ttsTotalChunks > 1 ? `${ttsCurrentChunk + 1}/${ttsTotalChunks}` : "Playing"}
+                  <button
+                    onClick={() => void ttsPrevChunk()}
+                    disabled={ttsCurrentChunk <= 0}
+                    className="p-0.5 hover:bg-green-200 dark:hover:bg-green-800 rounded disabled:opacity-30"
+                    title="Previous chunk"
+                  >
+                    <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z" /></svg>
+                  </button>
+                  {ttsTotalChunks > 1 ? `${ttsCurrentChunk + 1}/${ttsTotalChunks}` : "▶"}
+                  <button
+                    onClick={() => void ttsNextChunk()}
+                    disabled={ttsCurrentChunk >= ttsTotalChunks - 1}
+                    className="p-0.5 hover:bg-green-200 dark:hover:bg-green-800 rounded disabled:opacity-30"
+                    title="Next chunk"
+                  >
+                    <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z" /></svg>
+                  </button>
                   <button
                     onClick={() => void ttsPause()}
-                    className="ml-1 p-0.5 hover:bg-green-200 dark:hover:bg-green-800 rounded"
+                    className="p-0.5 hover:bg-green-200 dark:hover:bg-green-800 rounded"
                     title="Pause"
                   >
                     <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
@@ -366,7 +381,7 @@ export default function ChatView({
                   </button>
                   <button
                     onClick={() => void ttsStop()}
-                    className="ml-1 p-0.5 hover:bg-green-200 dark:hover:bg-green-800 rounded"
+                    className="p-0.5 hover:bg-green-200 dark:hover:bg-green-800 rounded"
                     title="Stop"
                   >
                     <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
@@ -376,13 +391,26 @@ export default function ChatView({
                 </span>
               ) : ttsIsPaused ? (
                 <span className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-blue-600 bg-blue-50 dark:bg-blue-900/20 rounded-full">
-                  <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
-                    <path d="M8 5v14l11-7z" />
-                  </svg>
-                  Paused
+                  <button
+                    onClick={() => void ttsPrevChunk()}
+                    disabled={ttsCurrentChunk <= 0}
+                    className="p-0.5 hover:bg-blue-200 dark:hover:bg-blue-800 rounded disabled:opacity-30"
+                    title="Previous chunk"
+                  >
+                    <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z" /></svg>
+                  </button>
+                  Paused {ttsTotalChunks > 1 ? `${ttsCurrentChunk + 1}/${ttsTotalChunks}` : ""}
+                  <button
+                    onClick={() => void ttsNextChunk()}
+                    disabled={ttsCurrentChunk >= ttsTotalChunks - 1}
+                    className="p-0.5 hover:bg-blue-200 dark:hover:bg-blue-800 rounded disabled:opacity-30"
+                    title="Next chunk"
+                  >
+                    <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z" /></svg>
+                  </button>
                   <button
                     onClick={() => void ttsResume()}
-                    className="ml-1 p-0.5 hover:bg-blue-200 dark:hover:bg-blue-800 rounded"
+                    className="p-0.5 hover:bg-blue-200 dark:hover:bg-blue-800 rounded"
                     title="Resume"
                   >
                     <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
@@ -391,7 +419,7 @@ export default function ChatView({
                   </button>
                   <button
                     onClick={() => void ttsStop()}
-                    className="ml-1 p-0.5 hover:bg-blue-200 dark:hover:bg-blue-800 rounded"
+                    className="p-0.5 hover:bg-blue-200 dark:hover:bg-blue-800 rounded"
                     title="Stop"
                   >
                     <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
