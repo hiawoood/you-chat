@@ -36,6 +36,7 @@ interface MessageListProps {
   ttsCurrentChunk?: number;
   ttsIsPlaying?: boolean;
   ttsIsLoading?: boolean;
+  bottomSpacerHeight?: number;
 }
 
 function formatTime(ts: number): string {
@@ -77,6 +78,7 @@ export default function MessageList({
   ttsCurrentChunk,
   ttsIsPlaying,
   ttsIsLoading,
+  bottomSpacerHeight = 0,
 }: MessageListProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const prevMessageLengthRef = useRef(messages.length);
@@ -215,6 +217,7 @@ export default function MessageList({
         </div>
       )}
 
+      {bottomSpacerHeight > 0 && <div aria-hidden="true" style={{ height: `${bottomSpacerHeight}px` }} />}
       <div ref={bottomRef} />
     </div>
   );

@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, type TouchEvent as ReactTouchEvent } from "react";
 import { api } from "../lib/api";
 import type { ChatSession, Message, Agent } from "../lib/api";
 import { useChat } from "../hooks/useChat";
@@ -10,6 +10,9 @@ import MessageInput from "./MessageInput";
 import CompactModal from "./CompactModal";
 
 const SCROLL_TRIGGER_BUFFER_PX = 200;
+const TTS_CONTROL_BOTTOM_SPACER_PX = 76;
+const TTS_CHUNK_PANEL_EXTRA_SPACER_PX = 168;
+const TTS_SWIPE_THRESHOLD_PX = 48;
 
 interface ChatViewProps {
   session: ChatSession;
@@ -59,6 +62,8 @@ export default function ChatView({
   const hideHeader = scrollDirection === "down";
   const [showScrollBtn, setShowScrollBtn] = useState(false);
   const [suppressMessageAutoScroll, setSuppressMessageAutoScroll] = useState(false);
+  const [showChunkTextPanel, setShowChunkTextPanel] = useState(false);
+  const chunkPanelTouchStartRef = useRef<{ x: number; y: number } | null>(null);
 
   // Initialize chunked TTS hook
   const {
@@ -66,6 +71,7 @@ export default function ChatView({
     isPlaying: ttsIsPlaying,
     isPaused: ttsIsPaused,
     currentChunkIndex: ttsCurrentChunk,
+    loadingChunkIndex: ttsLoadingChunkIndex,
     totalChunks: ttsTotalChunks,
     error: ttsError,
     activeMessageId: ttsActiveMessageId,
@@ -114,6 +120,21 @@ export default function ChatView({
   useEffect(() => {
     api.getAgents().then(setAgents).catch(console.error);
   }, []);
+
+  const hasTtsOverlay = Boolean(ttsActiveMessageId || ttsIsLoading || ttsIsPlaying || ttsIsPaused || ttsError);
+  const activeChunk = ttsChunks[ttsCurrentChunk] ?? null;
+  const activeChunkText = activeChunk?.text ?? "No chunk text available.";
+  const currentChunkNumber = ttsTotalChunks > 0 ? ttsCurrentChunk + 1 : 0;
+  const isCurrentChunkLoading = ttsLoadingChunkIndex === ttsCurrentChunk;
+  const ttsBottomSpacerHeight = hasTtsOverlay
+    ? TTS_CONTROL_BOTTOM_SPACER_PX + (showChunkTextPanel ? TTS_CHUNK_PANEL_EXTRA_SPACER_PX : 0)
+    : 0;
+
+  useEffect(() => {
+    if (!hasTtsOverlay || ttsTotalChunks === 0) {
+      setShowChunkTextPanel(false);
+    }
+  }, [hasTtsOverlay, ttsTotalChunks]);
 
   const handleAgentChange = (newAgent: string) => {
     onUpdateSession(session.id, { agent: newAgent });
@@ -238,6 +259,40 @@ export default function ChatView({
 
   const closeCompact = () => {
     setCompactTarget(null);
+  };
+
+  const handleChunkPanelTouchStart = (event: ReactTouchEvent<HTMLDivElement>) => {
+    const touch = event.touches[0];
+    if (!touch) return;
+
+    chunkPanelTouchStartRef.current = {
+      x: touch.clientX,
+      y: touch.clientY,
+    };
+  };
+
+  const handleChunkPanelTouchEnd = (event: ReactTouchEvent<HTMLDivElement>) => {
+    const start = chunkPanelTouchStartRef.current;
+    const touch = event.changedTouches[0];
+    chunkPanelTouchStartRef.current = null;
+
+    if (!start || !touch) return;
+
+    const deltaX = touch.clientX - start.x;
+    const deltaY = touch.clientY - start.y;
+
+    if (Math.abs(deltaX) < TTS_SWIPE_THRESHOLD_PX || Math.abs(deltaX) <= Math.abs(deltaY)) {
+      return;
+    }
+
+    if (deltaX < 0 && ttsCurrentChunk < ttsTotalChunks - 1) {
+      void ttsNextChunk();
+      return;
+    }
+
+    if (deltaX > 0 && ttsCurrentChunk > 0) {
+      void ttsPrevChunk();
+    }
   };
 
   const hasMessages = messages.length > 0;
@@ -378,6 +433,7 @@ export default function ChatView({
               ttsCurrentChunk={ttsCurrentChunk}
               ttsIsPlaying={ttsIsPlaying}
               ttsIsLoading={ttsIsLoading}
+              bottomSpacerHeight={ttsBottomSpacerHeight}
             />
           </div>
         )}
@@ -399,21 +455,43 @@ export default function ChatView({
 
       {/* Input */}
       <div className="min-h-[3.5rem] flex items-end border-t border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 flex-shrink-0 py-2 relative">
-        {(ttsIsLoading || ttsIsPlaying || ttsIsPaused || ttsError) && (
+        {hasTtsOverlay && (
           <div className="absolute -top-12 left-0 right-0 flex justify-center pointer-events-none">
-            <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 shadow-lg rounded-full px-3 py-1.5 flex items-center gap-2 pointer-events-auto transform transition-transform duration-200 hover:scale-105">
-              {ttsIsLoading ? (
-                <div className="flex items-center gap-2 text-xs font-medium text-yellow-600 dark:text-yellow-400">
-                  <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                  </svg>
-                  <span>Loading...</span>
-                  <button onClick={() => void ttsStop()} className="p-1 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-full" title="Cancel">
-                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
-                  </button>
+            <div className="relative bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 shadow-lg rounded-full px-3 py-1.5 flex items-center gap-2 pointer-events-auto transform transition-transform duration-200 hover:scale-105">
+              {showChunkTextPanel && ttsTotalChunks > 0 && !ttsError && (
+                <div
+                  className="absolute bottom-full left-1/2 z-10 mb-2 w-[min(22rem,calc(100vw-2rem))] -translate-x-1/2 rounded-2xl border border-gray-200 bg-white/95 px-3 py-2 shadow-xl backdrop-blur dark:border-gray-700 dark:bg-gray-900/95"
+                  onTouchStart={handleChunkPanelTouchStart}
+                  onTouchEnd={handleChunkPanelTouchEnd}
+                  onTouchCancel={() => {
+                    chunkPanelTouchStartRef.current = null;
+                  }}
+                >
+                  <div className="mb-1 flex items-center justify-between gap-2 text-[11px] font-medium text-gray-500 dark:text-gray-400">
+                    <span>Chunk {currentChunkNumber} of {ttsTotalChunks}</span>
+                    {isCurrentChunkLoading ? (
+                      <span className="inline-flex items-center gap-1 text-amber-600 dark:text-amber-400">
+                        <svg className="h-3 w-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                        </svg>
+                        Loading audio
+                      </span>
+                    ) : (
+                      <span>{activeChunk?.status === "error" ? "Failed" : activeChunk?.audio ? "Cached" : "Queued"}</span>
+                    )}
+                  </div>
+                  <div className="max-h-32 overflow-y-auto text-sm leading-5 text-gray-700 dark:text-gray-200">
+                    {activeChunkText}
+                  </div>
+                  {ttsTotalChunks > 1 && (
+                    <div className="mt-2 text-[11px] text-gray-400 dark:text-gray-500">
+                      Swipe left or right to skip chunks.
+                    </div>
+                  )}
                 </div>
-              ) : ttsError ? (
+              )}
+              {ttsError ? (
                 <div className="flex items-center gap-2 text-xs font-medium text-red-600 dark:text-red-400">
                   <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" strokeWidth="2" /><path d="M12 8v4m0 4h.01" strokeWidth="2" strokeLinecap="round" /></svg>
                   <span>Error</span>
@@ -431,22 +509,40 @@ export default function ChatView({
                   >
                     <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z" /></svg>
                   </button>
-                  
+
                   <button
-                    onClick={() => ttsIsPlaying ? void ttsPause() : void ttsResume()}
+                    onClick={() => (ttsIsPlaying || ttsIsLoading) ? void ttsPause() : void ttsResume()}
                     className="p-1.5 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-full transition-colors"
-                    title={ttsIsPlaying ? "Pause" : "Resume"}
+                    title={(ttsIsPlaying || ttsIsLoading) ? "Pause" : "Resume"}
                   >
-                    {ttsIsPlaying ? (
+                    {(ttsIsPlaying || ttsIsLoading) ? (
                       <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z" /></svg>
                     ) : (
                       <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
                     )}
                   </button>
 
-                  <div className="text-xs font-medium tabular-nums text-gray-600 dark:text-gray-300 min-w-[3rem] text-center select-none">
-                    {ttsCurrentChunk + 1} / {ttsTotalChunks}
+                  <div className="flex items-center gap-1 text-xs font-medium tabular-nums text-gray-600 dark:text-gray-300 min-w-[3.75rem] text-center select-none">
+                    <span>{currentChunkNumber} / {ttsTotalChunks}</span>
+                    {isCurrentChunkLoading && (
+                      <svg className="w-3.5 h-3.5 animate-spin text-amber-500 dark:text-amber-400" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                      </svg>
+                    )}
                   </div>
+
+                  {ttsTotalChunks > 0 && (
+                    <button
+                      onClick={() => setShowChunkTextPanel((prev) => !prev)}
+                      className={`p-1.5 rounded-full transition-colors ${showChunkTextPanel ? "bg-gray-100 text-gray-900 dark:bg-gray-700 dark:text-white" : "text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"}`}
+                      title={showChunkTextPanel ? "Hide current chunk text" : "Show current chunk text"}
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 8h10M7 12h7m-7 4h10M5 5h14a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2z" />
+                      </svg>
+                    </button>
+                  )}
 
                   <button
                     onClick={() => void ttsNextChunk()}
