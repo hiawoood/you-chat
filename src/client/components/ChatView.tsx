@@ -602,7 +602,7 @@ export default function ChatView({
       <div className="min-h-[3.5rem] flex items-end border-t border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 flex-shrink-0 py-2 relative">
         {hasTtsOverlay && (
           <div className="absolute -top-12 left-0 right-0 flex justify-center pointer-events-none">
-            <div className="relative max-w-[calc(100vw-1rem)] overflow-hidden bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 shadow-lg rounded-full px-2 py-1 flex items-center gap-1 sm:px-3 sm:py-1.5 sm:gap-2 pointer-events-auto transform transition-transform duration-200 hover:scale-105">
+            <div className="relative max-w-[calc(100vw-1rem)] overflow-visible bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 shadow-lg rounded-full px-2 py-1 flex items-center gap-1 sm:px-3 sm:py-1.5 sm:gap-2 pointer-events-auto transform transition-transform duration-200 hover:scale-105">
               {showChunkTextPanel && ttsTotalChunks > 0 && !ttsError && (
                 <div
                   className="absolute bottom-full left-1/2 z-10 mb-2 w-[min(22rem,calc(100vw-2rem))] -translate-x-1/2 rounded-2xl border border-gray-200 bg-white/95 px-3 py-2 shadow-xl backdrop-blur dark:border-gray-700 dark:bg-gray-900/95"
