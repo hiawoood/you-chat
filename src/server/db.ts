@@ -461,3 +461,19 @@ export function getSessionYouChatId(sessionId: string): string | null {
   const row = db.query(`SELECT you_chat_id FROM chat_sessions WHERE id = ?`).get(sessionId) as { you_chat_id: string | null } | null;
   return row?.you_chat_id || null;
 }
+
+// ─── TTS Chunk Progress ─────────────────────────────────────
+
+export function getTtsProgress(messageId: string): number {
+  const row = db.query(`SELECT chunk_index FROM tts_progress WHERE message_id = ?`).get(messageId) as { chunk_index: number } | null;
+  return row?.chunk_index ?? 0;
+}
+
+export function setTtsProgress(messageId: string, chunkIndex: number) {
+  const now = Math.floor(Date.now() / 1000);
+  db.run(
+    `INSERT INTO tts_progress (message_id, chunk_index, updated_at) VALUES (?, ?, ?)
+     ON CONFLICT(message_id) DO UPDATE SET chunk_index = excluded.chunk_index, updated_at = excluded.updated_at`,
+    [messageId, chunkIndex, now]
+  );
+}
