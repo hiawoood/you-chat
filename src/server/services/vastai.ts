@@ -37,6 +37,7 @@ export interface TTSSpeechResponse {
 
 // In-memory instance state (would be persisted to DB in production)
 let activeInstance: VastInstance | null = null;
+let instanceStartupPromise: Promise<VastInstance> | null = null;
 let inactivityTimer: Timer | null = null;
 const INACTIVITY_TIMEOUT = 60 * 60 * 1000; // 60 minutes
 
@@ -609,28 +610,7 @@ export function getActiveInstance(): VastInstance | null {
   return activeInstance;
 }
 
-/**
- * Start the cheapest available GPU instance
- * Uses aggressive retry strategy due to competitive marketplace
- * Checks for existing healthy instance first before creating new one
- */
-export async function startCheapestInstance(): Promise<VastInstance> {
-  // First, check if we already have an active instance that's healthy
-  if (activeInstance?.ip && activeInstance?.port) {
-    console.log("[VastTTS] Checking if existing active instance is healthy...");
-    const isHealthy = await healthCheck();
-    
-    if (isHealthy) {
-      console.log(`[VastTTS] Adopting existing healthy instance: ${activeInstance.id}`);
-      activeInstance.lastActivity = new Date();
-      resetInactivityTimer();
-      return activeInstance;
-    } else {
-      console.log("[VastTTS] Existing instance not healthy, will look for others...");
-      activeInstance = null;
-    }
-  }
-
+async function startCheapestInstanceInternal(): Promise<VastInstance> {
   // Second, check Vast.ai API for any running instances we might have lost track of
   const adoptedInstance = await findAndAdoptExistingInstance();
   if (adoptedInstance) {
@@ -655,7 +635,7 @@ export async function startCheapestInstance(): Promise<VastInstance> {
 
     // Try top offers from this search
     const offersToTry = offers.slice(0, 5);
-    
+
     for (const offer of offersToTry) {
       try {
         console.log(`[VastTTS] Trying offer ${offer.id}: ${offer.gpu_name} at $${offer.dph_total}/hour`);
@@ -676,6 +656,40 @@ export async function startCheapestInstance(): Promise<VastInstance> {
   }
 
   throw new Error("Unable to secure a GPU instance. The Vast.ai marketplace is very competitive. Please try again.");
+}
+
+/**
+ * Start the cheapest available GPU instance
+ * Uses aggressive retry strategy due to competitive marketplace
+ * Checks for existing healthy instance first before creating new one
+ */
+export async function startCheapestInstance(): Promise<VastInstance> {
+  // First, check if we already have an active instance that's healthy
+  if (activeInstance?.ip && activeInstance?.port) {
+    console.log("[VastTTS] Checking if existing active instance is healthy...");
+    const isHealthy = await healthCheck();
+    
+    if (isHealthy) {
+      console.log(`[VastTTS] Adopting existing healthy instance: ${activeInstance.id}`);
+      activeInstance.lastActivity = new Date();
+      resetInactivityTimer();
+      return activeInstance;
+    } else {
+      console.log("[VastTTS] Existing instance not healthy, will look for others...");
+      activeInstance = null;
+    }
+  }
+
+  if (instanceStartupPromise) {
+    console.log("[VastTTS] Awaiting in-flight instance startup...");
+    return instanceStartupPromise;
+  }
+
+  instanceStartupPromise = startCheapestInstanceInternal().finally(() => {
+    instanceStartupPromise = null;
+  });
+
+  return instanceStartupPromise;
 }
 
 /**

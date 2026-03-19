@@ -42,8 +42,13 @@ function hashText(text: string): string {
   return "h" + (h >>> 0).toString(36);
 }
 
-function buildChunkHash(text: string, voiceReferenceId: string | null): string {
-  return hashText(`${voiceReferenceId || "builtin"}::${text}`);
+function buildChunkHash(
+  messageId: string,
+  chunkIndex: number,
+  text: string,
+  voiceReferenceId: string | null
+): string {
+  return hashText(`${messageId}::${chunkIndex}::${voiceReferenceId || "builtin"}::${text}`);
 }
 
 function readCacheIndex(): CacheIndex {
@@ -500,7 +505,7 @@ export function useChunkedVastTTS() {
 
     let wordOffset = 0;
     chunksRef.current = textChunks.map((chunkTextValue, index) => {
-      const hash = buildChunkHash(chunkTextValue, activeVoiceReferenceIdRef.current);
+      const hash = buildChunkHash(messageId, index, chunkTextValue, activeVoiceReferenceIdRef.current);
       const cachedAudio = getCachedAudio(hash);
       const words = chunkTextValue.split(/\s+/).length;
       const chunk: TTSChunk = {
