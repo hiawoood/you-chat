@@ -62,7 +62,7 @@ function setCachedAudio(hash: string, audio: string): void {
 
 // ---- Chunking ----
 // Split text into ≤100 word chunks at sentence boundaries (floor rounding)
-function chunkText(text: string, targetWordsPerChunk: number = 100): string[] {
+function chunkText(text: string, targetWordsPerChunk: number = 80): string[] {
   const sentences = text.match(/[^.!?]+[.!?]+["']?|[^.!?]+$/g) || [text];
   const chunks: string[] = [];
   let currentChunk = "";
