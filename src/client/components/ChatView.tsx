@@ -330,50 +330,74 @@ export default function ChatView({
 
             {/* GPU TTS Status Indicator */}
             <div className="flex items-center gap-1 ml-2">
-              {ttsIsStarting ? (
+              {ttsIsLoading ? (
                 <span className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-yellow-600 bg-yellow-50 dark:bg-yellow-900/20 rounded-full">
                   <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
                     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                     <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
                   </svg>
-                  Starting GPU...
+                  Loading TTS...
                 </span>
-              ) : ttsIsActive && ttsIsHealthy ? (
+              ) : ttsIsPlaying ? (
                 <span className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-green-600 bg-green-50 dark:bg-green-900/20 rounded-full">
                   <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
-                    <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
+                    <path d="M13 2L3 14h9l-1 8 10-12h-7z" />
                   </svg>
-                  {ttsStatus?.instance?.gpuName || "GPU Ready"}
-                  {ttsStatus?.instance?.hourlyRate && (
-                    <span className="text-green-500">${Number(ttsStatus.instance.hourlyRate).toFixed(3)}/hr</span>
-                  )}
+                  {ttsTotalChunks > 1 ? `Chunk ${ttsCurrentChunk + 1}/${ttsTotalChunks}` : "Playing"}
                   <button
-                    onClick={() => void stopTTSInstance()}
+                    onClick={() => void ttsPause()}
                     className="ml-1 p-0.5 hover:bg-green-200 dark:hover:bg-green-800 rounded"
-                    title="Stop GPU"
+                    title="Pause TTS"
+                  >
+                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <rect x="6" y="4" width="4" height="16" rx="1" strokeWidth="2" />
+                      <rect x="14" y="4" width="4" height="16" rx="1" strokeWidth="2" />
+                    </svg>
+                  </button>
+                  <button
+                    onClick={() => void ttsStop()}
+                    className="ml-1 p-0.5 hover:bg-green-200 dark:hover:bg-green-800 rounded"
+                    title="Stop TTS"
                   >
                     <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <rect x="6" y="6" width="12" height="12" rx="2" strokeWidth="2" />
                     </svg>
                   </button>
                 </span>
-              ) : ttsIsActive && !ttsIsHealthy ? (
-                <span className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-orange-600 bg-orange-50 dark:bg-orange-900/20 rounded-full">
-                  <svg className="w-3 h-3 animate-pulse" fill="currentColor" viewBox="0 0 24 24">
+              ) : ttsIsPaused ? (
+                <span className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-blue-600 bg-blue-50 dark:bg-blue-900/20 rounded-full">
+                  <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M8 5v14l11-7z" />
+                  </svg>
+                  Paused
+                  <button
+                    onClick={() => void ttsResume()}
+                    className="ml-1 p-0.5 hover:bg-blue-200 dark:hover:bg-blue-800 rounded"
+                    title="Resume TTS"
+                  >
+                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                  </button>
+                </span>
+              ) : ttsError ? (
+                <span className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-red-600 bg-red-50 dark:bg-red-900/20 rounded-full">
+                  <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
                     <circle cx="12" cy="12" r="10" />
                   </svg>
-                  Initializing...
+                  TTS Error
                 </span>
               ) : (
                 <button
-                  onClick={() => void startTTSInstance()}
+                  onClick={() => void ttsToggle("", "")}
                   className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 dark:text-gray-300 rounded-full transition-colors"
-                  title="Start GPU for TTS"
+                  title="Start TTS"
                 >
                   <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
                   </svg>
-                  Start GPU
+                  Start TTS
                 </button>
               )}
             </div>
@@ -409,7 +433,8 @@ export default function ChatView({
               onFork={onFork}
               onContinue={handleContinue}
               onCompact={handleOpenCompact}
-              onToggleTTS={ttsIsActive && ttsIsHealthy ? handleToggleTTS : undefined}
+              onToggleTTS={handleToggleTTS}
+              onWordClick={showWordMenu}
               actionLoading={actionLoading}
               collapsedIds={collapsedIds}
               suppressAutoScrollOnNextAppend={suppressMessageAutoScroll}
@@ -418,7 +443,11 @@ export default function ChatView({
               isNearBottom={isNearBottom}
               disableQuickContinue={hasActiveStream}
               compactBusy={isCompacting}
-              ttsEnabled={ttsIsActive && ttsIsHealthy}
+              ttsActiveMessageId={ttsActiveMessageId}
+              ttsChunks={ttsChunks}
+              ttsCurrentChunk={ttsCurrentChunk}
+              ttsIsPlaying={ttsIsPlaying}
+              ttsIsLoading={ttsIsLoading}
             />
           </div>
         )}
