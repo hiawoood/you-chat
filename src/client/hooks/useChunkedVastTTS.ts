@@ -279,16 +279,21 @@ export function useChunkedVastTTS() {
     }
   }, [generateChunkAudio, prefetchChunk, stopAudio]);
 
-  // Start playback from a specific chunk index
+  // Start playback from a specific chunk index (auto-resumes from backend progress if startChunkIndex=0)
   const startPlayback = useCallback(async (
     text: string,
     messageId: string,
-    startChunkIndex: number = 0
+    startChunkIndex: number = -1
   ) => {
     reset();
     cancelledRef.current = false;
     messageIdRef.current = messageId;
     textRef.current = text;
+
+    // If no explicit start index, fetch from backend
+    if (startChunkIndex < 0) {
+      startChunkIndex = await fetchProgress(messageId);
+    }
 
     const textChunks = chunkText(text);
     textChunksRef.current = textChunks;
