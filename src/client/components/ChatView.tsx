@@ -63,6 +63,7 @@ export default function ChatView({
   const [showScrollBtn, setShowScrollBtn] = useState(false);
   const [suppressMessageAutoScroll, setSuppressMessageAutoScroll] = useState(false);
   const [showChunkTextPanel, setShowChunkTextPanel] = useState(false);
+  const [ttsAutoScrollEnabled, setTtsAutoScrollEnabled] = useState(false);
   const chunkPanelTouchStartRef = useRef<{ x: number; y: number } | null>(null);
 
   // Initialize chunked TTS hook
@@ -444,6 +445,7 @@ export default function ChatView({
               ttsCurrentChunk={ttsCurrentChunk}
               ttsIsPlaying={ttsIsPlaying}
               ttsIsLoading={ttsIsLoading}
+              ttsAutoScrollEnabled={ttsAutoScrollEnabled}
               bottomSpacerHeight={ttsBottomSpacerHeight}
             />
           </div>
@@ -551,6 +553,18 @@ export default function ChatView({
                     >
                       <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 8h10M7 12h7m-7 4h10M5 5h14a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2z" />
+                      </svg>
+                    </button>
+                  )}
+
+                  {ttsTotalChunks > 0 && (
+                    <button
+                      onClick={() => setTtsAutoScrollEnabled((prev) => !prev)}
+                      className={`p-1.5 rounded-full transition-colors ${ttsAutoScrollEnabled ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300" : "text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"}`}
+                      title={ttsAutoScrollEnabled ? "Disable chunk auto-scroll" : "Enable chunk auto-scroll"}
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 5v14m0 0l-4-4m4 4l4-4M5 12h14" />
                       </svg>
                     </button>
                   )}

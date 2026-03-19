@@ -37,6 +37,7 @@ interface MessageListProps {
   ttsCurrentChunk?: number;
   ttsIsPlaying?: boolean;
   ttsIsLoading?: boolean;
+  ttsAutoScrollEnabled?: boolean;
   bottomSpacerHeight?: number;
 }
 
@@ -80,6 +81,7 @@ export default function MessageList({
   ttsCurrentChunk,
   ttsIsPlaying,
   ttsIsLoading,
+  ttsAutoScrollEnabled = false,
   bottomSpacerHeight = 0,
 }: MessageListProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -205,6 +207,7 @@ export default function MessageList({
             ttsChunks={ttsChunks}
             ttsTextChunks={messageTtsChunks}
             ttsCurrentChunk={ttsCurrentChunk}
+            ttsAutoScrollEnabled={ttsAutoScrollEnabled}
             getWordChunkInfo={getWordChunkInfo}
           />
         );
@@ -311,6 +314,7 @@ function MessageBubble({
   ttsChunks,
   ttsTextChunks,
   ttsCurrentChunk,
+  ttsAutoScrollEnabled = false,
   getWordChunkInfo,
 }: {
   message: Message;
@@ -336,11 +340,13 @@ function MessageBubble({
   ttsChunks?: TTSChunk[];
   ttsTextChunks?: string[];
   ttsCurrentChunk?: number;
+  ttsAutoScrollEnabled?: boolean;
   getWordChunkInfo?: (wordIndex: number) => { chunkIndex: number; isCurrent: boolean } | null;
 }) {
   const isUser = message.role === "user";
   const contentRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const chunkRefs = useRef<Record<number, HTMLDivElement | null>>({});
   const [isLong, setIsLong] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -426,6 +432,29 @@ function MessageBubble({
   const isBusy = isDeleting || isSaving || isForking || actionDisabled;
   const shouldRenderChunkButtons = !isUser && !isStreaming && !!onPlayTTSChunk && (ttsTextChunks?.length ?? 0) > 1;
 
+  useEffect(() => {
+    if (!ttsAutoScrollEnabled || !isTTSActive || isCollapsed || editing || !shouldRenderChunkButtons) {
+      return;
+    }
+
+    if (ttsCurrentChunk === undefined || ttsCurrentChunk < 0) {
+      return;
+    }
+
+    const targetChunk = chunkRefs.current[ttsCurrentChunk];
+    if (!targetChunk) {
+      return;
+    }
+
+    requestAnimationFrame(() => {
+      targetChunk.scrollIntoView({
+        behavior: "smooth",
+        block: "center",
+        inline: "nearest",
+      });
+    });
+  }, [ttsAutoScrollEnabled, isTTSActive, isCollapsed, editing, shouldRenderChunkButtons, ttsCurrentChunk]);
+
   return (
     <div className={`group ${isUser ? "flex flex-col items-end" : "flex flex-col items-start"} ${isBusy ? "opacity-50" : ""}`}>
       {/* Timestamp */}
@@ -483,6 +512,9 @@ function MessageBubble({
                     return (
                       <div
                         key={`${message.id}-chunk-${chunkIndex}`}
+                        ref={(element) => {
+                          chunkRefs.current[chunkIndex] = element;
+                        }}
                         className={`rounded-md transition-colors ${isCurrentChunk ? "bg-emerald-50/80 dark:bg-emerald-900/20" : ""}`}
                       >
                         <div className={`markdown-content text-sm break-words ${isUser ? "markdown-user" : ""}`}>
