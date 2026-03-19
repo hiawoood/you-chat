@@ -18,8 +18,8 @@ function resolveDbDir(): string {
   }
 }
 
-const dbDir = resolveDbDir();
-const dbPath = process.env.DATABASE_URL || `${dbDir}/you-chat.db`;
+export const dataDir = resolveDbDir();
+const dbPath = process.env.DATABASE_URL || `${dataDir}/you-chat.db`;
 
 // Ensure directory exists
 try { mkdirSync(dirname(dbPath), { recursive: true }); } catch {}
@@ -173,6 +173,31 @@ export function initDb() {
     )
   `);
 
+  db.run(`
+    CREATE TABLE IF NOT EXISTS tts_voice_references (
+      id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+      user_id TEXT NOT NULL,
+      label TEXT NOT NULL,
+      original_filename TEXT NOT NULL,
+      storage_path TEXT NOT NULL,
+      mime_type TEXT NOT NULL,
+      size_bytes INTEGER NOT NULL,
+      created_at INTEGER DEFAULT (unixepoch()),
+      updated_at INTEGER DEFAULT (unixepoch()),
+      FOREIGN KEY (user_id) REFERENCES user(id) ON DELETE CASCADE
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS user_tts_settings (
+      user_id TEXT PRIMARY KEY,
+      selected_voice_id TEXT DEFAULT NULL,
+      updated_at INTEGER DEFAULT (unixepoch()),
+      FOREIGN KEY (user_id) REFERENCES user(id) ON DELETE CASCADE,
+      FOREIGN KEY (selected_voice_id) REFERENCES tts_voice_references(id) ON DELETE SET NULL
+    )
+  `);
+
   // TTS chunk progress per message (cross-device persistence)
   db.run(`
     CREATE TABLE IF NOT EXISTS tts_progress (
@@ -187,6 +212,7 @@ export function initDb() {
   db.run(`CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id)`);
   db.run(`CREATE INDEX IF NOT EXISTS idx_chat_sessions_user ON chat_sessions(user_id)`);
   db.run(`CREATE INDEX IF NOT EXISTS idx_user_agents_user ON user_agents(user_id)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_tts_voice_references_user ON tts_voice_references(user_id)`);
 
   console.log("Database initialized");
 }
@@ -417,6 +443,18 @@ export interface UserCredentials {
   updated_at: number;
 }
 
+export interface TtsVoiceReference {
+  id: string;
+  user_id: string;
+  label: string;
+  original_filename: string;
+  storage_path: string;
+  mime_type: string;
+  size_bytes: number;
+  created_at: number;
+  updated_at: number;
+}
+
 export function getUserCredentials(userId: string): UserCredentials | null {
   return db.query(`SELECT * FROM user_credentials WHERE user_id = ?`).get(userId) as UserCredentials | null;
 }
@@ -475,5 +513,95 @@ export function setTtsProgress(messageId: string, chunkIndex: number) {
     `INSERT INTO tts_progress (message_id, chunk_index, updated_at) VALUES (?, ?, ?)
      ON CONFLICT(message_id) DO UPDATE SET chunk_index = excluded.chunk_index, updated_at = excluded.updated_at`,
     [messageId, chunkIndex, now]
+  );
+}
+
+export function listTtsVoiceReferences(userId: string): TtsVoiceReference[] {
+  return db.query(`
+    SELECT * FROM tts_voice_references
+    WHERE user_id = ?
+    ORDER BY created_at ASC, label COLLATE NOCASE ASC
+  `).all(userId) as TtsVoiceReference[];
+}
+
+export function getTtsVoiceReference(userId: string, voiceId: string): TtsVoiceReference | null {
+  return db.query(`
+    SELECT * FROM tts_voice_references
+    WHERE user_id = ? AND id = ?
+  `).get(userId, voiceId) as TtsVoiceReference | null;
+}
+
+export function createTtsVoiceReference(
+  userId: string,
+  label: string,
+  originalFilename: string,
+  storagePath: string,
+  mimeType: string,
+  sizeBytes: number
+): TtsVoiceReference {
+  const id = generateId();
+  const now = Math.floor(Date.now() / 1000);
+  db.run(
+    `INSERT INTO tts_voice_references (id, user_id, label, original_filename, storage_path, mime_type, size_bytes, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [id, userId, label, originalFilename, storagePath, mimeType, sizeBytes, now, now]
+  );
+  return getTtsVoiceReference(userId, id)!;
+}
+
+export function updateTtsVoiceReference(userId: string, voiceId: string, updates: { label?: string; storage_path?: string; mime_type?: string; size_bytes?: number; original_filename?: string }) {
+  const sets: string[] = ["updated_at = ?"];
+  const values: Array<string | number> = [Math.floor(Date.now() / 1000)];
+
+  if (updates.label !== undefined) {
+    sets.push("label = ?");
+    values.push(updates.label);
+  }
+  if (updates.storage_path !== undefined) {
+    sets.push("storage_path = ?");
+    values.push(updates.storage_path);
+  }
+  if (updates.mime_type !== undefined) {
+    sets.push("mime_type = ?");
+    values.push(updates.mime_type);
+  }
+  if (updates.size_bytes !== undefined) {
+    sets.push("size_bytes = ?");
+    values.push(updates.size_bytes);
+  }
+  if (updates.original_filename !== undefined) {
+    sets.push("original_filename = ?");
+    values.push(updates.original_filename);
+  }
+
+  values.push(userId, voiceId);
+  db.run(`UPDATE tts_voice_references SET ${sets.join(", ")} WHERE user_id = ? AND id = ?`, values);
+  return getTtsVoiceReference(userId, voiceId);
+}
+
+export function deleteTtsVoiceReference(userId: string, voiceId: string) {
+  db.run(`DELETE FROM tts_voice_references WHERE user_id = ? AND id = ?`, [userId, voiceId]);
+}
+
+export function getSelectedTtsVoiceReferenceId(userId: string): string | null {
+  const row = db.query(`
+    SELECT selected_voice_id FROM user_tts_settings WHERE user_id = ?
+  `).get(userId) as { selected_voice_id: string | null } | null;
+  return row?.selected_voice_id ?? null;
+}
+
+export function getSelectedTtsVoiceReference(userId: string): TtsVoiceReference | null {
+  const selectedVoiceId = getSelectedTtsVoiceReferenceId(userId);
+  if (!selectedVoiceId) return null;
+  return getTtsVoiceReference(userId, selectedVoiceId);
+}
+
+export function setSelectedTtsVoiceReference(userId: string, voiceId: string | null) {
+  const now = Math.floor(Date.now() / 1000);
+  db.run(
+    `INSERT INTO user_tts_settings (user_id, selected_voice_id, updated_at)
+     VALUES (?, ?, ?)
+     ON CONFLICT(user_id) DO UPDATE SET selected_voice_id = excluded.selected_voice_id, updated_at = excluded.updated_at`,
+    [userId, voiceId, now]
   );
 }

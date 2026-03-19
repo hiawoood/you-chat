@@ -198,7 +198,13 @@ export function useVastTTS() {
   const getVoices = useCallback(async (): Promise<string[]> => {
     try {
       const response = await api.get("/tts/voices");
-      return response.voices || ["default"];
+      if (Array.isArray(response.voices) && typeof response.voices[0] === "string") {
+        return response.voices;
+      }
+      if (Array.isArray(response.voices)) {
+        return response.voices.map((voice: { label?: string }) => voice.label || "default");
+      }
+      return ["default"];
     } catch {
       return ["default"];
     }

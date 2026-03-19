@@ -2,6 +2,8 @@
 // Uses shukco/chatterbox-turbo-api:latest Docker image
 // API Docs: https://docs.vast.ai/api
 
+import type { TtsVoiceReference } from "../db";
+
 const VAST_API_KEY = process.env.VAST_API_KEY || "";
 const HF_TOKEN = process.env.HF_TOKEN || "";
 const VAST_API_URL = "https://console.vast.ai/api/v0";
@@ -22,6 +24,7 @@ export interface VastInstance {
 export interface TTSSpeechRequest {
   text: string;
   voice?: string;
+  voiceReferenceId?: string | null;
   speed?: number;
   language?: string;
 }
@@ -36,6 +39,104 @@ export interface TTSSpeechResponse {
 let activeInstance: VastInstance | null = null;
 let inactivityTimer: Timer | null = null;
 const INACTIVITY_TIMEOUT = 60 * 60 * 1000; // 60 minutes
+
+interface ActiveReferenceState {
+  instanceId: string | null;
+  mode: "builtin" | "custom" | "unknown";
+  voiceId: string | null;
+}
+
+let activeReferenceState: ActiveReferenceState = {
+  instanceId: null,
+  mode: "unknown",
+  voiceId: null,
+};
+
+function resetReferenceState(instanceId: string | null = null, mode: ActiveReferenceState["mode"] = "unknown") {
+  activeReferenceState = {
+    instanceId,
+    mode,
+    voiceId: null,
+  };
+}
+
+function syncReferenceStateToInstance(instance: VastInstance | null) {
+  if (!instance) {
+    resetReferenceState();
+    return;
+  }
+
+  if (activeReferenceState.instanceId !== instance.id) {
+    resetReferenceState(instance.id, "unknown");
+  }
+}
+
+function getInstanceBaseUrl(instance: VastInstance) {
+  if (!instance.ip || !instance.port) {
+    throw new Error("No active TTS instance");
+  }
+  return `http://${instance.ip}:${instance.port}`;
+}
+
+async function uploadVoiceReferenceToInstance(instance: VastInstance, voiceReference: TtsVoiceReference) {
+  const file = Bun.file(voiceReference.storage_path);
+  if (!(await file.exists())) {
+    throw new Error(`Voice reference file not found: ${voiceReference.label}`);
+  }
+
+  const formData = new FormData();
+  formData.append(
+    "file",
+    new Blob([await file.arrayBuffer()], { type: voiceReference.mime_type }),
+    voiceReference.original_filename
+  );
+  formData.append("norm_loudness", "true");
+
+  const response = await fetch(`${getInstanceBaseUrl(instance)}/reference`, {
+    method: "POST",
+    body: formData,
+    signal: AbortSignal.timeout(60000),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Failed to apply voice reference: ${errorText}`);
+  }
+
+  activeReferenceState = {
+    instanceId: instance.id,
+    mode: "custom",
+    voiceId: voiceReference.id,
+  };
+}
+
+async function ensureVoiceReferenceForInstance(voiceReference: TtsVoiceReference | null): Promise<VastInstance> {
+  let instance = await startCheapestInstance();
+  syncReferenceStateToInstance(instance);
+
+  if (!voiceReference) {
+    if (activeReferenceState.mode === "builtin") {
+      return instance;
+    }
+
+    console.log("[VastTTS] Resetting instance to builtin reference mode");
+    await destroyInstance(instance.id);
+    instance = await startCheapestInstance();
+    activeReferenceState = {
+      instanceId: instance.id,
+      mode: "builtin",
+      voiceId: null,
+    };
+    return instance;
+  }
+
+  if (activeReferenceState.mode === "custom" && activeReferenceState.voiceId === voiceReference.id) {
+    return instance;
+  }
+
+  await uploadVoiceReferenceToInstance(instance, voiceReference);
+  return instance;
+}
 
 /**
  * Search for best GPU instances available on Vast.ai
@@ -186,6 +287,8 @@ export async function createInstance(offerId: string): Promise<VastInstance> {
     hourlyRate: instanceInfo.dph_total,
   };
 
+  resetReferenceState(activeInstance.id, "builtin");
+
   // Start inactivity timer (60 minutes)
   resetInactivityTimer();
 
@@ -318,6 +421,7 @@ export async function findAndAdoptExistingInstance(): Promise<VastInstance | nul
         
         if (isHealthy) {
           console.log(`[VastTTS] ✓ Adopted existing healthy instance: ${inst.id}`);
+          resetReferenceState(testInstance.id, "unknown");
           resetInactivityTimer();
           return testInstance;
         } else {
@@ -368,18 +472,17 @@ export async function healthCheck(): Promise<boolean> {
  * Returns raw WAV audio data (binary)
  */
 export async function generateSpeech(
-  request: TTSSpeechRequest
+  request: TTSSpeechRequest,
+  voiceReference: TtsVoiceReference | null = null
 ): Promise<TTSSpeechResponse> {
-  if (!activeInstance?.ip || !activeInstance?.port) {
-    throw new Error("No active TTS instance");
-  }
+  const instance = await ensureVoiceReferenceForInstance(voiceReference);
 
   // Update last activity
-  activeInstance.lastActivity = new Date();
+  instance.lastActivity = new Date();
   resetInactivityTimer();
 
   const response = await fetch(
-    `http://${activeInstance.ip}:${activeInstance.port}/tts`,
+    `${getInstanceBaseUrl(instance)}/tts`,
     {
       method: "POST",
       headers: {
@@ -431,10 +534,57 @@ export async function destroyInstance(instanceId: string): Promise<void> {
 
   if (activeInstance?.id === instanceId) {
     activeInstance = null;
+    resetReferenceState();
     clearInactivityTimer();
   }
 
   console.log(`[VastTTS] Instance ${instanceId} destroyed`);
+}
+
+export async function applyVoiceReferenceSelection(voiceReference: TtsVoiceReference | null): Promise<{ applied: boolean; requiresBuiltinReset: boolean }> {
+  if (!activeInstance) {
+    if (!voiceReference) {
+      resetReferenceState(null, "unknown");
+    }
+    return { applied: false, requiresBuiltinReset: false };
+  }
+
+  const isHealthy = await healthCheck();
+  if (!isHealthy) {
+    return { applied: false, requiresBuiltinReset: false };
+  }
+
+  syncReferenceStateToInstance(activeInstance);
+
+  if (!voiceReference) {
+    const requiresBuiltinReset = activeReferenceState.mode !== "builtin";
+    activeReferenceState = {
+      instanceId: activeInstance.id,
+      mode: requiresBuiltinReset ? "unknown" : "builtin",
+      voiceId: null,
+    };
+    return {
+      applied: !requiresBuiltinReset,
+      requiresBuiltinReset,
+    };
+  }
+
+  if (activeReferenceState.mode === "custom" && activeReferenceState.voiceId === voiceReference.id) {
+    return { applied: true, requiresBuiltinReset: false };
+  }
+
+  await uploadVoiceReferenceToInstance(activeInstance, voiceReference);
+  return { applied: true, requiresBuiltinReset: false };
+}
+
+export function markVoiceReferenceAsStale(voiceId: string | null) {
+  if (voiceId && activeReferenceState.voiceId === voiceId) {
+    activeReferenceState = {
+      instanceId: activeReferenceState.instanceId,
+      mode: "unknown",
+      voiceId: null,
+    };
+  }
 }
 
 /**
@@ -602,7 +752,9 @@ export async function cleanupDuplicateInstances(): Promise<void> {
           gpuName: inst.gpu_name,
           hourlyRate: inst.dph_total,
         };
-        
+
+        resetReferenceState(activeInstance.id, "unknown");
+
         resetInactivityTimer();
       }
       return;
@@ -655,7 +807,12 @@ export async function cleanupDuplicateInstances(): Promise<void> {
     if (healthyInstances.length <= 1) {
       // If only one healthy, adopt it
       if (healthyInstances.length === 1 && !activeInstance) {
-        activeInstance = healthyInstances[0].instance;
+        const onlyHealthyInstance = healthyInstances[0];
+        if (!onlyHealthyInstance) {
+          return;
+        }
+        activeInstance = onlyHealthyInstance.instance;
+        resetReferenceState(activeInstance.id, "unknown");
         resetInactivityTimer();
         console.log(`[VastTTS] Cleanup: Adopted healthy instance ${activeInstance.id}`);
       }
@@ -669,7 +826,11 @@ export async function cleanupDuplicateInstances(): Promise<void> {
     // If no adopted instance is healthy, keep the first one
     if (!instanceToKeep) {
       instanceToKeep = healthyInstances[0];
+      if (!instanceToKeep) {
+        return;
+      }
       activeInstance = instanceToKeep.instance;
+      resetReferenceState(activeInstance.id, "unknown");
       resetInactivityTimer();
       console.log(`[VastTTS] Cleanup: Adopted instance ${activeInstance.id}`);
     }
@@ -699,7 +860,9 @@ export default {
   destroyInstance,
   healthCheck,
   generateSpeech,
+  applyVoiceReferenceSelection,
   getActiveInstance,
+  markVoiceReferenceAsStale,
   startCheapestInstance,
   stopInstance,
   cleanupDuplicateInstances,

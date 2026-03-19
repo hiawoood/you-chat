@@ -158,7 +158,9 @@ export default function MessageList({
           if (!isTTSActive || !ttsChunks) return null;
           let wordCount = 0;
           for (let i = 0; i < ttsChunks.length; i++) {
-            const chunkWordCount = ttsChunks[i].text.split(/\s+/).length;
+            const chunk = ttsChunks[i];
+            if (!chunk) continue;
+            const chunkWordCount = chunk.text.split(/\s+/).length;
             if (wordCount + chunkWordCount > wordIndex) {
               return { chunkIndex: i, isCurrent: i === ttsCurrentChunk };
             }

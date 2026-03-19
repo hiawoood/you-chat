@@ -2,13 +2,17 @@
 const API_BASE = "/api";
 
 async function fetchAPI(path: string, options: RequestInit = {}) {
+  const isFormData = typeof FormData !== "undefined" && options.body instanceof FormData;
+  const headers = new Headers(options.headers || {});
+
+  if (!isFormData && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+
   const res = await fetch(`${API_BASE}${path}`, {
     ...options,
     credentials: "include",
-    headers: {
-      "Content-Type": "application/json",
-      ...options.headers,
-    },
+    headers,
   });
 
   if (!res.ok) {
@@ -44,6 +48,26 @@ export interface Agent {
   type: "agent" | "model";
 }
 
+export interface TtsVoiceReference {
+  id: string;
+  label: string;
+  originalFilename: string;
+  mimeType: string;
+  sizeBytes: number;
+  createdAt: number;
+  updatedAt: number;
+  selected: boolean;
+  previewUrl: string;
+}
+
+export interface TtsVoiceListResponse {
+  voices: TtsVoiceReference[];
+  selectedVoiceId: string | null;
+  warning?: string | null;
+  applied?: boolean;
+  requiresBuiltinReset?: boolean;
+}
+
 export const api = {
   getSessions: (): Promise<ChatSession[]> => fetchAPI("/sessions"),
   createSession: (data?: { title?: string; agent?: string }): Promise<ChatSession> =>
@@ -74,6 +98,23 @@ export const api = {
     fetchAPI("/credentials", { method: "POST", body: JSON.stringify({ ds, dsr, uuidGuest }) }),
   deleteCredentials: (): Promise<void> =>
     fetchAPI("/credentials", { method: "DELETE" }),
+
+  getTtsVoices: (): Promise<TtsVoiceListResponse> => fetchAPI("/tts/voices"),
+  uploadTtsVoice: (label: string, file: File): Promise<TtsVoiceListResponse & { voice: TtsVoiceReference }> => {
+    const formData = new FormData();
+    formData.append("label", label);
+    formData.append("file", file);
+    return fetchAPI("/tts/voices", { method: "POST", body: formData });
+  },
+  updateTtsVoice: (voiceId: string, label: string): Promise<TtsVoiceListResponse & { voice: TtsVoiceReference | null }> =>
+    fetchAPI(`/tts/voices/${voiceId}`, { method: "PATCH", body: JSON.stringify({ label }) }),
+  deleteTtsVoice: (voiceId: string): Promise<TtsVoiceListResponse> =>
+    fetchAPI(`/tts/voices/${voiceId}`, { method: "DELETE" }),
+  selectTtsVoice: (voiceId: string): Promise<TtsVoiceListResponse> =>
+    fetchAPI(`/tts/voices/${voiceId}/select`, { method: "POST" }),
+  clearSelectedTtsVoice: (): Promise<TtsVoiceListResponse> =>
+    fetchAPI("/tts/voices/select-none", { method: "POST" }),
+  getTtsVoicePreviewUrl: (voiceId: string): string => `${API_BASE}/tts/voices/${voiceId}/audio`,
   
   // Generic methods for TTS and other features
   get: (path: string): Promise<any> => fetchAPI(path),

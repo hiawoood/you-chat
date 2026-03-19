@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback, type TouchEvent as ReactTouchEvent } from "react";
 import { api } from "../lib/api";
-import type { ChatSession, Message, Agent } from "../lib/api";
+import type { ChatSession, Message, Agent, TtsVoiceReference, TtsVoiceListResponse } from "../lib/api";
 import { useChat } from "../hooks/useChat";
 import { useChunkedVastTTS } from "../hooks/useChunkedVastTTS";
 import { useWordContextMenu } from "../hooks/useWordContextMenu";
@@ -12,6 +12,7 @@ import CompactModal from "./CompactModal";
 const SCROLL_TRIGGER_BUFFER_PX = 200;
 const TTS_CONTROL_BOTTOM_SPACER_PX = 76;
 const TTS_CHUNK_PANEL_EXTRA_SPACER_PX = 168;
+const TTS_VOICE_PANEL_EXTRA_SPACER_PX = 196;
 const TTS_SWIPE_THRESHOLD_PX = 48;
 
 interface ChatViewProps {
@@ -63,7 +64,13 @@ export default function ChatView({
   const [showScrollBtn, setShowScrollBtn] = useState(false);
   const [suppressMessageAutoScroll, setSuppressMessageAutoScroll] = useState(false);
   const [showChunkTextPanel, setShowChunkTextPanel] = useState(false);
+  const [showVoiceMenu, setShowVoiceMenu] = useState(false);
   const [ttsAutoScrollEnabled, setTtsAutoScrollEnabled] = useState(false);
+  const [ttsVoices, setTtsVoices] = useState<TtsVoiceReference[]>([]);
+  const [selectedTtsVoiceId, setSelectedTtsVoiceId] = useState<string | null>(null);
+  const [ttsVoicesLoaded, setTtsVoicesLoaded] = useState(false);
+  const [ttsVoiceLoading, setTtsVoiceLoading] = useState(false);
+  const [ttsVoiceWarning, setTtsVoiceWarning] = useState<string | null>(null);
   const chunkPanelTouchStartRef = useRef<{ x: number; y: number } | null>(null);
 
   // Initialize chunked TTS hook
@@ -128,13 +135,15 @@ export default function ChatView({
   const activeChunkText = activeChunk?.text ?? "No chunk text available.";
   const currentChunkNumber = ttsTotalChunks > 0 ? ttsCurrentChunk + 1 : 0;
   const isCurrentChunkLoading = ttsLoadingChunkIndex === ttsCurrentChunk;
+  const selectedTtsVoice = ttsVoices.find((voice) => voice.id === selectedTtsVoiceId) || null;
   const ttsBottomSpacerHeight = hasTtsOverlay
-    ? TTS_CONTROL_BOTTOM_SPACER_PX + (showChunkTextPanel ? TTS_CHUNK_PANEL_EXTRA_SPACER_PX : 0)
+    ? TTS_CONTROL_BOTTOM_SPACER_PX + Math.max(showChunkTextPanel ? TTS_CHUNK_PANEL_EXTRA_SPACER_PX : 0, showVoiceMenu ? TTS_VOICE_PANEL_EXTRA_SPACER_PX : 0)
     : 0;
 
   useEffect(() => {
     if (!hasTtsOverlay || ttsTotalChunks === 0) {
       setShowChunkTextPanel(false);
+      setShowVoiceMenu(false);
     }
   }, [hasTtsOverlay, ttsTotalChunks]);
 
@@ -143,6 +152,30 @@ export default function ChatView({
   };
 
   const [thinkingStatus, setThinkingStatus] = useState<string | null>(null);
+
+  const applyVoiceSelectionResponse = useCallback((response: TtsVoiceListResponse) => {
+    setTtsVoices(response.voices || []);
+    setSelectedTtsVoiceId(response.selectedVoiceId ?? null);
+    setTtsVoicesLoaded(true);
+    setTtsVoiceWarning(response.warning || null);
+  }, []);
+
+  const loadTtsVoices = useCallback(async () => {
+    try {
+      const response = await api.getTtsVoices();
+      applyVoiceSelectionResponse(response);
+      return response;
+    } catch (error) {
+      console.error("Failed to load TTS voices:", error);
+      setTtsVoicesLoaded(true);
+      setTtsVoiceWarning(error instanceof Error ? error.message : "Failed to load voices");
+      return null;
+    }
+  }, [applyVoiceSelectionResponse]);
+
+  useEffect(() => {
+    void loadTtsVoices();
+  }, [loadTtsVoices]);
 
   const { sendMessage, regenerate, compactMessage, stopGeneration, isStreaming, isCompacting } = useChat({
     sessionId: session.id,
@@ -225,12 +258,23 @@ export default function ChatView({
     setCompactTarget(target);
   };
 
+  const resolvePlaybackVoiceId = async () => {
+    if (ttsVoicesLoaded) {
+      return selectedTtsVoiceId;
+    }
+
+    const response = await loadTtsVoices();
+    return response?.selectedVoiceId ?? null;
+  };
+
   const handleToggleTTS = async (messageId: string, content: string) => {
-    await ttsToggle(content, messageId);
+    const voiceId = await resolvePlaybackVoiceId();
+    await ttsToggle(content, messageId, voiceId);
   };
 
   const handleStartTTSFromWord = async (messageId: string, content: string, wordIndex: number) => {
-    await startFromWord(content, messageId, wordIndex);
+    const voiceId = await resolvePlaybackVoiceId();
+    await startFromWord(content, messageId, wordIndex, voiceId);
     hideWordMenu();
   };
 
@@ -240,7 +284,8 @@ export default function ChatView({
       return;
     }
 
-    await startPlayback(content, messageId, chunkIndex);
+    const voiceId = await resolvePlaybackVoiceId();
+    await startPlayback(content, messageId, chunkIndex, voiceId);
   };
 
   const handleCompactGenerate = async ({
@@ -270,6 +315,28 @@ export default function ChatView({
 
   const closeCompact = () => {
     setCompactTarget(null);
+  };
+
+  const handleSelectTtsVoice = async (voiceId: string | null) => {
+    setTtsVoiceLoading(true);
+    setTtsVoiceWarning(null);
+
+    try {
+      const response = voiceId ? await api.selectTtsVoice(voiceId) : await api.clearSelectedTtsVoice();
+      applyVoiceSelectionResponse(response);
+      setShowVoiceMenu(false);
+
+      if (ttsActiveMessageId && (ttsIsPlaying || ttsIsLoading)) {
+        const activeMessage = messages.find((message) => message.id === ttsActiveMessageId);
+        if (activeMessage) {
+          await startPlayback(activeMessage.content, activeMessage.id, ttsCurrentChunk, voiceId);
+        }
+      }
+    } catch (error) {
+      setTtsVoiceWarning(error instanceof Error ? error.message : "Failed to update TTS voice");
+    } finally {
+      setTtsVoiceLoading(false);
+    }
   };
 
   const handleChunkPanelTouchStart = (event: ReactTouchEvent<HTMLDivElement>) => {
@@ -504,6 +571,71 @@ export default function ChatView({
                   )}
                 </div>
               )}
+              {showVoiceMenu && !ttsError && (
+                <div className="absolute bottom-full left-1/2 z-10 mb-2 w-[min(20rem,calc(100vw-2rem))] -translate-x-1/2 rounded-2xl border border-gray-200 bg-white/95 px-3 py-2 shadow-xl backdrop-blur dark:border-gray-700 dark:bg-gray-900/95">
+                  <div className="mb-2 flex items-center justify-between gap-2 text-[11px] font-medium text-gray-500 dark:text-gray-400">
+                    <span>{selectedTtsVoice ? `Voice: ${selectedTtsVoice.label}` : "Voice: No reference"}</span>
+                    {ttsVoiceLoading && (
+                      <span className="inline-flex items-center gap-1 text-amber-600 dark:text-amber-400">
+                        <svg className="h-3 w-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                        </svg>
+                        Applying
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="space-y-1">
+                    <button
+                      onClick={() => void handleSelectTtsVoice(null)}
+                      disabled={ttsVoiceLoading}
+                      className={`flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-sm transition-colors ${selectedTtsVoiceId === null ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300" : "text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"}`}
+                    >
+                      <span>No reference</span>
+                      {selectedTtsVoiceId === null && (
+                        <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                        </svg>
+                      )}
+                    </button>
+
+                    {ttsVoices.length === 0 ? (
+                      <div className="rounded-xl border border-dashed border-gray-200 px-3 py-3 text-xs text-gray-500 dark:border-gray-700 dark:text-gray-400">
+                        No saved voice references yet. Add them in Settings.
+                      </div>
+                    ) : (
+                      <div className="max-h-44 overflow-y-auto space-y-1">
+                        {ttsVoices.map((voice) => {
+                          const isSelected = selectedTtsVoiceId === voice.id;
+
+                          return (
+                            <button
+                              key={voice.id}
+                              onClick={() => void handleSelectTtsVoice(voice.id)}
+                              disabled={ttsVoiceLoading}
+                              className={`flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-sm transition-colors ${isSelected ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300" : "text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"}`}
+                            >
+                              <span className="truncate">{voice.label}</span>
+                              {isSelected && (
+                                <svg className="h-4 w-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                                </svg>
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+
+                  {ttsVoiceWarning && (
+                    <div className="mt-2 text-[11px] text-amber-600 dark:text-amber-400">
+                      {ttsVoiceWarning}
+                    </div>
+                  )}
+                </div>
+              )}
               {ttsError ? (
                 <div className="flex items-center gap-2 text-xs font-medium text-red-600 dark:text-red-400">
                   <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" strokeWidth="2" /><path d="M12 8v4m0 4h.01" strokeWidth="2" strokeLinecap="round" /></svg>
@@ -547,7 +679,10 @@ export default function ChatView({
 
                   {ttsTotalChunks > 0 && (
                     <button
-                      onClick={() => setShowChunkTextPanel((prev) => !prev)}
+                      onClick={() => {
+                        setShowVoiceMenu(false);
+                        setShowChunkTextPanel((prev) => !prev);
+                      }}
                       className={`p-1.5 rounded-full transition-colors ${showChunkTextPanel ? "bg-gray-100 text-gray-900 dark:bg-gray-700 dark:text-white" : "text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"}`}
                       title={showChunkTextPanel ? "Hide current chunk text" : "Show current chunk text"}
                     >
@@ -556,6 +691,22 @@ export default function ChatView({
                       </svg>
                     </button>
                   )}
+
+                  <button
+                    onClick={() => {
+                      if (!showVoiceMenu) {
+                        void loadTtsVoices();
+                      }
+                      setShowChunkTextPanel(false);
+                      setShowVoiceMenu((prev) => !prev);
+                    }}
+                    className={`p-1.5 rounded-full transition-colors ${showVoiceMenu ? "bg-gray-100 text-gray-900 dark:bg-gray-700 dark:text-white" : "text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"}`}
+                    title={showVoiceMenu ? "Hide voice selector" : "Choose TTS voice"}
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5h2M12 3v2m6.364 1.636l-1.414 1.414M20 12h-2M6 12H4m2.05-5.364l1.414 1.414M12 19v2m6-9a6 6 0 11-12 0 6 6 0 0112 0zm-6 3a3 3 0 100-6 3 3 0 000 6z" />
+                    </svg>
+                  </button>
 
                   {ttsTotalChunks > 0 && (
                     <button

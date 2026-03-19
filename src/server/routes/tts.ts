@@ -1,5 +1,5 @@
 // TTS API Routes - Manages Vast.ai instances for text-to-speech
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import type { AppEnv } from "../context";
 import {
   getActiveInstance,
@@ -8,14 +8,56 @@ import {
   stopInstance as stopActiveInstance,
   generateSpeech,
   searchBestGPU,
+  applyVoiceReferenceSelection,
+  markVoiceReferenceAsStale,
 } from "../services/vastai";
-import { getTtsProgress, setTtsProgress } from "../db";
+import {
+  createTtsVoiceReference,
+  deleteTtsVoiceReference,
+  getSelectedTtsVoiceReference,
+  getSelectedTtsVoiceReferenceId,
+  getTtsProgress,
+  getTtsVoiceReference,
+  listTtsVoiceReferences,
+  setSelectedTtsVoiceReference,
+  setTtsProgress,
+  updateTtsVoiceReference,
+  type TtsVoiceReference,
+} from "../db";
+import { deleteTtsVoiceFile, getStoredTtsVoiceFile, saveTtsVoiceFile } from "../lib/tts-storage";
 
 const tts = new Hono<AppEnv>();
 
-// Simple voice list - Chatterbox Turbo has built-in voices
-async function getVoices(): Promise<string[]> {
-  return ["default"];
+const MAX_VOICE_UPLOAD_BYTES = 15 * 1024 * 1024;
+const ALLOWED_AUDIO_EXTENSIONS = new Set([".wav", ".mp3", ".m4a", ".aac", ".ogg", ".flac", ".webm"]);
+
+function formatVoiceReference(c: Context<AppEnv>, voice: TtsVoiceReference, selectedVoiceId: string | null) {
+  return {
+    id: voice.id,
+    label: voice.label,
+    originalFilename: voice.original_filename,
+    mimeType: voice.mime_type,
+    sizeBytes: voice.size_bytes,
+    createdAt: voice.created_at,
+    updatedAt: voice.updated_at,
+    selected: voice.id === selectedVoiceId,
+    previewUrl: `${new URL(c.req.url).origin}/api/tts/voices/${voice.id}/audio`,
+  };
+}
+
+function getVoiceSelectionResponse(c: Context<AppEnv>, userId: string) {
+  const selectedVoiceId = getSelectedTtsVoiceReferenceId(userId);
+  const voices = listTtsVoiceReferences(userId).map((voice) => formatVoiceReference(c, voice, selectedVoiceId));
+  return { voices, selectedVoiceId };
+}
+
+function isAllowedAudioFile(file: File) {
+  if (file.type.startsWith("audio/")) {
+    return true;
+  }
+
+  const extension = file.name.includes(".") ? file.name.slice(file.name.lastIndexOf(".")).toLowerCase() : "";
+  return ALLOWED_AUDIO_EXTENSIONS.has(extension);
 }
 
 /**
@@ -24,42 +66,39 @@ async function getVoices(): Promise<string[]> {
  * Body: { text: string, voice?: string, speed?: number, language?: string }
  */
 tts.post("/speak", async (c) => {
+  const user = c.get("user");
+  if (!user) return c.json({ error: "Unauthorized" }, 401);
+
   try {
     const body = await c.req.json();
-    const { text, voice, speed, language } = body;
+    const { text, voice, voiceReferenceId, speed, language } = body;
 
     if (!text || typeof text !== "string") {
       return c.json({ error: "Text is required" }, 400);
     }
 
-    // Check if we have an active instance
-    let instance = getActiveInstance();
-    
-    // Auto-start if no instance
-    if (!instance || instance.status !== "running") {
-      console.log("[TTS] No active instance, starting one...");
-      try {
-        instance = await startCheapestInstance();
-      } catch (error) {
-        console.error("[TTS] Failed to start instance:", error);
-        return c.json(
-          { 
-            error: "Failed to start TTS instance",
-            message: error instanceof Error ? error.message : "Unknown error"
-          }, 
-          503
-        );
+    let selectedVoice: TtsVoiceReference | null;
+    if (voiceReferenceId === null) {
+      selectedVoice = null;
+    } else if (typeof voiceReferenceId === "string" && voiceReferenceId.trim()) {
+      selectedVoice = getTtsVoiceReference(user.id, voiceReferenceId.trim());
+      if (!selectedVoice) {
+        return c.json({ error: "Selected voice reference was not found" }, 404);
       }
+    } else {
+      selectedVoice = getSelectedTtsVoiceReference(user.id);
     }
 
-    // Generate speech
     try {
       const result = await generateSpeech({
         text,
         voice,
+        voiceReferenceId: selectedVoice?.id ?? null,
         speed,
         language,
-      });
+      }, selectedVoice);
+
+      const instance = getActiveInstance();
 
       return c.json({
         success: true,
@@ -67,9 +106,9 @@ tts.post("/speak", async (c) => {
         duration: result.duration,
         sampleRate: result.sampleRate,
         instance: {
-          id: instance.id,
-          gpu: instance.gpuName,
-          hourlyRate: instance.hourlyRate,
+          id: instance?.id,
+          gpu: instance?.gpuName,
+          hourlyRate: instance?.hourlyRate,
         },
       });
     } catch (error) {
@@ -150,7 +189,7 @@ tts.post("/stop", async (c) => {
       });
     }
 
-    await stopActiveInstance();
+    await stopActiveInstance(instance.id);
 
     return c.json({
       success: true,
@@ -214,16 +253,229 @@ tts.get("/status", async (c) => {
 
 /**
  * GET /api/tts/voices
- * Get available voices
+ * Get saved user voice references and current selection
  */
 tts.get("/voices", async (c) => {
+  const user = c.get("user");
+  if (!user) return c.json({ error: "Unauthorized" }, 401);
+
   try {
-    const voices = await getVoices();
-    return c.json({ voices });
+    return c.json(getVoiceSelectionResponse(c, user.id));
   } catch (error) {
-    console.error("[TTS] Failed to get voices:", error);
-    return c.json({ voices: ["default"] });
+    console.error("[TTS] Failed to list voice references:", error);
+    return c.json({ error: "Failed to load voice references" }, 500);
   }
+});
+
+/**
+ * POST /api/tts/voices
+ * Upload a new voice reference file
+ */
+tts.post("/voices", async (c) => {
+  const user = c.get("user");
+  if (!user) return c.json({ error: "Unauthorized" }, 401);
+
+  let storagePath: string | null = null;
+
+  try {
+    const form = await c.req.parseBody();
+    const label = typeof form.label === "string" ? form.label.trim() : "";
+    const file = form.file;
+
+    if (!label) {
+      return c.json({ error: "Voice label is required" }, 400);
+    }
+
+    if (!(file instanceof File)) {
+      return c.json({ error: "Audio file is required" }, 400);
+    }
+
+    if (!isAllowedAudioFile(file)) {
+      return c.json({ error: "Upload a supported audio file" }, 400);
+    }
+
+    if (file.size <= 0 || file.size > MAX_VOICE_UPLOAD_BYTES) {
+      return c.json({ error: `Audio file must be between 1 byte and ${MAX_VOICE_UPLOAD_BYTES} bytes` }, 400);
+    }
+
+    const storedFile = await saveTtsVoiceFile(user.id, crypto.randomUUID().replace(/-/g, ""), file);
+    storagePath = storedFile.storagePath;
+
+    const voice = createTtsVoiceReference(
+      user.id,
+      label,
+      storedFile.originalFilename,
+      storedFile.storagePath,
+      storedFile.mimeType,
+      storedFile.sizeBytes
+    );
+
+    const selectedVoiceId = getSelectedTtsVoiceReferenceId(user.id);
+    return c.json({
+      success: true,
+      voice: formatVoiceReference(c, voice, selectedVoiceId),
+      ...getVoiceSelectionResponse(c, user.id),
+    });
+  } catch (error) {
+    if (storagePath) {
+      await deleteTtsVoiceFile(storagePath);
+    }
+    console.error("[TTS] Failed to upload voice reference:", error);
+    return c.json({ error: "Failed to upload voice reference" }, 500);
+  }
+});
+
+/**
+ * GET /api/tts/voices/:voiceId/audio
+ * Stream a stored voice reference for preview
+ */
+tts.get("/voices/:voiceId/audio", async (c) => {
+  const user = c.get("user");
+  if (!user) return c.json({ error: "Unauthorized" }, 401);
+
+  const voiceId = c.req.param("voiceId");
+  const voice = getTtsVoiceReference(user.id, voiceId);
+  if (!voice) {
+    return c.json({ error: "Voice reference not found" }, 404);
+  }
+
+  const file = getStoredTtsVoiceFile(voice.storage_path);
+  if (!(await file.exists())) {
+    return c.json({ error: "Voice reference file not found" }, 404);
+  }
+
+  return new Response(file, {
+    headers: {
+      "Content-Type": voice.mime_type,
+      "Content-Disposition": `inline; filename="${voice.original_filename.replace(/"/g, "")}"`,
+      "Cache-Control": "private, max-age=60",
+    },
+  });
+});
+
+/**
+ * PATCH /api/tts/voices/:voiceId
+ * Rename a stored voice reference
+ */
+tts.patch("/voices/:voiceId", async (c) => {
+  const user = c.get("user");
+  if (!user) return c.json({ error: "Unauthorized" }, 401);
+
+  const voiceId = c.req.param("voiceId");
+  const voice = getTtsVoiceReference(user.id, voiceId);
+  if (!voice) {
+    return c.json({ error: "Voice reference not found" }, 404);
+  }
+
+  const body = await c.req.json<{ label?: string }>();
+  const label = typeof body.label === "string" ? body.label.trim() : "";
+  if (!label) {
+    return c.json({ error: "Voice label is required" }, 400);
+  }
+
+  const updatedVoice = updateTtsVoiceReference(user.id, voiceId, { label });
+  const selectedVoiceId = getSelectedTtsVoiceReferenceId(user.id);
+
+  return c.json({
+    success: true,
+    voice: updatedVoice ? formatVoiceReference(c, updatedVoice, selectedVoiceId) : null,
+    ...getVoiceSelectionResponse(c, user.id),
+  });
+});
+
+/**
+ * DELETE /api/tts/voices/:voiceId
+ * Delete a stored voice reference
+ */
+tts.delete("/voices/:voiceId", async (c) => {
+  const user = c.get("user");
+  if (!user) return c.json({ error: "Unauthorized" }, 401);
+
+  const voiceId = c.req.param("voiceId");
+  const voice = getTtsVoiceReference(user.id, voiceId);
+  if (!voice) {
+    return c.json({ error: "Voice reference not found" }, 404);
+  }
+
+  deleteTtsVoiceReference(user.id, voiceId);
+  await deleteTtsVoiceFile(voice.storage_path);
+  markVoiceReferenceAsStale(voice.id);
+
+  return c.json({
+    success: true,
+    ...getVoiceSelectionResponse(c, user.id),
+  });
+});
+
+/**
+ * POST /api/tts/voices/:voiceId/select
+ * Select a stored voice reference for future playback
+ */
+tts.post("/voices/:voiceId/select", async (c) => {
+  const user = c.get("user");
+  if (!user) return c.json({ error: "Unauthorized" }, 401);
+
+  const voiceId = c.req.param("voiceId");
+  const voice = getTtsVoiceReference(user.id, voiceId);
+  if (!voice) {
+    return c.json({ error: "Voice reference not found" }, 404);
+  }
+
+  setSelectedTtsVoiceReference(user.id, voice.id);
+
+  let applied = false;
+  let warning: string | null = null;
+  try {
+    const result = await applyVoiceReferenceSelection(voice);
+    applied = result.applied;
+    if (!result.applied) {
+      warning = "Voice will be applied when the next playback request starts.";
+    }
+  } catch (error) {
+    warning = error instanceof Error ? error.message : "Voice will be applied on next playback";
+  }
+
+  return c.json({
+    success: true,
+    applied,
+    warning,
+    ...getVoiceSelectionResponse(c, user.id),
+  });
+});
+
+/**
+ * POST /api/tts/voices/select-none
+ * Clear the selected voice reference
+ */
+tts.post("/voices/select-none", async (c) => {
+  const user = c.get("user");
+  if (!user) return c.json({ error: "Unauthorized" }, 401);
+
+  setSelectedTtsVoiceReference(user.id, null);
+
+  let applied = false;
+  let requiresBuiltinReset = false;
+  let warning: string | null = null;
+  try {
+    const result = await applyVoiceReferenceSelection(null);
+    applied = result.applied;
+    requiresBuiltinReset = result.requiresBuiltinReset;
+    if (requiresBuiltinReset) {
+      warning = "Builtin voice will be restored on the next playback request.";
+    } else if (!result.applied) {
+      warning = "Builtin voice will be used when the next playback request starts.";
+    }
+  } catch (error) {
+    warning = error instanceof Error ? error.message : "Builtin voice will be restored on next playback";
+  }
+
+  return c.json({
+    success: true,
+    applied,
+    requiresBuiltinReset,
+    warning,
+    ...getVoiceSelectionResponse(c, user.id),
+  });
 });
 
 /**

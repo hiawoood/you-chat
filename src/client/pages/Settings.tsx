@@ -1,8 +1,14 @@
 import { useState, useEffect } from "react";
-import { api } from "../lib/api";
+import { api, type TtsVoiceReference, type TtsVoiceListResponse } from "../lib/api";
 
 interface SettingsProps {
   onBack: () => void;
+}
+
+function formatBytes(sizeBytes: number) {
+  if (sizeBytes < 1024) return `${sizeBytes} B`;
+  if (sizeBytes < 1024 * 1024) return `${(sizeBytes / 1024).toFixed(1)} KB`;
+  return `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 export default function Settings({ onBack }: SettingsProps) {
@@ -22,10 +28,27 @@ export default function Settings({ onBack }: SettingsProps) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
+  const [voicesLoading, setVoicesLoading] = useState(true);
+  const [ttsVoices, setTtsVoices] = useState<TtsVoiceReference[]>([]);
+  const [selectedVoiceId, setSelectedVoiceId] = useState<string | null>(null);
+  const [voiceLabel, setVoiceLabel] = useState("");
+  const [voiceFile, setVoiceFile] = useState<File | null>(null);
+  const [voiceSaving, setVoiceSaving] = useState(false);
+  const [voiceError, setVoiceError] = useState("");
+  const [voiceActionId, setVoiceActionId] = useState<string | null>(null);
+  const [editingVoiceId, setEditingVoiceId] = useState<string | null>(null);
+  const [editingVoiceLabel, setEditingVoiceLabel] = useState("");
 
   useEffect(() => {
     loadCredentials();
+    loadTtsVoices();
   }, []);
+
+  const applyVoiceResponse = (response: TtsVoiceListResponse) => {
+    setTtsVoices(response.voices || []);
+    setSelectedVoiceId(response.selectedVoiceId ?? null);
+    setVoiceError(response.warning || "");
+  };
 
   const loadCredentials = async () => {
     try {
@@ -35,6 +58,19 @@ export default function Settings({ onBack }: SettingsProps) {
       console.error("Failed to load credentials:", e);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const loadTtsVoices = async () => {
+    setVoicesLoading(true);
+    try {
+      const response = await api.getTtsVoices();
+      applyVoiceResponse(response);
+    } catch (e) {
+      console.error("Failed to load TTS voices:", e);
+      setVoiceError(e instanceof Error ? e.message : "Failed to load TTS voices");
+    } finally {
+      setVoicesLoading(false);
     }
   };
 
@@ -78,6 +114,76 @@ export default function Settings({ onBack }: SettingsProps) {
     setDsr("");
     setUuidGuest("");
     setError("");
+  };
+
+  const resetVoiceForm = () => {
+    setVoiceLabel("");
+    setVoiceFile(null);
+  };
+
+  const handleUploadVoice = async () => {
+    if (!voiceLabel.trim() || !voiceFile) return;
+
+    setVoiceSaving(true);
+    setVoiceError("");
+    try {
+      const response = await api.uploadTtsVoice(voiceLabel.trim(), voiceFile);
+      applyVoiceResponse(response);
+      resetVoiceForm();
+    } catch (e) {
+      setVoiceError(e instanceof Error ? e.message : "Failed to upload voice");
+    } finally {
+      setVoiceSaving(false);
+    }
+  };
+
+  const handleSelectVoice = async (voiceId: string | null) => {
+    setVoiceActionId(voiceId || "none");
+    setVoiceError("");
+    try {
+      const response = voiceId ? await api.selectTtsVoice(voiceId) : await api.clearSelectedTtsVoice();
+      applyVoiceResponse(response);
+    } catch (e) {
+      setVoiceError(e instanceof Error ? e.message : "Failed to update active voice");
+    } finally {
+      setVoiceActionId(null);
+    }
+  };
+
+  const handleDeleteVoice = async (voice: TtsVoiceReference) => {
+    if (!window.confirm(`Delete the voice reference "${voice.label}"?`)) return;
+
+    setVoiceActionId(voice.id);
+    setVoiceError("");
+    try {
+      const response = await api.deleteTtsVoice(voice.id);
+      applyVoiceResponse(response);
+      if (editingVoiceId === voice.id) {
+        setEditingVoiceId(null);
+        setEditingVoiceLabel("");
+      }
+    } catch (e) {
+      setVoiceError(e instanceof Error ? e.message : "Failed to delete voice");
+    } finally {
+      setVoiceActionId(null);
+    }
+  };
+
+  const handleSaveVoiceLabel = async (voiceId: string) => {
+    if (!editingVoiceLabel.trim()) return;
+
+    setVoiceActionId(voiceId);
+    setVoiceError("");
+    try {
+      const response = await api.updateTtsVoice(voiceId, editingVoiceLabel.trim());
+      applyVoiceResponse(response);
+      setEditingVoiceId(null);
+      setEditingVoiceLabel("");
+    } catch (e) {
+      setVoiceError(e instanceof Error ? e.message : "Failed to rename voice");
+    } finally {
+      setVoiceActionId(null);
+    }
   };
 
   const CookieForm = ({ buttonLabel }: { buttonLabel: string }) => (
@@ -261,6 +367,192 @@ export default function Settings({ onBack }: SettingsProps) {
               )}
             </div>
           )}
+
+          <div className="mt-10 mb-6">
+            <h2 className="text-lg font-semibold text-gray-900 dark:text-white mb-1">TTS Voices</h2>
+            <p className="text-sm text-gray-500 dark:text-gray-400">
+              Upload reusable voice reference clips for Chatterbox playback and choose which one should be active by default.
+            </p>
+          </div>
+
+          <div className="space-y-4">
+            <div className="p-4 border border-gray-200 dark:border-gray-700 rounded-lg bg-gray-50 dark:bg-gray-800/50 space-y-3">
+              <div>
+                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+                  Voice Label
+                </label>
+                <input
+                  type="text"
+                  value={voiceLabel}
+                  onChange={(e) => setVoiceLabel(e.target.value)}
+                  placeholder="Warm narrator"
+                  className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-gray-400"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+                  Reference Audio
+                </label>
+                <input
+                  type="file"
+                  accept="audio/*,.wav,.mp3,.m4a,.aac,.ogg,.flac,.webm"
+                  onChange={(e) => setVoiceFile(e.target.files?.[0] || null)}
+                  className="block w-full text-sm text-gray-600 dark:text-gray-300 file:mr-3 file:px-3 file:py-1.5 file:border-0 file:rounded-md file:bg-gray-900 file:text-white dark:file:bg-gray-700"
+                />
+                <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">
+                  Upload a short clean sample in a common audio format. Max 15 MB.
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleUploadVoice}
+                  disabled={!voiceLabel.trim() || !voiceFile || voiceSaving}
+                  className="px-3 py-1.5 text-sm bg-gray-900 dark:bg-gray-700 text-white rounded-md hover:bg-gray-800 dark:hover:bg-gray-600 disabled:opacity-50"
+                >
+                  {voiceSaving ? "Uploading..." : "Add Voice"}
+                </button>
+                {(voiceLabel || voiceFile) && (
+                  <button
+                    onClick={resetVoiceForm}
+                    className="px-3 py-1.5 text-sm text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+
+              {voiceError && (
+                <p className="text-sm text-red-600 dark:text-red-400">{voiceError}</p>
+              )}
+            </div>
+
+            <div className="p-4 border border-gray-200 dark:border-gray-700 rounded-lg space-y-3">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-medium text-gray-900 dark:text-white">Saved Voices</h3>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                    The playback overlay lets you switch between these at any time.
+                  </p>
+                </div>
+                <button
+                  onClick={() => void handleSelectVoice(null)}
+                  disabled={voiceActionId === "none"}
+                  className={`px-3 py-1.5 text-xs rounded-md border ${selectedVoiceId === null ? "border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300" : "border-gray-200 text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"}`}
+                >
+                  {voiceActionId === "none" ? "Updating..." : "Use No Reference"}
+                </button>
+              </div>
+
+              {voicesLoading ? (
+                <div className="flex items-center justify-center py-8">
+                  <div className="animate-spin rounded-full h-5 w-5 border-2 border-gray-300 dark:border-gray-600 border-t-gray-900 dark:border-t-white" />
+                </div>
+              ) : ttsVoices.length === 0 ? (
+                <div className="rounded-lg border border-dashed border-gray-200 dark:border-gray-700 px-4 py-8 text-center text-sm text-gray-500 dark:text-gray-400">
+                  No custom voice references yet.
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {ttsVoices.map((voice) => {
+                    const isEditing = editingVoiceId === voice.id;
+                    const isSelected = selectedVoiceId === voice.id;
+                    const isBusy = voiceActionId === voice.id;
+
+                    return (
+                      <div
+                        key={voice.id}
+                        className={`rounded-lg border px-3 py-3 ${isSelected ? "border-emerald-300 bg-emerald-50/70 dark:border-emerald-700 dark:bg-emerald-900/20" : "border-gray-200 dark:border-gray-700"}`}
+                      >
+                        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                          <div className="flex-1 min-w-0">
+                            {isEditing ? (
+                              <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                                <input
+                                  type="text"
+                                  value={editingVoiceLabel}
+                                  onChange={(e) => setEditingVoiceLabel(e.target.value)}
+                                  className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-gray-400"
+                                />
+                                <div className="flex items-center gap-2">
+                                  <button
+                                    onClick={() => void handleSaveVoiceLabel(voice.id)}
+                                    disabled={!editingVoiceLabel.trim() || isBusy}
+                                    className="px-3 py-1.5 text-xs bg-gray-900 dark:bg-gray-700 text-white rounded-md disabled:opacity-50"
+                                  >
+                                    Save
+                                  </button>
+                                  <button
+                                    onClick={() => {
+                                      setEditingVoiceId(null);
+                                      setEditingVoiceLabel("");
+                                    }}
+                                    className="px-3 py-1.5 text-xs text-gray-600 dark:text-gray-400"
+                                  >
+                                    Cancel
+                                  </button>
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <p className="text-sm font-medium text-gray-900 dark:text-white">{voice.label}</p>
+                                {isSelected && (
+                                  <span className="inline-flex items-center rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-medium text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">
+                                    Active
+                                  </span>
+                                )}
+                              </div>
+                            )}
+
+                            <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-500 dark:text-gray-400">
+                              <span>{voice.originalFilename}</span>
+                              <span>{formatBytes(voice.sizeBytes)}</span>
+                            </div>
+
+                            <audio
+                              controls
+                              preload="none"
+                              src={voice.previewUrl || api.getTtsVoicePreviewUrl(voice.id)}
+                              className="mt-3 h-8 w-full max-w-sm"
+                            />
+                          </div>
+
+                          {!isEditing && (
+                            <div className="flex items-center gap-2 sm:justify-end">
+                              <button
+                                onClick={() => void handleSelectVoice(voice.id)}
+                                disabled={isBusy}
+                                className={`px-3 py-1.5 text-xs rounded-md ${isSelected ? "bg-emerald-600 text-white" : "bg-gray-900 text-white hover:bg-gray-800 dark:bg-gray-700 dark:hover:bg-gray-600"} disabled:opacity-50`}
+                              >
+                                {isBusy && isSelected ? "Updating..." : isSelected ? "Selected" : "Use Voice"}
+                              </button>
+                              <button
+                                onClick={() => {
+                                  setEditingVoiceId(voice.id);
+                                  setEditingVoiceLabel(voice.label);
+                                }}
+                                className="px-3 py-1.5 text-xs text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white"
+                              >
+                                Rename
+                              </button>
+                              <button
+                                onClick={() => void handleDeleteVoice(voice)}
+                                disabled={isBusy}
+                                className="px-3 py-1.5 text-xs text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 disabled:opacity-50"
+                              >
+                                Delete
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       </div>
     </div>

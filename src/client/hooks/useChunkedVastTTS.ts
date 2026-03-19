@@ -42,6 +42,10 @@ function hashText(text: string): string {
   return "h" + (h >>> 0).toString(36);
 }
 
+function buildChunkHash(text: string, voiceReferenceId: string | null): string {
+  return hashText(`${voiceReferenceId || "builtin"}::${text}`);
+}
+
 function readCacheIndex(): CacheIndex {
   try {
     const raw = localStorage.getItem(CACHE_INDEX_KEY);
@@ -174,7 +178,9 @@ export function splitTextIntoTtsChunks(text: string, targetWordsPerChunk: number
 function findChunkForWordIndex(chunks: string[], targetWordIndex: number): number {
   let wordCount = 0;
   for (let i = 0; i < chunks.length; i++) {
-    const chunkWordCount = chunks[i].trim().split(/\s+/).length;
+    const chunkText = chunks[i];
+    if (!chunkText) continue;
+    const chunkWordCount = chunkText.trim().split(/\s+/).length;
     if (wordCount + chunkWordCount > targetWordIndex) return i;
     wordCount += chunkWordCount;
   }
@@ -201,6 +207,7 @@ export function useChunkedVastTTS() {
   const messageIdRef = useRef<string | null>(null);
   const playbackTokenRef = useRef(0);
   const currentChunkIndexRef = useRef(0);
+  const activeVoiceReferenceIdRef = useRef<string | null>(null);
   const inflightAudioRef = useRef(new Map<string, Promise<string>>());
   const textRef = useRef<string>("");
   const textChunksRef = useRef<string[]>([]);
@@ -250,6 +257,7 @@ export function useChunkedVastTTS() {
     chunksRef.current = [];
     messageIdRef.current = null;
     currentChunkIndexRef.current = 0;
+    activeVoiceReferenceIdRef.current = null;
     textRef.current = "";
     textChunksRef.current = [];
     setState({
@@ -265,7 +273,7 @@ export function useChunkedVastTTS() {
     });
   }, [stopAudio]);
 
-  const generateChunkAudio = useCallback(async (text: string, hash: string): Promise<string> => {
+  const generateChunkAudio = useCallback(async (text: string, hash: string, voiceReferenceId: string | null): Promise<string> => {
     const cached = getCachedAudio(hash);
     if (cached) return cached;
 
@@ -273,7 +281,7 @@ export function useChunkedVastTTS() {
     if (inFlight) return inFlight;
 
     const request = (async () => {
-      const response = await api.post("/tts/speak", { text });
+      const response = await api.post("/tts/speak", { text, voiceReferenceId });
       if (!response.success || !response.audio) {
         throw new Error(response.error || "Failed to generate audio");
       }
@@ -300,7 +308,7 @@ export function useChunkedVastTTS() {
     setState((prev) => ({ ...prev, chunks: [...chunksRef.current] }));
 
     try {
-      const audio = await generateChunkAudio(chunk.text, chunk.hash);
+      const audio = await generateChunkAudio(chunk.text, chunk.hash, activeVoiceReferenceIdRef.current);
       chunksRef.current = chunksRef.current.map((c, i) =>
         i === index ? { ...c, audio, status: "ready" } : c
       );
@@ -318,6 +326,7 @@ export function useChunkedVastTTS() {
       if (token !== playbackTokenRef.current) return;
 
       let chunk = chunksRef.current[i];
+      if (!chunk) return;
       currentChunkIndexRef.current = i;
 
       if (!chunk.audio) {
@@ -336,13 +345,14 @@ export function useChunkedVastTTS() {
         }));
 
         try {
-          const audio = await generateChunkAudio(chunk.text, chunk.hash);
+          const audio = await generateChunkAudio(chunk.text, chunk.hash, activeVoiceReferenceIdRef.current);
           if (token !== playbackTokenRef.current) return;
 
           chunksRef.current = chunksRef.current.map((c, idx) =>
             idx === i ? { ...c, audio, status: "ready" } : c
           );
           chunk = chunksRef.current[i];
+          if (!chunk) return;
         } catch (err) {
           if (token !== playbackTokenRef.current) return;
 
@@ -440,6 +450,7 @@ export function useChunkedVastTTS() {
     }));
 
     const targetChunk = chunksRef.current[index];
+    if (!targetChunk) return;
     setState((prev) => ({
       ...prev,
       isLoading: !targetChunk.audio,
@@ -458,11 +469,13 @@ export function useChunkedVastTTS() {
   const startPlayback = useCallback(async (
     text: string,
     messageId: string,
-    startChunkIndex: number = -1
+    startChunkIndex: number = -1,
+    voiceReferenceId: string | null = null
   ) => {
     reset();
     const requestToken = playbackTokenRef.current;
     messageIdRef.current = messageId;
+    activeVoiceReferenceIdRef.current = voiceReferenceId;
     textRef.current = text;
 
     if (startChunkIndex < 0) {
@@ -487,7 +500,7 @@ export function useChunkedVastTTS() {
 
     let wordOffset = 0;
     chunksRef.current = textChunks.map((chunkTextValue, index) => {
-      const hash = hashText(chunkTextValue);
+      const hash = buildChunkHash(chunkTextValue, activeVoiceReferenceIdRef.current);
       const cachedAudio = getCachedAudio(hash);
       const words = chunkTextValue.split(/\s+/).length;
       const chunk: TTSChunk = {
@@ -505,6 +518,7 @@ export function useChunkedVastTTS() {
 
     currentChunkIndexRef.current = startChunkIndex;
     const startChunk = chunksRef.current[startChunkIndex];
+    if (!startChunk) return;
 
     setState({
       isLoading: !startChunk.audio,
@@ -595,17 +609,17 @@ export function useChunkedVastTTS() {
     await playFromChunk(resumeIdx, token);
   }, [playFromChunk]);
 
-  const toggle = useCallback(async (text: string, messageId: string) => {
+  const toggle = useCallback(async (text: string, messageId: string, voiceReferenceId: string | null = null) => {
     if (state.activeMessageId === messageId) {
       if (state.isPlaying) {
         pause();
       } else if (state.isPaused) {
         await resume();
       } else {
-        await startPlayback(text, messageId);
+        await startPlayback(text, messageId, -1, voiceReferenceId);
       }
     } else {
-      await startPlayback(text, messageId);
+      await startPlayback(text, messageId, -1, voiceReferenceId);
     }
   }, [pause, resume, startPlayback, state.activeMessageId, state.isPaused, state.isPlaying]);
 
@@ -624,11 +638,12 @@ export function useChunkedVastTTS() {
   const startFromWord = useCallback(async (
     text: string,
     messageId: string,
-    wordIndex: number
+    wordIndex: number,
+    voiceReferenceId: string | null = null
   ) => {
     const textChunks = splitTextIntoTtsChunks(text);
     const chunkIndex = findChunkForWordIndex(textChunks, wordIndex);
-    await startPlayback(text, messageId, chunkIndex);
+    await startPlayback(text, messageId, chunkIndex, voiceReferenceId);
   }, [startPlayback]);
 
   return {
