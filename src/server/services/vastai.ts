@@ -379,8 +379,26 @@ export function getActiveInstance(): VastInstance | null {
 /**
  * Start the cheapest available GPU instance
  * Uses aggressive retry strategy due to competitive marketplace
+ * Checks for existing healthy instance first before creating new one
  */
 export async function startCheapestInstance(): Promise<VastInstance> {
+  // First, check if we already have an active instance that's healthy
+  if (activeInstance?.ip && activeInstance?.port) {
+    console.log("[VastTTS] Checking if existing instance is healthy...");
+    const isHealthy = await healthCheck();
+    
+    if (isHealthy) {
+      console.log(`[VastTTS] Adopting existing healthy instance: ${activeInstance.id}`);
+      activeInstance.lastActivity = new Date();
+      resetInactivityTimer();
+      return activeInstance;
+    } else {
+      console.log("[VastTTS] Existing instance not healthy, will create new one");
+      // Clear the unhealthy instance
+      activeInstance = null;
+    }
+  }
+
   console.log("[VastTTS] Searching for best GPU...");
 
   // Try multiple search rounds - offers disappear quickly

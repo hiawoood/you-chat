@@ -100,24 +100,11 @@ tts.post("/speak", async (c) => {
 
 /**
  * POST /api/tts/start
- * Start a new Vast.ai instance
+ * Start a new Vast.ai instance (or adopt existing one)
  */
 tts.post("/start", async (c) => {
   try {
-    // Check if already running
-    const existing = getActiveInstance();
-    if (existing?.status === "running") {
-      const healthy = await healthCheck();
-      if (healthy) {
-        return c.json({
-          success: true,
-          instance: existing,
-          message: "Instance already running",
-        });
-      }
-    }
-
-    // Start new instance
+    // Start/reuse instance - startCheapestInstance handles adoption of existing healthy instances
     const instance = await startCheapestInstance();
 
     return c.json({
@@ -131,6 +118,9 @@ tts.post("/start", async (c) => {
         hourlyRate: instance.hourlyRate,
         createdAt: instance.createdAt,
       },
+      message: instance.lastActivity > new Date(Date.now() - 60000) 
+        ? "Using existing healthy instance" 
+        : "New instance started",
     });
   } catch (error) {
     console.error("[TTS] Failed to start instance:", error);
