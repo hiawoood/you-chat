@@ -1,9 +1,10 @@
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useState, useCallback, useRef } from "react";
 import { api } from "../lib/api";
 
 export interface TTSChunk {
   id: number;
   text: string;
+  hash: string;
   startWord: number;
   endWord: number;
   audio: string | null;
@@ -21,9 +22,47 @@ export interface TTSState {
   chunks: TTSChunk[];
 }
 
-// Split text into ~100 word chunks at sentence boundaries (floor: chunk ≤ target words)
+// ---- Browser audio cache (localStorage, keyed by text hash) ----
+const CACHE_PREFIX = "tts_audio_";
+const MAX_CACHE_ENTRIES = 50;
+
+function hashText(text: string): string {
+  let h = 0;
+  for (let i = 0; i < text.length; i++) {
+    h = ((h << 5) - h + text.charCodeAt(i)) | 0;
+  }
+  return "h" + (h >>> 0).toString(36);
+}
+
+function getCachedAudio(hash: string): string | null {
+  try {
+    return localStorage.getItem(CACHE_PREFIX + hash);
+  } catch {
+    return null;
+  }
+}
+
+function setCachedAudio(hash: string, audio: string): void {
+  try {
+    // Evict oldest if too many
+    const keys: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k?.startsWith(CACHE_PREFIX)) keys.push(k);
+    }
+    if (keys.length >= MAX_CACHE_ENTRIES) {
+      // Remove first N entries to make room
+      keys.slice(0, 10).forEach((k) => localStorage.removeItem(k));
+    }
+    localStorage.setItem(CACHE_PREFIX + hash, audio);
+  } catch {
+    // Storage full or unavailable — ignore
+  }
+}
+
+// ---- Chunking ----
+// Split text into ≤100 word chunks at sentence boundaries (floor rounding)
 function chunkText(text: string, targetWordsPerChunk: number = 100): string[] {
-  // Split into sentences
   const sentences = text.match(/[^.!?]+[.!?]+["']?|[^.!?]+$/g) || [text];
   const chunks: string[] = [];
   let currentChunk = "";
@@ -31,9 +70,7 @@ function chunkText(text: string, targetWordsPerChunk: number = 100): string[] {
 
   for (const sentence of sentences) {
     const wordCount = sentence.trim().split(/\s+/).length;
-    
     if (currentWordCount + wordCount > targetWordsPerChunk && currentChunk.length > 0) {
-      // Finish current chunk
       chunks.push(currentChunk.trim());
       currentChunk = sentence;
       currentWordCount = wordCount;
@@ -42,27 +79,21 @@ function chunkText(text: string, targetWordsPerChunk: number = 100): string[] {
       currentWordCount += wordCount;
     }
   }
-
-  if (currentChunk.trim()) {
-    chunks.push(currentChunk.trim());
-  }
-
+  if (currentChunk.trim()) chunks.push(currentChunk.trim());
   return chunks;
 }
 
-// Find which chunk contains a specific word index
 function findChunkForWordIndex(chunks: string[], targetWordIndex: number): number {
   let wordCount = 0;
   for (let i = 0; i < chunks.length; i++) {
     const chunkWordCount = chunks[i].trim().split(/\s+/).length;
-    if (wordCount + chunkWordCount > targetWordIndex) {
-      return i;
-    }
+    if (wordCount + chunkWordCount > targetWordIndex) return i;
     wordCount += chunkWordCount;
   }
   return 0;
 }
 
+// ---- Hook ----
 export function useChunkedVastTTS() {
   const [state, setState] = useState<TTSState>({
     isLoading: false,
@@ -78,20 +109,26 @@ export function useChunkedVastTTS() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const chunksRef = useRef<TTSChunk[]>([]);
   const messageIdRef = useRef<string | null>(null);
+  const cancelledRef = useRef(false);
+  const textRef = useRef<string>("");
+  const textChunksRef = useRef<string[]>([]);
 
-  // Stop any current playback
-  const stopPlayback = useCallback(() => {
+  // Stop audio element
+  const stopAudio = useCallback(() => {
     if (audioRef.current) {
       audioRef.current.pause();
       audioRef.current = null;
     }
   }, []);
 
-  // Reset state
+  // Full reset
   const reset = useCallback(() => {
-    stopPlayback();
+    cancelledRef.current = true;
+    stopAudio();
     chunksRef.current = [];
     messageIdRef.current = null;
+    textRef.current = "";
+    textChunksRef.current = [];
     setState({
       isLoading: false,
       isPlaying: false,
@@ -102,75 +139,153 @@ export function useChunkedVastTTS() {
       activeMessageId: null,
       chunks: [],
     });
-  }, [stopPlayback]);
+  }, [stopAudio]);
 
-  // Generate audio for a chunk
-  const generateChunkAudio = useCallback(async (chunkText: string): Promise<string> => {
-    const response = await api.post("/tts/speak", { text: chunkText });
+  // Generate audio for a single chunk (with cache)
+  const generateChunkAudio = useCallback(async (text: string, hash: string): Promise<string> => {
+    const cached = getCachedAudio(hash);
+    if (cached) return cached;
+
+    const response = await api.post("/tts/speak", { text });
     if (!response.success || !response.audio) {
       throw new Error(response.error || "Failed to generate audio");
     }
+    setCachedAudio(hash, response.audio);
     return response.audio;
   }, []);
 
-  // Play a specific chunk
-  const playChunk = useCallback(async (chunkIndex: number) => {
-    const chunks = chunksRef.current;
-    const chunk = chunks[chunkIndex];
-    
-    if (!chunk || !chunk.audio) return;
+  // Prefetch a chunk by index (fire-and-forget, updates chunksRef)
+  const prefetchChunk = useCallback(async (index: number) => {
+    const chunk = chunksRef.current[index];
+    if (!chunk || chunk.audio || chunk.status === "generating") return;
 
-    // Update state to show current chunk
-    setState(prev => ({
-      ...prev,
-      currentChunkIndex: chunkIndex,
-      isPlaying: true,
-      isPaused: false,
-    }));
+    chunksRef.current = chunksRef.current.map((c, i) =>
+      i === index ? { ...c, status: "generating" } : c
+    );
 
-    // Update chunk status
-    chunksRef.current = chunks.map((c, i) => ({
-      ...c,
-      status: i === chunkIndex ? "playing" : c.status,
-    }));
-    setState(prev => ({ ...prev, chunks: chunksRef.current }));
+    try {
+      const audio = await generateChunkAudio(chunk.text, chunk.hash);
+      chunksRef.current = chunksRef.current.map((c, i) =>
+        i === index ? { ...c, audio, status: "ready" } : c
+      );
+      setState((prev) => ({ ...prev, chunks: [...chunksRef.current] }));
+    } catch {
+      chunksRef.current = chunksRef.current.map((c, i) =>
+        i === index ? { ...c, status: "error" } : c
+      );
+    }
+  }, [generateChunkAudio]);
 
-    // Play audio
-    const audio = new Audio(`data:audio/wav;base64,${chunk.audio}`);
-    audioRef.current = audio;
+  // Play chunk at index, then auto-advance
+  const playFromChunk = useCallback(async (startIndex: number) => {
+    for (let i = startIndex; i < chunksRef.current.length; i++) {
+      if (cancelledRef.current) return;
 
-    return new Promise<void>((resolve) => {
-      audio.onended = () => {
-        resolve();
-      };
-      audio.onerror = () => {
-        resolve();
-      };
-      audio.play().catch(() => resolve());
-    });
-  }, []);
+      let chunk = chunksRef.current[i];
 
-  // Start TTS playback
+      // If audio not ready yet, generate it now
+      if (!chunk.audio) {
+        chunksRef.current = chunksRef.current.map((c, idx) =>
+          idx === i ? { ...c, status: "generating" } : c
+        );
+        setState((prev) => ({
+          ...prev,
+          isLoading: true,
+          currentChunkIndex: i,
+          chunks: [...chunksRef.current],
+        }));
+
+        try {
+          const audio = await generateChunkAudio(chunk.text, chunk.hash);
+          if (cancelledRef.current) return;
+          chunksRef.current = chunksRef.current.map((c, idx) =>
+            idx === i ? { ...c, audio, status: "ready" } : c
+          );
+          chunk = chunksRef.current[i];
+        } catch (err) {
+          chunksRef.current = chunksRef.current.map((c, idx) =>
+            idx === i ? { ...c, status: "error" } : c
+          );
+          setState((prev) => ({
+            ...prev,
+            isLoading: false,
+            error: err instanceof Error ? err.message : "TTS error",
+            chunks: [...chunksRef.current],
+          }));
+          return;
+        }
+      }
+
+      if (cancelledRef.current || !chunk.audio) return;
+
+      // Mark playing
+      chunksRef.current = chunksRef.current.map((c, idx) => ({
+        ...c,
+        status: idx === i ? "playing" : c.status === "playing" ? "ready" : c.status,
+      }));
+      setState((prev) => ({
+        ...prev,
+        isLoading: false,
+        isPlaying: true,
+        isPaused: false,
+        currentChunkIndex: i,
+        chunks: [...chunksRef.current],
+      }));
+
+      // Prefetch next chunk in background
+      if (i + 1 < chunksRef.current.length) {
+        void prefetchChunk(i + 1);
+      }
+
+      // Play audio and wait for it to finish
+      stopAudio();
+      const audio = new Audio(`data:audio/wav;base64,${chunk.audio}`);
+      audioRef.current = audio;
+
+      await new Promise<void>((resolve) => {
+        audio.onended = () => resolve();
+        audio.onerror = () => resolve();
+        audio.play().catch(() => resolve());
+      });
+
+      if (cancelledRef.current) return;
+    }
+
+    // Finished all chunks
+    if (!cancelledRef.current) {
+      setState((prev) => ({ ...prev, isPlaying: false }));
+    }
+  }, [generateChunkAudio, prefetchChunk, stopAudio]);
+
+  // Start playback from a specific chunk index
   const startPlayback = useCallback(async (
-    text: string, 
+    text: string,
     messageId: string,
     startChunkIndex: number = 0
   ) => {
     reset();
+    cancelledRef.current = false;
     messageIdRef.current = messageId;
+    textRef.current = text;
 
-    // Chunk the text
     const textChunks = chunkText(text);
-    
-    // Create chunk objects
-    chunksRef.current = textChunks.map((chunkText, index) => ({
-      id: index,
-      text: chunkText,
-      startWord: textChunks.slice(0, index).reduce((sum, c) => sum + c.split(/\s+/).length, 0),
-      endWord: textChunks.slice(0, index + 1).reduce((sum, c) => sum + c.split(/\s+/).length, 0),
-      audio: null,
-      status: index === startChunkIndex ? "generating" : "pending",
-    }));
+    textChunksRef.current = textChunks;
+
+    let wordOffset = 0;
+    chunksRef.current = textChunks.map((t, index) => {
+      const words = t.split(/\s+/).length;
+      const chunk: TTSChunk = {
+        id: index,
+        text: t,
+        hash: hashText(t),
+        startWord: wordOffset,
+        endWord: wordOffset + words,
+        audio: getCachedAudio(hashText(t)),
+        status: getCachedAudio(hashText(t)) ? "ready" : "pending",
+      };
+      wordOffset += words;
+      return chunk;
+    });
 
     setState({
       isLoading: true,
@@ -180,61 +295,51 @@ export function useChunkedVastTTS() {
       totalChunks: textChunks.length,
       error: null,
       activeMessageId: messageId,
-      chunks: chunksRef.current,
+      chunks: [...chunksRef.current],
     });
 
-    // Generate audio for all chunks starting from startChunkIndex
-    for (let i = startChunkIndex; i < textChunks.length; i++) {
-      // Update status
-      chunksRef.current = chunksRef.current.map((c, idx) => ({
-        ...c,
-        status: idx === i ? "generating" : c.status,
-      }));
-      setState(prev => ({ ...prev, chunks: chunksRef.current }));
-
-      try {
-        const audio = await generateChunkAudio(textChunks[i]);
-        
-        chunksRef.current = chunksRef.current.map((c, idx) =>
-          idx === i ? { ...c, audio, status: "ready" } : c
-        );
-        setState(prev => ({ ...prev, chunks: chunksRef.current, isLoading: false }));
-
-        // If this is the first chunk or we're resuming, start playing
-        if (i === startChunkIndex) {
-          await playChunk(i);
-        }
-      } catch (error) {
-        chunksRef.current = chunksRef.current.map((c, idx) =>
-          idx === i ? { ...c, status: "error" } : c
-        );
-        setState(prev => ({ ...prev, chunks: chunksRef.current }));
-        console.error(`Failed to generate chunk ${i}:`, error);
-        break;
-      }
+    // Also prefetch startChunkIndex+1 eagerly
+    if (startChunkIndex + 1 < textChunks.length) {
+      void prefetchChunk(startChunkIndex + 1);
     }
 
-    setState(prev => ({ ...prev, isPlaying: false }));
-  }, [reset, generateChunkAudio, playChunk]);
+    await playFromChunk(startChunkIndex);
+  }, [reset, prefetchChunk, playFromChunk]);
 
-  // Pause playback
+  // Pause
   const pause = useCallback(() => {
-    if (audioRef.current) {
-      audioRef.current.pause();
-    }
-    setState(prev => ({ ...prev, isPaused: true, isPlaying: false }));
+    if (audioRef.current) audioRef.current.pause();
+    cancelledRef.current = true;
+    setState((prev) => ({ ...prev, isPaused: true, isPlaying: false }));
   }, []);
 
-  // Resume playback
+  // Resume from current chunk
   const resume = useCallback(async () => {
-    const currentIndex = state.currentChunkIndex;
-    const chunk = chunksRef.current[currentIndex];
-    
-    if (chunk?.audio) {
-      setState(prev => ({ ...prev, isPaused: false, isPlaying: true }));
-      await playChunk(currentIndex);
+    cancelledRef.current = false;
+    const idx = chunksRef.current.findIndex((c) => c.status === "playing");
+    const resumeIdx = idx >= 0 ? idx : 0;
+
+    // If audio element exists and is paused, just resume it
+    if (audioRef.current && audioRef.current.paused && idx >= 0) {
+      setState((prev) => ({ ...prev, isPaused: false, isPlaying: true }));
+      audioRef.current.play().catch(() => {});
+
+      // Wait for it to end, then auto-advance
+      await new Promise<void>((resolve) => {
+        if (!audioRef.current) return resolve();
+        audioRef.current.onended = () => resolve();
+        audioRef.current.onerror = () => resolve();
+      });
+
+      if (!cancelledRef.current && resumeIdx + 1 < chunksRef.current.length) {
+        await playFromChunk(resumeIdx + 1);
+      } else if (!cancelledRef.current) {
+        setState((prev) => ({ ...prev, isPlaying: false }));
+      }
+    } else {
+      await playFromChunk(resumeIdx);
     }
-  }, [state.currentChunkIndex, playChunk]);
+  }, [playFromChunk]);
 
   // Toggle play/pause
   const toggle = useCallback(async (text: string, messageId: string) => {
@@ -251,6 +356,26 @@ export function useChunkedVastTTS() {
     }
   }, [state.activeMessageId, state.isPlaying, state.isPaused, pause, resume, startPlayback]);
 
+  // Navigate to next chunk
+  const nextChunk = useCallback(async () => {
+    const next = state.currentChunkIndex + 1;
+    if (next >= chunksRef.current.length) return;
+    cancelledRef.current = true;
+    stopAudio();
+    cancelledRef.current = false;
+    await playFromChunk(next);
+  }, [state.currentChunkIndex, stopAudio, playFromChunk]);
+
+  // Navigate to previous chunk
+  const prevChunk = useCallback(async () => {
+    const prev = state.currentChunkIndex - 1;
+    if (prev < 0) return;
+    cancelledRef.current = true;
+    stopAudio();
+    cancelledRef.current = false;
+    await playFromChunk(prev);
+  }, [state.currentChunkIndex, stopAudio, playFromChunk]);
+
   // Start from specific word
   const startFromWord = useCallback(async (
     text: string,
@@ -262,20 +387,16 @@ export function useChunkedVastTTS() {
     await startPlayback(text, messageId, chunkIndex);
   }, [startPlayback]);
 
-  // Get current playing chunk
-  const getCurrentChunk = useCallback(() => {
-    return chunksRef.current[state.currentChunkIndex];
-  }, [state.currentChunkIndex]);
-
   return {
     ...state,
     startPlayback,
     pause,
     resume,
     toggle,
+    nextChunk,
+    prevChunk,
     startFromWord,
     stop: reset,
-    getCurrentChunk,
   };
 }
 
