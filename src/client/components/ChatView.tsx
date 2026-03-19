@@ -82,6 +82,7 @@ export default function ChatView({
     toggle: ttsToggle,
     nextChunk: ttsNextChunk,
     prevChunk: ttsPrevChunk,
+    seekToChunk: ttsSeekToChunk,
     startFromWord,
     stop: ttsStop,
   } = useChunkedVastTTS();
@@ -230,6 +231,15 @@ export default function ChatView({
   const handleStartTTSFromWord = async (messageId: string, content: string, wordIndex: number) => {
     await startFromWord(content, messageId, wordIndex);
     hideWordMenu();
+  };
+
+  const handlePlayTTSChunk = async (messageId: string, content: string, chunkIndex: number) => {
+    if (ttsActiveMessageId === messageId) {
+      await ttsSeekToChunk(chunkIndex);
+      return;
+    }
+
+    await startPlayback(content, messageId, chunkIndex);
   };
 
   const handleCompactGenerate = async ({
@@ -419,6 +429,7 @@ export default function ChatView({
               onContinue={handleContinue}
               onCompact={handleOpenCompact}
               onToggleTTS={handleToggleTTS}
+              onPlayTTSChunk={handlePlayTTSChunk}
               onWordClick={showWordMenu}
               actionLoading={actionLoading}
               collapsedIds={collapsedIds}

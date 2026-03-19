@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Message } from "../lib/api";
-import type { TTSChunk } from "../hooks/useChunkedVastTTS";
+import { splitTextIntoTtsChunks, type TTSChunk } from "../hooks/useChunkedVastTTS";
 
 const COLLAPSE_HEIGHT = 72;
 const COLLAPSE_LINE_COUNT = 3;
@@ -21,6 +21,7 @@ interface MessageListProps {
   onContinue?: (messageContent: string) => void;
   onCompact?: (messageId: string) => void;
   onToggleTTS?: (messageId: string, content: string) => void;
+  onPlayTTSChunk?: (messageId: string, content: string, chunkIndex: number) => void;
   onWordClick?: (e: React.MouseEvent, wordIndex: number, messageId: string, text: string) => void;
   actionLoading?: string | null;
   collapsedIds?: Set<string>;
@@ -64,6 +65,7 @@ export default function MessageList({
   onContinue,
   onCompact,
   onToggleTTS,
+  onPlayTTSChunk,
   onWordClick,
   actionLoading,
   collapsedIds = new Set(),
@@ -145,6 +147,9 @@ export default function MessageList({
         const isUserItem = item.role === "user";
 
         const isTTSActive = ttsActiveMessageId === item.id;
+        const messageTtsChunks = isTTSActive && ttsChunks && ttsChunks.length > 0
+          ? ttsChunks.map((chunk) => chunk.text)
+          : splitTextIntoTtsChunks(item.content);
         
         // Calculate which chunk words are in for highlighting
         const getWordChunkInfo = (wordIndex: number) => {
@@ -187,6 +192,7 @@ export default function MessageList({
             onContinue={onContinue && !isActivelyStreaming && !isUserItem ? () => onContinue(item.content) : undefined}
             onCompact={onCompact && !isActivelyStreaming ? () => onCompact(item.id) : undefined}
             onToggleTTS={onToggleTTS && !isActivelyStreaming && !isUserItem ? () => onToggleTTS(item.id, item.content) : undefined}
+            onPlayTTSChunk={onPlayTTSChunk && !isActivelyStreaming && !isUserItem ? (chunkIndex: number) => onPlayTTSChunk(item.id, item.content, chunkIndex) : undefined}
             onWordClick={onWordClick ? (e, wordIndex) => onWordClick(e, wordIndex, item.id, item.content) : undefined}
             forceCollapsed={collapsedIds.has(item.id)}
             isSaving={actionLoading === `edit-msg-${item.id}`}
@@ -197,6 +203,7 @@ export default function MessageList({
             isTTSPlaying={isTTSActive && ttsIsPlaying}
             isTTSLoading={isTTSActive && ttsIsLoading}
             ttsChunks={ttsChunks}
+            ttsTextChunks={messageTtsChunks}
             ttsCurrentChunk={ttsCurrentChunk}
             getWordChunkInfo={getWordChunkInfo}
           />
@@ -293,6 +300,7 @@ function MessageBubble({
   onContinue,
   onCompact,
   onToggleTTS,
+  onPlayTTSChunk,
   onWordClick,
   disableContinue = false,
   forceCollapsed = false,
@@ -301,6 +309,7 @@ function MessageBubble({
   isTTSPlaying = false,
   isTTSLoading = false,
   ttsChunks,
+  ttsTextChunks,
   ttsCurrentChunk,
   getWordChunkInfo,
 }: {
@@ -316,6 +325,7 @@ function MessageBubble({
   onContinue?: (messageContent: string) => void;
   onCompact?: () => void;
   onToggleTTS?: () => void;
+  onPlayTTSChunk?: (chunkIndex: number) => void;
   onWordClick?: (e: React.MouseEvent, wordIndex: number) => void;
   disableContinue?: boolean;
   forceCollapsed?: boolean;
@@ -324,6 +334,7 @@ function MessageBubble({
   isTTSPlaying?: boolean;
   isTTSLoading?: boolean;
   ttsChunks?: TTSChunk[];
+  ttsTextChunks?: string[];
   ttsCurrentChunk?: number;
   getWordChunkInfo?: (wordIndex: number) => { chunkIndex: number; isCurrent: boolean } | null;
 }) {
@@ -413,6 +424,7 @@ function MessageBubble({
 
   const isCollapsed = collapsed && isLong && !editing;
   const isBusy = isDeleting || isSaving || isForking || actionDisabled;
+  const shouldRenderChunkButtons = !isUser && !isStreaming && !!onPlayTTSChunk && (ttsTextChunks?.length ?? 0) > 1;
 
   return (
     <div className={`group ${isUser ? "flex flex-col items-end" : "flex flex-col items-start"} ${isBusy ? "opacity-50" : ""}`}>
@@ -462,9 +474,51 @@ function MessageBubble({
               ref={contentRef}
               className={`relative overflow-hidden transition-all duration-200 ${isCollapsed ? "max-h-[72px]" : ""}`}
             >
-              <div className={`markdown-content text-sm break-words ${isUser ? "markdown-user" : ""}`}>
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
-              </div>
+              {shouldRenderChunkButtons && ttsTextChunks ? (
+                <div className="space-y-3">
+                  {ttsTextChunks.map((chunkText, chunkIndex) => {
+                    const isCurrentChunk = isTTSActive && ttsCurrentChunk === chunkIndex;
+                    const isChunkLoading = isCurrentChunk && isTTSLoading;
+
+                    return (
+                      <div
+                        key={`${message.id}-chunk-${chunkIndex}`}
+                        className={`rounded-md transition-colors ${isCurrentChunk ? "bg-emerald-50/80 dark:bg-emerald-900/20" : ""}`}
+                      >
+                        <div className={`markdown-content text-sm break-words ${isUser ? "markdown-user" : ""}`}>
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>{chunkText}</ReactMarkdown>
+                        </div>
+                        <div className="mt-1 flex justify-end">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onPlayTTSChunk?.(chunkIndex);
+                            }}
+                            className={`inline-flex h-6 w-6 items-center justify-center rounded-full border transition-colors ${isCurrentChunk ? "border-emerald-400 bg-emerald-100 text-emerald-700 dark:border-emerald-500 dark:bg-emerald-900/40 dark:text-emerald-300" : "border-gray-200 bg-gray-50 text-gray-500 hover:border-gray-300 hover:bg-gray-100 hover:text-gray-700 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:border-gray-600 dark:hover:bg-gray-700 dark:hover:text-gray-200"}`}
+                            title={`Play chunk ${chunkIndex + 1}`}
+                            aria-label={`Play chunk ${chunkIndex + 1}`}
+                          >
+                            {isChunkLoading ? (
+                              <svg className="h-3 w-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                              </svg>
+                            ) : (
+                              <svg className="h-3 w-3" fill="currentColor" viewBox="0 0 24 24">
+                                <path d="M8 5v14l11-7z" />
+                              </svg>
+                            )}
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className={`markdown-content text-sm break-words ${isUser ? "markdown-user" : ""}`}>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+                </div>
+              )}
               {isStreaming && !isCollapsed && <span className="inline-block w-2 h-4 ml-1 bg-gray-500 animate-pulse" />}
               {isCollapsed && (
                 <div className={`absolute bottom-0 left-0 right-0 h-8 bg-gradient-to-t ${

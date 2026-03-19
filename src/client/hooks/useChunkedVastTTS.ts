@@ -25,7 +25,14 @@ export interface TTSState {
 
 // ---- Browser audio cache (localStorage, keyed by text hash) ----
 const CACHE_PREFIX = "tts_audio_";
-const MAX_CACHE_ENTRIES = 50;
+const CACHE_INDEX_KEY = "tts_audio_index";
+
+interface CacheIndexEntry {
+  updatedAt: number;
+  size: number;
+}
+
+type CacheIndex = Record<string, CacheIndexEntry>;
 
 function hashText(text: string): string {
   let h = 0;
@@ -35,9 +42,70 @@ function hashText(text: string): string {
   return "h" + (h >>> 0).toString(36);
 }
 
+function readCacheIndex(): CacheIndex {
+  try {
+    const raw = localStorage.getItem(CACHE_INDEX_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as CacheIndex;
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeCacheIndex(index: CacheIndex): void {
+  localStorage.setItem(CACHE_INDEX_KEY, JSON.stringify(index));
+}
+
+function removeCachedAudio(hash: string, index: CacheIndex): void {
+  delete index[hash];
+  localStorage.removeItem(CACHE_PREFIX + hash);
+}
+
+function pruneCacheIndex(index: CacheIndex): CacheIndex {
+  const nextIndex: CacheIndex = { ...index };
+
+  for (const hash of Object.keys(nextIndex)) {
+    if (!localStorage.getItem(CACHE_PREFIX + hash)) {
+      delete nextIndex[hash];
+    }
+  }
+
+  return nextIndex;
+}
+
+function getOldestCachedHashes(index: CacheIndex, excludeHash?: string): string[] {
+  return Object.entries(index)
+    .filter(([hash]) => hash !== excludeHash)
+    .sort(([, a], [, b]) => a.updatedAt - b.updatedAt)
+    .map(([hash]) => hash);
+}
+
 function getCachedAudio(hash: string): string | null {
   try {
-    return localStorage.getItem(CACHE_PREFIX + hash);
+    const audio = localStorage.getItem(CACHE_PREFIX + hash);
+
+    try {
+      const index = pruneCacheIndex(readCacheIndex());
+
+      if (!audio) {
+        if (index[hash]) {
+          delete index[hash];
+          writeCacheIndex(index);
+        }
+        return null;
+      }
+
+      index[hash] = {
+        updatedAt: Date.now(),
+        size: audio.length,
+      };
+      writeCacheIndex(index);
+    } catch {
+      // Ignore metadata refresh failures and return the cached audio.
+    }
+
+    return audio;
   } catch {
     return null;
   }
@@ -45,22 +113,43 @@ function getCachedAudio(hash: string): string | null {
 
 function setCachedAudio(hash: string, audio: string): void {
   try {
-    const keys: string[] = [];
-    for (let i = 0; i < localStorage.length; i++) {
-      const k = localStorage.key(i);
-      if (k?.startsWith(CACHE_PREFIX)) keys.push(k);
+    const key = CACHE_PREFIX + hash;
+    const index = pruneCacheIndex(readCacheIndex());
+
+    index[hash] = {
+      updatedAt: Date.now(),
+      size: audio.length,
+    };
+
+    while (true) {
+      try {
+        localStorage.setItem(key, audio);
+        writeCacheIndex(index);
+        return;
+      } catch {
+        const oldestHashes = getOldestCachedHashes(index, hash);
+        const oldestHash = oldestHashes[0];
+
+        if (!oldestHash) {
+          removeCachedAudio(hash, index);
+          try {
+            writeCacheIndex(index);
+          } catch {
+            // Ignore cache persistence failures.
+          }
+          return;
+        }
+
+        removeCachedAudio(oldestHash, index);
+      }
     }
-    if (keys.length >= MAX_CACHE_ENTRIES) {
-      keys.slice(0, 10).forEach((k) => localStorage.removeItem(k));
-    }
-    localStorage.setItem(CACHE_PREFIX + hash, audio);
   } catch {
     // Storage full or unavailable - ignore.
   }
 }
 
 // ---- Chunking ----
-function chunkText(text: string, targetWordsPerChunk: number = 80): string[] {
+export function splitTextIntoTtsChunks(text: string, targetWordsPerChunk: number = 80): string[] {
   const sentences = text.match(/[^.!?]+[.!?]+["']?|[^.!?]+$/g) || [text];
   const chunks: string[] = [];
   let currentChunk = "";
@@ -381,7 +470,7 @@ export function useChunkedVastTTS() {
       if (requestToken !== playbackTokenRef.current) return;
     }
 
-    const textChunks = chunkText(text);
+    const textChunks = splitTextIntoTtsChunks(text);
     textChunksRef.current = textChunks;
 
     if (requestToken !== playbackTokenRef.current) return;
@@ -528,12 +617,16 @@ export function useChunkedVastTTS() {
     await jumpToChunk(currentChunkIndexRef.current - 1);
   }, [jumpToChunk]);
 
+  const seekToChunk = useCallback(async (chunkIndex: number) => {
+    await jumpToChunk(chunkIndex);
+  }, [jumpToChunk]);
+
   const startFromWord = useCallback(async (
     text: string,
     messageId: string,
     wordIndex: number
   ) => {
-    const textChunks = chunkText(text);
+    const textChunks = splitTextIntoTtsChunks(text);
     const chunkIndex = findChunkForWordIndex(textChunks, wordIndex);
     await startPlayback(text, messageId, chunkIndex);
   }, [startPlayback]);
@@ -546,6 +639,7 @@ export function useChunkedVastTTS() {
     toggle,
     nextChunk,
     prevChunk,
+    seekToChunk,
     startFromWord,
     stop: reset,
   };
