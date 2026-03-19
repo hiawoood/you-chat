@@ -111,8 +111,15 @@ export async function createInstance(offerId: string): Promise<VastInstance> {
   });
 
   if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`Failed to create instance: ${error}`);
+    const errorText = await response.text();
+    // Check for specific error types
+    if (response.status === 404) {
+      throw new Error(`Offer ${offerId} no longer available (404) - likely taken by another user`);
+    }
+    if (errorText.includes("no_such_ask")) {
+      throw new Error(`Offer ${offerId} not found - marketplace too competitive`);
+    }
+    throw new Error(`Failed to create instance: ${errorText}`);
   }
 
   const data = await response.json();
@@ -331,19 +338,26 @@ export async function startCheapestInstance(): Promise<VastInstance> {
     throw new Error("No suitable GPU instances available");
   }
 
-  // Try offers until one succeeds
-  for (const offer of offers.slice(0, 5)) {
+  // Try more offers - marketplace is very competitive
+  const offersToTry = offers.slice(0, 10);
+  
+  for (const offer of offersToTry) {
     try {
-      console.log(`[VastTTS] Trying GPU: ${offer.gpu_name} at $${offer.dph_total}/hour`);
+      console.log(`[VastTTS] Trying GPU: ${offer.gpu_name} at $${offer.dph_total}/hour (offer ${offer.id})`);
       const instance = await createInstance(offer.id.toString());
       return instance;
-    } catch (error) {
-      console.error(`[VastTTS] Failed to create instance with offer ${offer.id}:`, error);
+    } catch (error: any) {
+      // Check if it's a 404 (offer taken) or other error
+      if (error.message?.includes("404") || error.message?.includes("no_such_ask")) {
+        console.log(`[VastTTS] Offer ${offer.id} was taken, trying next...`);
+      } else {
+        console.error(`[VastTTS] Failed to create instance with offer ${offer.id}:`, error.message);
+      }
       continue;
     }
   }
 
-  throw new Error("Failed to create instance with any available offer");
+  throw new Error("All GPU offers were taken by other users. Please try again in a few seconds.");
 }
 
 /**
