@@ -255,6 +255,89 @@ export async function getInstanceInfo(instanceId: string): Promise<any> {
 }
 
 /**
+ * List all user instances from Vast.ai
+ */
+export async function listUserInstances(): Promise<any[]> {
+  const response = await fetch(`${VAST_API_URL}/instances/`, {
+    headers: {
+      Authorization: `Bearer ${VAST_API_KEY}`,
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to list instances: ${response.statusText}`);
+  }
+
+  const data = await response.json();
+  return data.instances || [];
+}
+
+/**
+ * Find and adopt any existing running TTS instance
+ * Called on startup to recover from server restarts
+ */
+export async function findAndAdoptExistingInstance(): Promise<VastInstance | null> {
+  console.log("[VastTTS] Checking for existing running instances...");
+  
+  try {
+    const instances = await listUserInstances();
+    
+    // Filter for running instances with our label
+    const runningInstances = instances.filter((inst: any) => {
+      return inst.actual_status === "running" && 
+             inst.public_ipaddr &&
+             (inst.label?.includes("chatterbox") || inst.image?.includes("chatterbox"));
+    });
+    
+    console.log(`[VastTTS] Found ${runningInstances.length} running TTS instances`);
+    
+    // Try each running instance to see if it's healthy
+    for (const inst of runningInstances) {
+      try {
+        const ports = inst.ports || {};
+        const portMapping = ports["8000/tcp"];
+        const apiPort = portMapping ? parseInt(portMapping[0]?.HostPort || "8000", 10) : 8000;
+        
+        console.log(`[VastTTS] Checking instance ${inst.id} at ${inst.public_ipaddr}:${apiPort}`);
+        
+        // Temporarily set activeInstance to test health
+        const testInstance: VastInstance = {
+          id: inst.id.toString(),
+          ip: inst.public_ipaddr,
+          port: apiPort,
+          status: "running",
+          createdAt: new Date(inst.start_date * 1000),
+          lastActivity: new Date(),
+          gpuName: inst.gpu_name,
+          hourlyRate: inst.dph_total,
+        };
+        
+        // Temporarily set for health check
+        activeInstance = testInstance;
+        const isHealthy = await healthCheck();
+        
+        if (isHealthy) {
+          console.log(`[VastTTS] ✓ Adopted existing healthy instance: ${inst.id}`);
+          resetInactivityTimer();
+          return testInstance;
+        } else {
+          console.log(`[VastTTS] Instance ${inst.id} not healthy, trying next...`);
+          activeInstance = null;
+        }
+      } catch (err) {
+        console.log(`[VastTTS] Failed to check instance ${inst.id}:`, err);
+      }
+    }
+    
+    console.log("[VastTTS] No healthy existing instances found");
+    return null;
+  } catch (error) {
+    console.error("[VastTTS] Error listing instances:", error);
+    return null;
+  }
+}
+
+/**
  * Check if the TTS service is healthy
  */
 export async function healthCheck(): Promise<boolean> {
@@ -384,7 +467,7 @@ export function getActiveInstance(): VastInstance | null {
 export async function startCheapestInstance(): Promise<VastInstance> {
   // First, check if we already have an active instance that's healthy
   if (activeInstance?.ip && activeInstance?.port) {
-    console.log("[VastTTS] Checking if existing instance is healthy...");
+    console.log("[VastTTS] Checking if existing active instance is healthy...");
     const isHealthy = await healthCheck();
     
     if (isHealthy) {
@@ -393,13 +476,18 @@ export async function startCheapestInstance(): Promise<VastInstance> {
       resetInactivityTimer();
       return activeInstance;
     } else {
-      console.log("[VastTTS] Existing instance not healthy, will create new one");
-      // Clear the unhealthy instance
+      console.log("[VastTTS] Existing instance not healthy, will look for others...");
       activeInstance = null;
     }
   }
 
-  console.log("[VastTTS] Searching for best GPU...");
+  // Second, check Vast.ai API for any running instances we might have lost track of
+  const adoptedInstance = await findAndAdoptExistingInstance();
+  if (adoptedInstance) {
+    return adoptedInstance;
+  }
+
+  console.log("[VastTTS] No existing healthy instances found, creating new one...");
 
   // Try multiple search rounds - offers disappear quickly
   for (let searchRound = 0; searchRound < 3; searchRound++) {
