@@ -328,36 +328,48 @@ export function getActiveInstance(): VastInstance | null {
 
 /**
  * Start the cheapest available GPU instance
+ * Uses aggressive retry strategy due to competitive marketplace
  */
 export async function startCheapestInstance(): Promise<VastInstance> {
   console.log("[VastTTS] Searching for best GPU...");
 
-  const offers = await searchBestGPU();
+  // Try multiple search rounds - offers disappear quickly
+  for (let searchRound = 0; searchRound < 3; searchRound++) {
+    if (searchRound > 0) {
+      console.log(`[VastTTS] Search round ${searchRound + 1}/3...`);
+      await new Promise(r => setTimeout(r, 1000)); // Brief pause between searches
+    }
 
-  if (offers.length === 0) {
-    throw new Error("No suitable GPU instances available");
-  }
+    const offers = await searchBestGPU();
 
-  // Try more offers - marketplace is very competitive
-  const offersToTry = offers.slice(0, 10);
-  
-  for (const offer of offersToTry) {
-    try {
-      console.log(`[VastTTS] Trying GPU: ${offer.gpu_name} at $${offer.dph_total}/hour (offer ${offer.id})`);
-      const instance = await createInstance(offer.id.toString());
-      return instance;
-    } catch (error: any) {
-      // Check if it's a 404 (offer taken) or other error
-      if (error.message?.includes("404") || error.message?.includes("no_such_ask")) {
-        console.log(`[VastTTS] Offer ${offer.id} was taken, trying next...`);
-      } else {
-        console.error(`[VastTTS] Failed to create instance with offer ${offer.id}:`, error.message);
-      }
+    if (offers.length === 0) {
+      console.log("[VastTTS] No offers found in this round, retrying...");
       continue;
+    }
+
+    // Try top offers from this search
+    const offersToTry = offers.slice(0, 5);
+    
+    for (const offer of offersToTry) {
+      try {
+        console.log(`[VastTTS] Trying offer ${offer.id}: ${offer.gpu_name} at $${offer.dph_total}/hour`);
+        const instance = await createInstance(offer.id.toString());
+        console.log(`[VastTTS] Successfully created instance with ${offer.gpu_name}!`);
+        return instance;
+      } catch (error: any) {
+        const errorMsg = error.message || "";
+        // Check if it's a 404 (offer taken) or other error
+        if (errorMsg.includes("404") || errorMsg.includes("no_such_ask") || errorMsg.includes("not found")) {
+          console.log(`[VastTTS] Offer ${offer.id} was taken by another user`);
+        } else {
+          console.error(`[VastTTS] Error with offer ${offer.id}:`, errorMsg.substring(0, 100));
+        }
+        continue;
+      }
     }
   }
 
-  throw new Error("All GPU offers were taken by other users. Please try again in a few seconds.");
+  throw new Error("Unable to secure a GPU instance. The Vast.ai marketplace is very competitive. Please try again.");
 }
 
 /**
