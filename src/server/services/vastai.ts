@@ -40,9 +40,49 @@ const INACTIVITY_TIMEOUT = 60 * 60 * 1000; // 60 minutes
 /**
  * Search for best GPU instances available on Vast.ai
  * Uses filters from the verified working README
+ * Tries both on-demand and interruptible (spot) instances
  */
 export async function searchBestGPU(): Promise<any[]> {
-  const response = await fetch(`${VAST_API_URL}/bundles/`, {
+  // Try interruptible (spot) instances first - cheaper and less competition
+  console.log("[VastTTS] Searching for interruptible (spot) instances...");
+  
+  let response = await fetch(`${VAST_API_URL}/bundles/`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${VAST_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      limit: 10,
+      type: "interruptible", // Spot instances - cheaper, less competition
+      verified: { eq: true },
+      rentable: { eq: true },
+      rented: { eq: false },
+      num_gpus: { eq: 1 },
+      gpu_ram: { lte: 10240 },
+      inet_down: { gt: 500 },
+      inet_down_cost: { lt: 0.005 },
+      direct_port_count: { gte: 2 },
+      reliability: { gt: 0.97 },
+      dlperf: { gt: 5 },
+      cuda_max_good: { gte: 12.4 },
+      order: [["dph_total", "asc"]],
+    }),
+  });
+
+  if (response.ok) {
+    const data = await response.json();
+    const offers = data.offers || [];
+    if (offers.length > 0) {
+      console.log(`[VastTTS] Found ${offers.length} interruptible offers`);
+      return offers;
+    }
+  }
+
+  // Fallback to on-demand if no interruptible available
+  console.log("[VastTTS] No interruptible offers, trying on-demand...");
+  
+  response = await fetch(`${VAST_API_URL}/bundles/`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${VAST_API_KEY}`,
@@ -75,7 +115,7 @@ export async function searchBestGPU(): Promise<any[]> {
   const data = await response.json();
   const offers = data.offers || [];
   
-  console.log(`[VastTTS] Found ${offers.length} offers`);
+  console.log(`[VastTTS] Found ${offers.length} on-demand offers`);
   return offers;
 }
 
@@ -95,6 +135,7 @@ export async function createInstance(offerId: string): Promise<VastInstance> {
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
+      client_id: "me",
       image: DOCKER_IMAGE,
       label: "chatterbox-turbo-api-rest",
       disk: 50,
