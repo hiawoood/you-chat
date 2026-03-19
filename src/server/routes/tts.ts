@@ -12,6 +12,7 @@ import {
   markVoiceReferenceAsStale,
   getLifecycleState,
   recreateInstance,
+  requestInstanceLogs,
 } from "../services/vastai";
 import {
   createTtsVoiceReference,
@@ -283,6 +284,41 @@ tts.get("/status", async (c) => {
         active: false,
         status: "error",
         error: error instanceof Error ? error.message : "Unknown error",
+      },
+      500
+    );
+  }
+});
+
+/**
+ * GET /api/tts/logs
+ * Fetch recent logs for the tracked Vast.ai TTS instance
+ */
+tts.get("/logs", async (c) => {
+  const user = c.get("user");
+  if (!user) return c.json({ error: "Unauthorized" }, 401);
+
+  try {
+    const instance = getActiveInstance();
+    const lifecycle = getLifecycleState();
+    const instanceId = instance?.id || lifecycle.instanceId;
+
+    if (!instanceId) {
+      return c.json({ error: "No tracked TTS instance" }, 404);
+    }
+
+    const logs = await requestInstanceLogs(instanceId);
+    return c.json({
+      success: true,
+      instanceId,
+      logs,
+    });
+  } catch (error) {
+    console.error("[TTS] Failed to fetch instance logs:", error);
+    return c.json(
+      {
+        error: "Failed to fetch TTS instance logs",
+        message: error instanceof Error ? error.message : "Unknown error",
       },
       500
     );

@@ -97,6 +97,12 @@ export interface TtsStatusResponse {
   };
 }
 
+export interface TtsLogsResponse {
+  success: boolean;
+  instanceId: string;
+  logs: string;
+}
+
 export const api = {
   getSessions: (): Promise<ChatSession[]> => fetchAPI("/sessions"),
   createSession: (data?: { title?: string; agent?: string }): Promise<ChatSession> =>
@@ -130,6 +136,7 @@ export const api = {
 
   getTtsVoices: (): Promise<TtsVoiceListResponse> => fetchAPI("/tts/voices"),
   getTtsStatus: (): Promise<TtsStatusResponse> => fetchAPI("/tts/status"),
+  getTtsLogs: (): Promise<TtsLogsResponse> => fetchAPI("/tts/logs"),
   restartTtsInstance: (): Promise<{ success: boolean; message: string; instance?: TtsStatusResponse["instance"] }> =>
     fetchAPI("/tts/restart", { method: "POST" }),
   uploadTtsVoice: (label: string, file: File): Promise<TtsVoiceListResponse & { voice: TtsVoiceReference }> => {

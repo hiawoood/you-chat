@@ -76,6 +76,11 @@ export default function ChatView({
   const [ttsServiceStatus, setTtsServiceStatus] = useState<TtsStatusResponse | null>(null);
   const [ttsServiceStatusError, setTtsServiceStatusError] = useState<string | null>(null);
   const [ttsInstanceActionLoading, setTtsInstanceActionLoading] = useState(false);
+  const [showTtsLogsModal, setShowTtsLogsModal] = useState(false);
+  const [ttsLogsContent, setTtsLogsContent] = useState("");
+  const [ttsLogsInstanceId, setTtsLogsInstanceId] = useState<string | null>(null);
+  const [ttsLogsLoading, setTtsLogsLoading] = useState(false);
+  const [ttsLogsError, setTtsLogsError] = useState<string | null>(null);
   const chunkPanelTouchStartRef = useRef<{ x: number; y: number } | null>(null);
 
   // Initialize chunked TTS hook
@@ -397,6 +402,29 @@ export default function ChatView({
     }
   };
 
+  const handleOpenTtsLogs = async () => {
+    setShowTtsLogsModal(true);
+    setTtsLogsLoading(true);
+    setTtsLogsError(null);
+
+    try {
+      const response = await api.getTtsLogs();
+      setTtsLogsContent(response.logs || "");
+      setTtsLogsInstanceId(response.instanceId || null);
+    } catch (error) {
+      setTtsLogsContent("");
+      setTtsLogsInstanceId(ttsServiceStatus?.instance?.id || ttsLifecycle?.instanceId || null);
+      setTtsLogsError(error instanceof Error ? error.message : "Failed to load TTS instance logs");
+    } finally {
+      setTtsLogsLoading(false);
+    }
+  };
+
+  const handleCloseTtsLogs = () => {
+    setShowTtsLogsModal(false);
+    setTtsLogsError(null);
+  };
+
   const handleChunkPanelTouchStart = (event: ReactTouchEvent<HTMLDivElement>) => {
     const touch = event.touches[0];
     if (!touch) return;
@@ -591,6 +619,54 @@ export default function ChatView({
         />
       )}
 
+      {showTtsLogsModal && (
+        <div className="fixed inset-0 z-50 bg-black/55 dark:bg-black/70 flex flex-col">
+          <div className="flex items-center justify-between gap-3 border-b border-gray-200 bg-white/95 px-4 py-3 backdrop-blur dark:border-gray-800 dark:bg-gray-950/95">
+            <div className="min-w-0">
+              <h2 className="text-sm font-semibold text-gray-900 dark:text-white">Vast.ai TTS Logs</h2>
+              <p className="truncate text-xs text-gray-500 dark:text-gray-400">
+                {ttsLogsInstanceId ? `Instance ${ttsLogsInstanceId}` : "Current tracked instance"}
+              </p>
+            </div>
+            <button
+              onClick={handleCloseTtsLogs}
+              className="rounded-md px-2 py-1 text-sm text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-900 dark:text-gray-300 dark:hover:bg-gray-800 dark:hover:text-white"
+              title="Close logs"
+            >
+              <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+
+          <div className="flex-1 overflow-hidden bg-white dark:bg-gray-950">
+            {ttsLogsLoading ? (
+              <div className="flex h-full items-center justify-center">
+                <div className="flex flex-col items-center gap-3 text-gray-500 dark:text-gray-400">
+                  <svg className="h-6 w-6 animate-spin" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                  </svg>
+                  <p className="text-sm">Loading logs...</p>
+                </div>
+              </div>
+            ) : ttsLogsError ? (
+              <div className="flex h-full items-center justify-center px-4">
+                <div className="max-w-lg rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900/50 dark:bg-red-950/30 dark:text-red-300">
+                  {ttsLogsError}
+                </div>
+              </div>
+            ) : (
+              <div className="h-full overflow-auto p-4 sm:p-6">
+                <pre className="min-h-full whitespace-pre-wrap break-words rounded-xl border border-gray-200 bg-gray-50 p-4 text-xs leading-5 text-gray-800 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-100">
+                  {ttsLogsContent || "No logs returned."}
+                </pre>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Input */}
       <div className="min-h-[3.5rem] flex items-end border-t border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 flex-shrink-0 py-2 relative">
         {hasTtsOverlay && (
@@ -752,6 +828,19 @@ export default function ChatView({
                     )}
 
                     <div className="flex justify-end gap-2 pt-1">
+                      <button
+                        onClick={() => void handleOpenTtsLogs()}
+                        disabled={ttsLogsLoading || (!ttsServiceStatus?.instance?.id && !ttsLifecycle?.instanceId)}
+                        className="inline-flex items-center gap-1 rounded-lg border border-gray-200 px-3 py-1.5 text-xs text-gray-700 transition-colors hover:bg-gray-100 disabled:opacity-50 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
+                      >
+                        {ttsLogsLoading && (
+                          <svg className="h-3 w-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                          </svg>
+                        )}
+                        <span>{ttsLogsLoading ? "Loading logs..." : "View logs"}</span>
+                      </button>
                       <button
                         onClick={() => void handleRestartTtsInstance()}
                         disabled={ttsInstanceActionLoading}

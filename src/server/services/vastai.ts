@@ -53,6 +53,9 @@ let activeInstance: VastInstance | null = null;
 let instanceStartupPromise: Promise<VastInstance> | null = null;
 let instanceStartupGeneration = 0;
 let inactivityTimer: Timer | null = null;
+let ttsServiceRequestQueue: Promise<void> = Promise.resolve();
+let activeTtsServiceRequest: "health" | "tts" | "reference" | null = null;
+let lastKnownServiceHealth = false;
 const INACTIVITY_TIMEOUT = 60 * 60 * 1000; // 60 minutes
 let lifecycleState: TtsLifecycleState = {
   phase: "idle",
@@ -96,6 +99,7 @@ function updateLifecycleState(patch: Partial<TtsLifecycleState>) {
 }
 
 function setLifecycleRunning(message: string, instance?: VastInstance | null) {
+  lastKnownServiceHealth = true;
   updateLifecycleState({
     phase: "running",
     message,
@@ -110,6 +114,7 @@ function setLifecycleRunning(message: string, instance?: VastInstance | null) {
 }
 
 function setLifecycleIdle(message: string = "No GPU instance is active.") {
+  lastKnownServiceHealth = false;
   updateLifecycleState({
     phase: "idle",
     message,
@@ -124,6 +129,7 @@ function setLifecycleIdle(message: string = "No GPU instance is active.") {
 }
 
 function setLifecycleError(message: string) {
+  lastKnownServiceHealth = false;
   updateLifecycleState({
     phase: "error",
     message,
@@ -176,6 +182,27 @@ function assertCurrentGeneration(generation: number) {
   }
 }
 
+async function runExclusiveTtsServiceRequest<T>(
+  kind: "health" | "tts" | "reference",
+  task: () => Promise<T>,
+): Promise<T> {
+  const previous = ttsServiceRequestQueue;
+  let release!: () => void;
+  ttsServiceRequestQueue = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+
+  await previous;
+  activeTtsServiceRequest = kind;
+
+  try {
+    return await task();
+  } finally {
+    activeTtsServiceRequest = null;
+    release();
+  }
+}
+
 function syncReferenceStateToInstance(instance: VastInstance | null) {
   if (!instance) {
     resetReferenceState();
@@ -208,40 +235,46 @@ async function uploadVoiceReferenceToInstance(instance: VastInstance, voiceRefer
   );
   formData.append("norm_loudness", "true");
 
-  const response = await fetch(`${getInstanceBaseUrl(instance)}/reference`, {
-    method: "POST",
-    body: formData,
-    signal: AbortSignal.timeout(60000),
-  });
+  await runExclusiveTtsServiceRequest("reference", async () => {
+    const response = await fetch(`${getInstanceBaseUrl(instance)}/reference`, {
+      method: "POST",
+      body: formData,
+      signal: AbortSignal.timeout(60000),
+    });
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Failed to apply voice reference: ${errorText}`);
-  }
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Failed to apply voice reference: ${errorText}`);
+    }
+  });
 
   activeReferenceState = {
     instanceId: instance.id,
     mode: "custom",
     voiceId: voiceReference.id,
   };
+  lastKnownServiceHealth = true;
 }
 
 async function clearVoiceReferenceOnInstance(instance: VastInstance) {
-  const response = await fetch(`${getInstanceBaseUrl(instance)}/reference`, {
-    method: "DELETE",
-    signal: AbortSignal.timeout(60000),
-  });
+  await runExclusiveTtsServiceRequest("reference", async () => {
+    const response = await fetch(`${getInstanceBaseUrl(instance)}/reference`, {
+      method: "DELETE",
+      signal: AbortSignal.timeout(60000),
+    });
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Failed to clear voice reference: ${errorText}`);
-  }
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Failed to clear voice reference: ${errorText}`);
+    }
+  });
 
   activeReferenceState = {
     instanceId: instance.id,
     mode: "builtin",
     voiceId: null,
   };
+  lastKnownServiceHealth = true;
 }
 
 async function ensureVoiceReferenceForInstance(voiceReference: TtsVoiceReference | null): Promise<VastInstance> {
@@ -575,6 +608,42 @@ export async function listUserInstances(): Promise<any[]> {
   return data.instances || [];
 }
 
+export async function requestInstanceLogs(instanceId: string, tail: number = 400): Promise<string> {
+  const response = await fetch(`${VAST_API_URL}/instances/request_logs/${instanceId}`, {
+    method: "PUT",
+    headers: {
+      Authorization: `Bearer ${VAST_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ tail: String(tail) }),
+  });
+
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`Failed to request instance logs: ${error}`);
+  }
+
+  const data = await response.json();
+  const logUrl =
+    data?.url ||
+    data?.log_url ||
+    data?.logs_url ||
+    data?.result_url ||
+    data?.result?.url ||
+    data?.result?.log_url;
+
+  if (!logUrl || typeof logUrl !== "string") {
+    throw new Error("Vast.ai did not return a log URL.");
+  }
+
+  const logResponse = await fetch(logUrl);
+  if (!logResponse.ok) {
+    throw new Error(`Failed to download instance logs: ${logResponse.statusText}`);
+  }
+
+  return await logResponse.text();
+}
+
 /**
  * Find and adopt any existing managed TTS instance, even if it is still provisioning.
  */
@@ -652,25 +721,36 @@ async function fetchManagedInstances(): Promise<any[]> {
 /**
  * Check if the TTS service is healthy
  */
-export async function healthCheck(): Promise<boolean> {
+export async function healthCheck(options?: { useCachedWhileBusy?: boolean }): Promise<boolean> {
   if (!activeInstance?.ip || !activeInstance?.port) {
     return false;
   }
 
+  const useCachedWhileBusy = options?.useCachedWhileBusy ?? true;
+  if (useCachedWhileBusy && activeTtsServiceRequest && activeTtsServiceRequest !== "health") {
+    return lastKnownServiceHealth;
+  }
+
   try {
-    const response = await fetch(
-      `http://${activeInstance.ip}:${activeInstance.port}/healthz`,
-      {
-        signal: AbortSignal.timeout(15000),
+    return await runExclusiveTtsServiceRequest("health", async () => {
+      const response = await fetch(
+        `http://${activeInstance.ip}:${activeInstance.port}/healthz`,
+        {
+          signal: AbortSignal.timeout(15000),
+        }
+      );
+
+      if (response.ok) {
+        const data = await response.json();
+        lastKnownServiceHealth = data.status === "ok";
+        return lastKnownServiceHealth;
       }
-    );
-    
-    if (response.ok) {
-      const data = await response.json();
-      return data.status === "ok";
-    }
-    return false;
+
+      lastKnownServiceHealth = false;
+      return false;
+    });
   } catch {
+    lastKnownServiceHealth = false;
     return false;
   }
 }
@@ -742,69 +822,70 @@ export async function generateSpeech(
   instance.lastActivity = new Date();
   resetInactivityTimer();
 
-  let response: Response | null = null;
-  let lastError: string | null = null;
+  const audioBuffer = await runExclusiveTtsServiceRequest("tts", async () => {
+    let response: Response | null = null;
+    let lastError: string | null = null;
 
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      response = await fetch(
-        `${getInstanceBaseUrl(instance)}/tts`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            text: request.text,
-          }),
-          signal: AbortSignal.timeout(180000),
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        response = await fetch(
+          `${getInstanceBaseUrl(instance)}/tts`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              text: request.text,
+            }),
+            signal: AbortSignal.timeout(180000),
+          }
+        );
+
+        if (response.ok) {
+          lastKnownServiceHealth = true;
+          return await response.arrayBuffer();
         }
-      );
 
-      if (response.ok) {
-        break;
-      }
-
-      lastError = await response.text();
-      if (attempt < 2) {
-        updateLifecycleState({
-          phase: "polling",
-          message: `TTS service is warming up on instance ${instance.id}. Retrying speech request (${attempt + 1}/3)...`,
-          provisioning: true,
-          instanceId: instance.id,
-          offerId: null,
-          searchRound: null,
-          pollAttempt: attempt + 1,
-          lastError,
-        });
-        await new Promise((resolve) => setTimeout(resolve, 2500));
-        continue;
-      }
-    } catch (error) {
-      lastError = error instanceof Error ? error.message : "Unknown TTS request error";
-      if (attempt < 2) {
-        updateLifecycleState({
-          phase: "polling",
-          message: `Retrying speech request while the TTS service finishes warming up (${attempt + 1}/3)...`,
-          provisioning: true,
-          instanceId: instance.id,
-          offerId: null,
-          searchRound: null,
-          pollAttempt: attempt + 1,
-          lastError,
-        });
-        await new Promise((resolve) => setTimeout(resolve, 2500));
-        continue;
+        lastError = await response.text();
+        if (attempt < 2) {
+          updateLifecycleState({
+            phase: "polling",
+            message: `TTS service is warming up on instance ${instance.id}. Retrying speech request (${attempt + 1}/3)...`,
+            provisioning: true,
+            instanceId: instance.id,
+            offerId: null,
+            searchRound: null,
+            pollAttempt: attempt + 1,
+            lastError,
+          });
+          await new Promise((resolve) => setTimeout(resolve, 2500));
+          continue;
+        }
+      } catch (error) {
+        lastError = error instanceof Error ? error.message : "Unknown TTS request error";
+        if (attempt < 2) {
+          updateLifecycleState({
+            phase: "polling",
+            message: `Retrying speech request while the TTS service finishes warming up (${attempt + 1}/3)...`,
+            provisioning: true,
+            instanceId: instance.id,
+            offerId: null,
+            searchRound: null,
+            pollAttempt: attempt + 1,
+            lastError,
+          });
+          await new Promise((resolve) => setTimeout(resolve, 2500));
+          continue;
+        }
       }
     }
-  }
 
-  if (!response || !response.ok) {
+    lastKnownServiceHealth = false;
     throw new Error(`TTS generation failed: ${lastError || "Unknown error"}`);
-  }
+  });
 
   // Get raw audio data and convert to base64
-  const audioBuffer = await response.arrayBuffer();
   const audioBase64 = Buffer.from(audioBuffer).toString('base64');
   
   // Estimate duration (rough calculation for 24kHz mono)
@@ -1248,6 +1329,7 @@ export default {
   applyVoiceReferenceSelection,
   getActiveInstance,
   getLifecycleState,
+  requestInstanceLogs,
   markVoiceReferenceAsStale,
   recreateInstance,
   startCheapestInstance,
