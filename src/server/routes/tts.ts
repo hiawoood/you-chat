@@ -241,7 +241,7 @@ tts.get("/progress/:messageId", async (c) => {
     const chunkIndex = getTtsProgress(messageId);
     return c.json({ chunkIndex });
   } catch (error: any) {
-    console.error(`[TTS] Error getting progress for ${messageId}:\`, error);
+    console.error(`[TTS] Error getting progress for ${messageId}:`, error);
     return c.json({ error: "Failed to get TTS progress", message: error.message }, 500);
   }
 });
