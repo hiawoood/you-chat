@@ -5,14 +5,17 @@ import {
   getActiveInstance,
   healthCheck,
   startCheapestInstance,
-  stopActiveInstance,
+  stopInstance as stopActiveInstance,
   generateSpeech,
-  getVoices,
-  checkTTSServerHealth,
-  searchCheapestGPU,
+  searchBestGPU,
 } from "../services/vastai";
 
 const tts = new Hono<AppEnv>();
+
+// Simple voice list - Chatterbox Turbo has built-in voices
+async function getVoices(): Promise<string[]> {
+  return ["default"];
+}
 
 /**
  * POST /api/tts/speak
@@ -104,7 +107,7 @@ tts.post("/start", async (c) => {
     // Check if already running
     const existing = getActiveInstance();
     if (existing?.status === "running") {
-      const healthy = await checkTTSServerHealth();
+      const healthy = await healthCheck();
       if (healthy) {
         return c.json({
           success: true,
@@ -238,7 +241,7 @@ tts.get("/voices", async (c) => {
  */
 tts.get("/pricing", async (c) => {
   try {
-    const offers = await searchCheapestGPU();
+    const offers = await searchBestGPU();
     
     const pricing = offers.slice(0, 5).map((offer) => ({
       id: offer.id,
