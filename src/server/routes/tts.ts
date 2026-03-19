@@ -9,6 +9,7 @@ import {
   generateSpeech,
   searchBestGPU,
 } from "../services/vastai";
+import { getTtsProgress, setTtsProgress } from "../db";
 
 const tts = new Hono<AppEnv>();
 
@@ -222,6 +223,52 @@ tts.get("/voices", async (c) => {
   } catch (error) {
     console.error("[TTS] Failed to get voices:", error);
     return c.json({ voices: ["default"] });
+  }
+});
+
+/**
+ * GET /api/tts/progress/:messageId
+ * Get the last played chunk index for a message
+ */
+tts.get("/progress/:messageId", async (c) => {
+  const user = c.get("user");
+  if (!user) return c.json({ error: "Unauthorized" }, 401);
+
+  const messageId = c.req.param("messageId");
+  if (!messageId) return c.json({ error: "messageId required" }, 400);
+
+  try {
+    const chunkIndex = getTtsProgress(messageId);
+    return c.json({ chunkIndex });
+  } catch (error: any) {
+    console.error(`[TTS] Error getting progress for ${messageId}:\`, error);
+    return c.json({ error: "Failed to get TTS progress", message: error.message }, 500);
+  }
+});
+
+/**
+ * PATCH /api/tts/progress/:messageId
+ * Update the last played chunk index for a message
+ * Body: { chunkIndex: number }
+ */
+tts.patch("/progress/:messageId", async (c) => {
+  const user = c.get("user");
+  if (!user) return c.json({ error: "Unauthorized" }, 401);
+
+  const messageId = c.req.param("messageId");
+  if (!messageId) return c.json({ error: "messageId required" }, 400);
+
+  const body = await c.req.json<{ chunkIndex: number }>();
+  if (body.chunkIndex === undefined || typeof body.chunkIndex !== "number") {
+    return c.json({ error: "chunkIndex is required and must be a number" }, 400);
+  }
+
+  try {
+    setTtsProgress(messageId, body.chunkIndex);
+    return c.json({ success: true, message: "Progress updated successfully" });
+  } catch (error: any) {
+    console.error(`[TTS] Error setting progress for ${messageId}:\`, error);
+    return c.json({ error: "Failed to update TTS progress", message: error.message }, 500);
   }
 });
 
