@@ -11,3 +11,7 @@ restartPolicyMaxRetries = 10
 [variables]
 PORT = "8080"
 ADMIN_EMAIL = "admin@local.dev"
+
+# Required for Vast.ai TTS integration
+# VAST_API_KEY = "your_vast_api_key_here"  # Get from https://cloud.vast.ai/account/
+# HF_TOKEN = "your_huggingface_token_here"  # Get from https://huggingface.co/settings/tokens
