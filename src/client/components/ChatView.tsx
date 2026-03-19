@@ -330,119 +330,7 @@ export default function ChatView({
               )}
             </select>
 
-            {/* TTS Playback Status - only shown when TTS is active */}
-            {(ttsIsLoading || ttsIsPlaying || ttsIsPaused || ttsError) && (
-            <div className="flex items-center gap-1 ml-2">
-              {ttsIsLoading ? (
-                <span className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-yellow-600 bg-yellow-50 dark:bg-yellow-900/20 rounded-full">
-                  <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                  </svg>
-                  Generating...
-                  <button
-                    onClick={() => void ttsStop()}
-                    className="ml-1 p-0.5 hover:bg-yellow-200 dark:hover:bg-yellow-800 rounded"
-                    title="Cancel"
-                  >
-                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                  </button>
-                </span>
-              ) : ttsIsPlaying ? (
-                <span className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-green-600 bg-green-50 dark:bg-green-900/20 rounded-full">
-                  <button
-                    onClick={() => void ttsPrevChunk()}
-                    disabled={ttsCurrentChunk <= 0}
-                    className="p-0.5 hover:bg-green-200 dark:hover:bg-green-800 rounded disabled:opacity-30"
-                    title="Previous chunk"
-                  >
-                    <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z" /></svg>
-                  </button>
-                  {ttsTotalChunks > 1 ? `${ttsCurrentChunk + 1}/${ttsTotalChunks}` : "▶"}
-                  <button
-                    onClick={() => void ttsNextChunk()}
-                    disabled={ttsCurrentChunk >= ttsTotalChunks - 1}
-                    className="p-0.5 hover:bg-green-200 dark:hover:bg-green-800 rounded disabled:opacity-30"
-                    title="Next chunk"
-                  >
-                    <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z" /></svg>
-                  </button>
-                  <button
-                    onClick={() => void ttsPause()}
-                    className="p-0.5 hover:bg-green-200 dark:hover:bg-green-800 rounded"
-                    title="Pause"
-                  >
-                    <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
-                      <rect x="6" y="4" width="4" height="16" rx="1" />
-                      <rect x="14" y="4" width="4" height="16" rx="1" />
-                    </svg>
-                  </button>
-                  <button
-                    onClick={() => void ttsStop()}
-                    className="p-0.5 hover:bg-green-200 dark:hover:bg-green-800 rounded"
-                    title="Stop"
-                  >
-                    <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
-                      <rect x="6" y="6" width="12" height="12" rx="2" />
-                    </svg>
-                  </button>
-                </span>
-              ) : ttsIsPaused ? (
-                <span className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-blue-600 bg-blue-50 dark:bg-blue-900/20 rounded-full">
-                  <button
-                    onClick={() => void ttsPrevChunk()}
-                    disabled={ttsCurrentChunk <= 0}
-                    className="p-0.5 hover:bg-blue-200 dark:hover:bg-blue-800 rounded disabled:opacity-30"
-                    title="Previous chunk"
-                  >
-                    <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z" /></svg>
-                  </button>
-                  Paused {ttsTotalChunks > 1 ? `${ttsCurrentChunk + 1}/${ttsTotalChunks}` : ""}
-                  <button
-                    onClick={() => void ttsNextChunk()}
-                    disabled={ttsCurrentChunk >= ttsTotalChunks - 1}
-                    className="p-0.5 hover:bg-blue-200 dark:hover:bg-blue-800 rounded disabled:opacity-30"
-                    title="Next chunk"
-                  >
-                    <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z" /></svg>
-                  </button>
-                  <button
-                    onClick={() => void ttsResume()}
-                    className="p-0.5 hover:bg-blue-200 dark:hover:bg-blue-800 rounded"
-                    title="Resume"
-                  >
-                    <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
-                      <path d="M8 5v14l11-7z" />
-                    </svg>
-                  </button>
-                  <button
-                    onClick={() => void ttsStop()}
-                    className="p-0.5 hover:bg-blue-200 dark:hover:bg-blue-800 rounded"
-                    title="Stop"
-                  >
-                    <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
-                      <rect x="6" y="6" width="12" height="12" rx="2" />
-                    </svg>
-                  </button>
-                </span>
-              ) : ttsError ? (
-                <span className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-red-600 bg-red-50 dark:bg-red-900/20 rounded-full">
-                  TTS Error
-                  <button
-                    onClick={() => void ttsStop()}
-                    className="ml-1 p-0.5 hover:bg-red-200 dark:hover:bg-red-800 rounded"
-                    title="Dismiss"
-                  >
-                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                  </button>
-                </span>
-              ) : null}
-            </div>
-            )}
+            {/* TTS Status moved to bottom overlay */}
           </div>
         </div>
       </div>
@@ -510,7 +398,79 @@ export default function ChatView({
       )}
 
       {/* Input */}
-      <div className="min-h-[3.5rem] flex items-end border-t border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 flex-shrink-0 py-2">
+      <div className="min-h-[3.5rem] flex items-end border-t border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 flex-shrink-0 py-2 relative">
+        {(ttsIsLoading || ttsIsPlaying || ttsIsPaused || ttsError) && (
+          <div className="absolute -top-12 left-0 right-0 flex justify-center pointer-events-none">
+            <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 shadow-lg rounded-full px-3 py-1.5 flex items-center gap-2 pointer-events-auto transform transition-transform duration-200 hover:scale-105">
+              {ttsIsLoading ? (
+                <div className="flex items-center gap-2 text-xs font-medium text-yellow-600 dark:text-yellow-400">
+                  <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                  </svg>
+                  <span>Loading...</span>
+                  <button onClick={() => void ttsStop()} className="p-1 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-full" title="Cancel">
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                  </button>
+                </div>
+              ) : ttsError ? (
+                <div className="flex items-center gap-2 text-xs font-medium text-red-600 dark:text-red-400">
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" strokeWidth="2" /><path d="M12 8v4m0 4h.01" strokeWidth="2" strokeLinecap="round" /></svg>
+                  <span>Error</span>
+                  <button onClick={() => void ttsStop()} className="p-1 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-full" title="Close">
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                  </button>
+                </div>
+              ) : (
+                <>
+                  <button
+                    onClick={() => void ttsPrevChunk()}
+                    disabled={ttsCurrentChunk <= 0}
+                    className="p-1.5 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-full disabled:opacity-30 transition-colors"
+                    title="Previous chunk"
+                  >
+                    <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z" /></svg>
+                  </button>
+                  
+                  <button
+                    onClick={() => ttsIsPlaying ? void ttsPause() : void ttsResume()}
+                    className="p-1.5 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-full transition-colors"
+                    title={ttsIsPlaying ? "Pause" : "Resume"}
+                  >
+                    {ttsIsPlaying ? (
+                      <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z" /></svg>
+                    ) : (
+                      <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
+                    )}
+                  </button>
+
+                  <div className="text-xs font-medium tabular-nums text-gray-600 dark:text-gray-300 min-w-[3rem] text-center select-none">
+                    {ttsCurrentChunk + 1} / {ttsTotalChunks}
+                  </div>
+
+                  <button
+                    onClick={() => void ttsNextChunk()}
+                    disabled={ttsCurrentChunk >= ttsTotalChunks - 1}
+                    className="p-1.5 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-full disabled:opacity-30 transition-colors"
+                    title="Next chunk"
+                  >
+                    <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z" /></svg>
+                  </button>
+
+                  <div className="w-px h-4 bg-gray-200 dark:bg-gray-700 mx-1" />
+
+                  <button
+                    onClick={() => void ttsStop()}
+                    className="p-1.5 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-full transition-colors"
+                    title="Stop"
+                  >
+                    <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M6 6h12v12H6z" /></svg>
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        )}
         <div className="max-w-3xl mx-auto w-full px-4">
           {hasActiveStream ? (
             <button

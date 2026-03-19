@@ -163,6 +163,26 @@ export function initDb() {
   try { db.run(`ALTER TABLE user_credentials ADD COLUMN all_cookies TEXT DEFAULT ''`); } catch { /* exists */ }
   try { db.run(`ALTER TABLE user_credentials ADD COLUMN uuid_guest TEXT DEFAULT ''`); } catch { /* exists */ }
 
+  // TTS chunk progress per message
+  db.run(`
+    CREATE TABLE IF NOT EXISTS tts_progress (
+      message_id TEXT PRIMARY KEY,
+      chunk_index INTEGER NOT NULL DEFAULT 0,
+      updated_at INTEGER DEFAULT (unixepoch()),
+      FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE
+    )
+  `);
+
+  // TTS chunk progress per message (cross-device persistence)
+  db.run(`
+    CREATE TABLE IF NOT EXISTS tts_progress (
+      message_id TEXT PRIMARY KEY,
+      chunk_index INTEGER NOT NULL DEFAULT 0,
+      updated_at INTEGER DEFAULT (unixepoch()),
+      FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE
+    )
+  `);
+
   // Indexes
   db.run(`CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id)`);
   db.run(`CREATE INDEX IF NOT EXISTS idx_chat_sessions_user ON chat_sessions(user_id)`);
