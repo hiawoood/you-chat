@@ -10,9 +10,20 @@ import chat from "./routes/chat";
 import agentsRoute from "./routes/agents";
 import credentials from "./routes/credentials";
 import tts from "./routes/tts";
+import { cleanupDuplicateInstances } from "./services/vastai";
 
 // Initialize database
 initDb();
+
+// Start periodic cleanup job for Vast.ai instances (every 1 minute)
+setInterval(() => {
+  cleanupDuplicateInstances();
+}, 60 * 1000);
+
+// Run cleanup once at startup
+setTimeout(() => {
+  cleanupDuplicateInstances();
+}, 5000);
 
 const app = new Hono<AppEnv>();
 

@@ -553,6 +553,146 @@ function clearInactivityTimer(): void {
   }
 }
 
+/**
+ * Periodic cleanup job: ensure only one healthy Vast.ai instance exists
+ * Runs every minute to:
+ * 1. List all Vast.ai instances
+ * 2. If multiple healthy instances exist, keep only the adopted one (or adopt one)
+ * 3. Destroy extra instances
+ */
+export async function cleanupDuplicateInstances(): Promise<void> {
+  try {
+    console.log("[VastTTS] Running cleanup: checking for duplicate instances...");
+    
+    const instances = await listUserInstances();
+    
+    // Filter for running instances with our label/image
+    const runningInstances = instances.filter((inst: any) => {
+      return inst.actual_status === "running" && 
+             inst.public_ipaddr &&
+             (inst.label?.includes("chatterbox") || inst.image?.includes("chatterbox"));
+    });
+    
+    if (runningInstances.length === 0) {
+      console.log("[VastTTS] Cleanup: No running instances found");
+      return;
+    }
+    
+    console.log(`[VastTTS] Cleanup: Found ${runningInstances.length} running TTS instances`);
+    
+    // If only one instance exists, ensure it's adopted
+    if (runningInstances.length === 1) {
+      const inst = runningInstances[0];
+      
+      // If we don't have an active instance, adopt this one
+      if (!activeInstance) {
+        console.log(`[VastTTS] Cleanup: Adopting single instance ${inst.id}`);
+        
+        const ports = inst.ports || {};
+        const portMapping = ports["8000/tcp"];
+        const apiPort = portMapping ? parseInt(portMapping[0]?.HostPort || "8000", 10) : 8000;
+        
+        activeInstance = {
+          id: inst.id.toString(),
+          ip: inst.public_ipaddr,
+          port: apiPort,
+          status: "running",
+          createdAt: new Date(inst.start_date * 1000),
+          lastActivity: new Date(),
+          gpuName: inst.gpu_name,
+          hourlyRate: inst.dph_total,
+        };
+        
+        resetInactivityTimer();
+      }
+      return;
+    }
+    
+    // Multiple instances exist - need to clean up
+    console.log(`[VastTTS] Cleanup: ${runningInstances.length} instances found, checking health...`);
+    
+    const healthyInstances: Array<{ id: string; instance: VastInstance }> = [];
+    
+    // Check health of all instances
+    for (const inst of runningInstances) {
+      try {
+        const ports = inst.ports || {};
+        const portMapping = ports["8000/tcp"];
+        const apiPort = portMapping ? parseInt(portMapping[0]?.HostPort || "8000", 10) : 8000;
+        
+        const testInstance: VastInstance = {
+          id: inst.id.toString(),
+          ip: inst.public_ipaddr,
+          port: apiPort,
+          status: "running",
+          createdAt: new Date(inst.start_date * 1000),
+          lastActivity: new Date(),
+          gpuName: inst.gpu_name,
+          hourlyRate: inst.dph_total,
+        };
+        
+        // Temporarily set to check health
+        const prevActive = activeInstance;
+        activeInstance = testInstance;
+        const isHealthy = await healthCheck();
+        
+        if (!isHealthy && !prevActive) {
+          activeInstance = null;
+        } else {
+          activeInstance = prevActive;
+        }
+        
+        if (isHealthy) {
+          healthyInstances.push({ id: inst.id.toString(), instance: testInstance });
+        }
+      } catch (err) {
+        console.log(`[VastTTS] Cleanup: Instance ${inst.id} health check failed`);
+      }
+    }
+    
+    console.log(`[VastTTS] Cleanup: ${healthyInstances.length} healthy instances`);
+    
+    if (healthyInstances.length <= 1) {
+      // If only one healthy, adopt it
+      if (healthyInstances.length === 1 && !activeInstance) {
+        activeInstance = healthyInstances[0].instance;
+        resetInactivityTimer();
+        console.log(`[VastTTS] Cleanup: Adopted healthy instance ${activeInstance.id}`);
+      }
+      return;
+    }
+    
+    // Multiple healthy instances - keep one, destroy others
+    // Prefer the currently adopted one if it's healthy
+    let instanceToKeep = healthyInstances.find(h => h.id === activeInstance?.id);
+    
+    // If no adopted instance is healthy, keep the first one
+    if (!instanceToKeep) {
+      instanceToKeep = healthyInstances[0];
+      activeInstance = instanceToKeep.instance;
+      resetInactivityTimer();
+      console.log(`[VastTTS] Cleanup: Adopted instance ${activeInstance.id}`);
+    }
+    
+    // Destroy all other healthy instances
+    for (const { id } of healthyInstances) {
+      if (id !== instanceToKeep.id) {
+        try {
+          console.log(`[VastTTS] Cleanup: Destroying duplicate instance ${id}`);
+          await destroyInstance(id);
+        } catch (err) {
+          console.error(`[VastTTS] Cleanup: Failed to destroy instance ${id}:`, err);
+        }
+      }
+    }
+    
+    console.log(`[VastTTS] Cleanup: Kept instance ${instanceToKeep.id}, destroyed ${healthyInstances.length - 1} duplicates`);
+    
+  } catch (error) {
+    console.error("[VastTTS] Cleanup: Error during cleanup:", error);
+  }
+}
+
 export default {
   searchBestGPU,
   createInstance,
@@ -562,4 +702,5 @@ export default {
   getActiveInstance,
   startCheapestInstance,
   stopInstance,
+  cleanupDuplicateInstances,
 };
