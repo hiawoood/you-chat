@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Message } from "../lib/api";
+import type { TTSChunk } from "../hooks/useChunkedVastTTS";
 
 const COLLAPSE_HEIGHT = 72;
 const COLLAPSE_LINE_COUNT = 3;
@@ -19,6 +20,8 @@ interface MessageListProps {
   onFork?: (messageId: string) => void;
   onContinue?: (messageContent: string) => void;
   onCompact?: (messageId: string) => void;
+  onToggleTTS?: (messageId: string, content: string) => void;
+  onWordClick?: (e: React.MouseEvent, wordIndex: number, messageId: string, text: string) => void;
   actionLoading?: string | null;
   collapsedIds?: Set<string>;
   suppressAutoScrollOnNextAppend?: boolean;
@@ -27,6 +30,12 @@ interface MessageListProps {
   disableQuickContinue?: boolean;
   isNearBottom?: () => boolean;
   compactBusy?: boolean;
+  // TTS state
+  ttsActiveMessageId?: string | null;
+  ttsChunks?: TTSChunk[];
+  ttsCurrentChunk?: number;
+  ttsIsPlaying?: boolean;
+  ttsIsLoading?: boolean;
 }
 
 function formatTime(ts: number): string {
@@ -54,6 +63,7 @@ export default function MessageList({
   onContinue,
   onCompact,
   onToggleTTS,
+  onWordClick,
   actionLoading,
   collapsedIds = new Set(),
   suppressAutoScrollOnNextAppend = false,
@@ -62,7 +72,9 @@ export default function MessageList({
   disableQuickContinue = false,
   isNearBottom,
   compactBusy = false,
-  activeTTSMessageId,
+  ttsActiveMessageId,
+  ttsChunks,
+  ttsCurrentChunk,
   ttsIsPlaying,
   ttsIsLoading,
 }: MessageListProps) {
@@ -130,7 +142,21 @@ export default function MessageList({
         const isActivelyStreaming = !!item.isStreaming || item.status === "streaming";
         const isUserItem = item.role === "user";
 
-        const isTTSActive = activeTTSMessageId === item.id;
+        const isTTSActive = ttsActiveMessageId === item.id;
+        
+        // Calculate which chunk words are in for highlighting
+        const getWordChunkInfo = (wordIndex: number) => {
+          if (!isTTSActive || !ttsChunks) return null;
+          let wordCount = 0;
+          for (let i = 0; i < ttsChunks.length; i++) {
+            const chunkWordCount = ttsChunks[i].text.split(/\s+/).length;
+            if (wordCount + chunkWordCount > wordIndex) {
+              return { chunkIndex: i, isCurrent: i === ttsCurrentChunk };
+            }
+            wordCount += chunkWordCount;
+          }
+          return null;
+        };
 
         return (
           <MessageBubble
@@ -159,6 +185,7 @@ export default function MessageList({
             onContinue={onContinue && !isActivelyStreaming && !isUserItem ? () => onContinue(item.content) : undefined}
             onCompact={onCompact && !isActivelyStreaming ? () => onCompact(item.id) : undefined}
             onToggleTTS={onToggleTTS && !isActivelyStreaming && !isUserItem ? () => onToggleTTS(item.id, item.content) : undefined}
+            onWordClick={onWordClick ? (e, wordIndex) => onWordClick(e, wordIndex, item.id, item.content) : undefined}
             forceCollapsed={collapsedIds.has(item.id)}
             isSaving={actionLoading === `edit-msg-${item.id}`}
             isForking={actionLoading === `fork-${item.id}`}
@@ -167,6 +194,9 @@ export default function MessageList({
             isTTSActive={isTTSActive}
             isTTSPlaying={isTTSActive && ttsIsPlaying}
             isTTSLoading={isTTSActive && ttsIsLoading}
+            ttsChunks={ttsChunks}
+            ttsCurrentChunk={ttsCurrentChunk}
+            getWordChunkInfo={getWordChunkInfo}
           />
         );
       })}
@@ -260,12 +290,16 @@ function MessageBubble({
   onContinue,
   onCompact,
   onToggleTTS,
+  onWordClick,
   disableContinue = false,
   forceCollapsed = false,
   actionDisabled = false,
   isTTSActive = false,
   isTTSPlaying = false,
   isTTSLoading = false,
+  ttsChunks,
+  ttsCurrentChunk,
+  getWordChunkInfo,
 }: {
   message: Message;
   isStreaming?: boolean;
@@ -279,12 +313,16 @@ function MessageBubble({
   onContinue?: (messageContent: string) => void;
   onCompact?: () => void;
   onToggleTTS?: () => void;
+  onWordClick?: (e: React.MouseEvent, wordIndex: number) => void;
   disableContinue?: boolean;
   forceCollapsed?: boolean;
   actionDisabled?: boolean;
   isTTSActive?: boolean;
   isTTSPlaying?: boolean;
   isTTSLoading?: boolean;
+  ttsChunks?: TTSChunk[];
+  ttsCurrentChunk?: number;
+  getWordChunkInfo?: (wordIndex: number) => { chunkIndex: number; isCurrent: boolean } | null;
 }) {
   const isUser = message.role === "user";
   const contentRef = useRef<HTMLDivElement>(null);
