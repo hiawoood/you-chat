@@ -342,7 +342,7 @@ export default function ChatView({
                   </svg>
                   {ttsStatus?.instance?.gpuName || "GPU Ready"}
                   {ttsStatus?.instance?.hourlyRate && (
-                    <span className="text-green-500">${ttsStatus.instance.hourlyRate}/hr</span>
+                    <span className="text-green-500">${Number(ttsStatus.instance.hourlyRate).toFixed(3)}/hr</span>
                   )}
                   <button
                     onClick={() => void stopTTSInstance()}
