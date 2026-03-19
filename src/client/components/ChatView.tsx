@@ -163,12 +163,6 @@ export default function ChatView({
     }
   }, [hasTtsOverlay, ttsTotalChunks]);
 
-  useEffect(() => {
-    if (isTtsProvisioning) {
-      setShowTtsStatusPanel(true);
-    }
-  }, [isTtsProvisioning]);
-
   const handleAgentChange = (newAgent: string) => {
     onUpdateSession(session.id, { agent: newAgent });
   };
@@ -396,7 +390,6 @@ export default function ChatView({
     try {
       await api.restartTtsInstance();
       await loadTtsServiceStatus();
-      setShowTtsStatusPanel(true);
     } catch (error) {
       setTtsServiceStatusError(error instanceof Error ? error.message : "Failed to recreate the GPU instance");
     } finally {

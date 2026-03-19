@@ -78,6 +78,7 @@ export interface TtsLifecycleState {
   searchRound: number | null;
   pollAttempt: number | null;
   lastError: string | null;
+  excludedMachineIds: string[];
 }
 
 export interface TtsStatusResponse {

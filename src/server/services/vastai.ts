@@ -45,6 +45,7 @@ export interface TtsLifecycleState {
   searchRound: number | null;
   pollAttempt: number | null;
   lastError: string | null;
+  excludedMachineIds: string[];
 }
 
 // In-memory instance state (would be persisted to DB in production)
@@ -63,6 +64,7 @@ let lifecycleState: TtsLifecycleState = {
   searchRound: null,
   pollAttempt: null,
   lastError: null,
+  excludedMachineIds: [],
 };
 
 interface ActiveReferenceState {
@@ -103,6 +105,7 @@ function setLifecycleRunning(message: string, instance?: VastInstance | null) {
     searchRound: null,
     pollAttempt: null,
     lastError: null,
+    excludedMachineIds: [],
   });
 }
 
@@ -116,6 +119,7 @@ function setLifecycleIdle(message: string = "No GPU instance is active.") {
     searchRound: null,
     pollAttempt: null,
     lastError: null,
+    excludedMachineIds: [],
   });
 }
 
@@ -126,6 +130,12 @@ function setLifecycleError(message: string) {
     provisioning: false,
     lastError: message,
   });
+}
+
+function getMachineId(value: any): string | undefined {
+  const machineId = value?.machine_id ?? value?.machineId ?? value?.host_id ?? value?.hostId ?? value?.machine;
+  if (machineId === undefined || machineId === null) return undefined;
+  return String(machineId);
 }
 
 function isManagedTtsApiInstance(instance: any): boolean {
@@ -150,6 +160,7 @@ function toVastInstance(instance: any): VastInstance {
     status: instance.actual_status === "running" && instance.public_ipaddr ? "running" : "pending",
     createdAt: new Date((instance.start_date || instance.created_at || Date.now() / 1000) * 1000),
     lastActivity: new Date(),
+    machineId: getMachineId(instance),
     gpuName: instance.gpu_name,
     hourlyRate: instance.dph_total,
   };
@@ -282,7 +293,7 @@ async function ensureVoiceReferenceForInstance(voiceReference: TtsVoiceReference
  * Uses filters from the verified working README
  * Tries both on-demand and interruptible (spot) instances
  */
-export async function searchBestGPU(): Promise<any[]> {
+export async function searchBestGPU(excludedMachineIds: Set<string> = new Set()): Promise<any[]> {
   // Try interruptible (spot) instances first - cheaper and less competition
   console.log("[VastTTS] Searching for interruptible (spot) instances...");
   
@@ -314,8 +325,9 @@ export async function searchBestGPU(): Promise<any[]> {
     const data = await response.json();
     const offers = data.offers || [];
     if (offers.length > 0) {
-      console.log(`[VastTTS] Found ${offers.length} interruptible offers`);
-      return offers;
+      const filteredOffers = offers.filter((offer: any) => !excludedMachineIds.has(getMachineId(offer) || ""));
+      console.log(`[VastTTS] Found ${filteredOffers.length} interruptible offers after machine filtering`);
+      return filteredOffers;
     }
   }
 
@@ -354,9 +366,10 @@ export async function searchBestGPU(): Promise<any[]> {
 
   const data = await response.json();
   const offers = data.offers || [];
+  const filteredOffers = offers.filter((offer: any) => !excludedMachineIds.has(getMachineId(offer) || ""));
   
-  console.log(`[VastTTS] Found ${offers.length} on-demand offers`);
-  return offers;
+  console.log(`[VastTTS] Found ${filteredOffers.length} on-demand offers after machine filtering`);
+  return filteredOffers;
 }
 
 /**
@@ -431,6 +444,7 @@ export async function createInstance(offerId: string, generation: number): Promi
     status: "pending",
     createdAt: new Date(),
     lastActivity: new Date(),
+    machineId: undefined,
   };
   resetReferenceState(activeInstance.id, "unknown");
 
@@ -459,6 +473,7 @@ export async function createInstance(offerId: string, generation: number): Promi
     status: "running",
     createdAt: new Date(),
     lastActivity: new Date(),
+    machineId: getMachineId(instanceInfo),
     gpuName: instanceInfo.gpu_name,
     hourlyRate: instanceInfo.dph_total,
   };
@@ -629,6 +644,11 @@ export async function findAndAdoptExistingInstance(): Promise<VastInstance | nul
   }
 }
 
+async function fetchManagedInstances(): Promise<any[]> {
+  const instances = await listUserInstances();
+  return instances.filter((inst: any) => isManagedTtsApiInstance(inst) && !isTerminalInstanceStatus(inst.actual_status));
+}
+
 /**
  * Check if the TTS service is healthy
  */
@@ -700,6 +720,7 @@ async function continueProvisioningInstance(instance: VastInstance, generation: 
     status: "running",
     createdAt: instance.createdAt,
     lastActivity: new Date(),
+    machineId: getMachineId(readyInfo) || instance.machineId,
     gpuName: readyInfo.gpu_name,
     hourlyRate: readyInfo.dph_total,
   };
@@ -721,23 +742,65 @@ export async function generateSpeech(
   instance.lastActivity = new Date();
   resetInactivityTimer();
 
-  const response = await fetch(
-    `${getInstanceBaseUrl(instance)}/tts`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        text: request.text,
-      }),
-      signal: AbortSignal.timeout(180000), // 3 minute timeout for generation
-    }
-  );
+  let response: Response | null = null;
+  let lastError: string | null = null;
 
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`TTS generation failed: ${error}`);
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      response = await fetch(
+        `${getInstanceBaseUrl(instance)}/tts`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            text: request.text,
+          }),
+          signal: AbortSignal.timeout(180000),
+        }
+      );
+
+      if (response.ok) {
+        break;
+      }
+
+      lastError = await response.text();
+      if (attempt < 2) {
+        updateLifecycleState({
+          phase: "polling",
+          message: `TTS service is warming up on instance ${instance.id}. Retrying speech request (${attempt + 1}/3)...`,
+          provisioning: true,
+          instanceId: instance.id,
+          offerId: null,
+          searchRound: null,
+          pollAttempt: attempt + 1,
+          lastError,
+        });
+        await new Promise((resolve) => setTimeout(resolve, 2500));
+        continue;
+      }
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : "Unknown TTS request error";
+      if (attempt < 2) {
+        updateLifecycleState({
+          phase: "polling",
+          message: `Retrying speech request while the TTS service finishes warming up (${attempt + 1}/3)...`,
+          provisioning: true,
+          instanceId: instance.id,
+          offerId: null,
+          searchRound: null,
+          pollAttempt: attempt + 1,
+          lastError,
+        });
+        await new Promise((resolve) => setTimeout(resolve, 2500));
+        continue;
+      }
+    }
+  }
+
+  if (!response || !response.ok) {
+    throw new Error(`TTS generation failed: ${lastError || "Unknown error"}`);
   }
 
   // Get raw audio data and convert to base64
@@ -748,6 +811,8 @@ export async function generateSpeech(
   // WAV header is 44 bytes, rest is PCM data
   const audioDataSize = audioBuffer.byteLength - 44;
   const duration = audioDataSize / (24000 * 2); // 24kHz, 16-bit = 2 bytes per sample
+
+  setLifecycleRunning(`GPU instance ${instance.id} is healthy and ready.`, instance);
 
   return {
     audio: audioBase64,
@@ -859,6 +924,17 @@ export async function recreateInstance(): Promise<VastInstance> {
   instanceStartupPromise = null;
   clearInactivityTimer();
 
+  const instances = await fetchManagedInstances();
+  const excludedMachineIds = new Set<string>(
+    instances
+      .map((instance: any) => getMachineId(instance))
+      .filter((machineId): machineId is string => Boolean(machineId))
+  );
+
+  if (activeInstance?.machineId) {
+    excludedMachineIds.add(activeInstance.machineId);
+  }
+
   updateLifecycleState({
     phase: "stopping",
     message: "Destroying existing Vast.ai TTS instances before requesting a new one...",
@@ -868,12 +944,10 @@ export async function recreateInstance(): Promise<VastInstance> {
     searchRound: null,
     pollAttempt: null,
     lastError: null,
+    excludedMachineIds: [...excludedMachineIds],
   });
 
-  const instances = await listUserInstances();
-  const managedInstances = instances.filter((inst: any) => isManagedTtsApiInstance(inst) && !isTerminalInstanceStatus(inst.actual_status));
-
-  for (const instance of managedInstances) {
+  for (const instance of instances) {
     try {
       await destroyInstance(instance.id.toString());
     } catch (error) {
@@ -883,9 +957,19 @@ export async function recreateInstance(): Promise<VastInstance> {
 
   activeInstance = null;
   resetReferenceState();
-  setLifecycleIdle("Previous GPU instances cleared. Requesting a fresh instance...");
+  updateLifecycleState({
+    phase: "idle",
+    message: "Previous GPU instances cleared. Requesting a fresh instance...",
+    provisioning: false,
+    instanceId: null,
+    offerId: null,
+    searchRound: null,
+    pollAttempt: null,
+    lastError: null,
+    excludedMachineIds: [...excludedMachineIds],
+  });
 
-  return startCheapestInstance({ forceNew: true });
+  return startCheapestInstance({ forceNew: true, excludedMachineIds });
 }
 
 /**
@@ -899,7 +983,7 @@ export function getLifecycleState(): TtsLifecycleState {
   return lifecycleState;
 }
 
-async function startCheapestInstanceInternal(generation: number): Promise<VastInstance> {
+async function startCheapestInstanceInternal(generation: number, excludedMachineIds: Set<string> = new Set()): Promise<VastInstance> {
   // Second, check Vast.ai API for any running instances we might have lost track of
   const adoptedInstance = await findAndAdoptExistingInstance();
   if (adoptedInstance) {
@@ -928,9 +1012,10 @@ async function startCheapestInstanceInternal(generation: number): Promise<VastIn
       searchRound: searchRound + 1,
       pollAttempt: null,
       lastError: null,
+      excludedMachineIds: [...excludedMachineIds],
     });
 
-    const offers = await searchBestGPU();
+    const offers = await searchBestGPU(excludedMachineIds);
 
     if (offers.length === 0) {
       console.log("[VastTTS] No offers found in this round, retrying...");
@@ -967,8 +1052,9 @@ async function startCheapestInstanceInternal(generation: number): Promise<VastIn
  * Uses aggressive retry strategy due to competitive marketplace
  * Checks for existing healthy instance first before creating new one
  */
-export async function startCheapestInstance(options?: { forceNew?: boolean }): Promise<VastInstance> {
+export async function startCheapestInstance(options?: { forceNew?: boolean; excludedMachineIds?: Set<string> }): Promise<VastInstance> {
   const forceNew = options?.forceNew ?? false;
+  const excludedMachineIds = options?.excludedMachineIds ?? new Set<string>();
 
   if (!forceNew && instanceStartupPromise) {
     console.log("[VastTTS] Awaiting in-flight instance startup...");
@@ -1037,7 +1123,7 @@ export async function startCheapestInstance(options?: { forceNew?: boolean }): P
   }
 
   const generation = ++instanceStartupGeneration;
-  instanceStartupPromise = startCheapestInstanceInternal(generation)
+  instanceStartupPromise = startCheapestInstanceInternal(generation, excludedMachineIds)
     .catch((error) => {
       const message = error instanceof Error ? error.message : "Failed to provision a Vast.ai GPU instance.";
       if (message !== "Stale instance provisioning request") {
