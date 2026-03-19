@@ -21,8 +21,8 @@ export interface TTSState {
   chunks: TTSChunk[];
 }
 
-// Split text into ~300 word chunks at sentence boundaries
-function chunkText(text: string, targetWordsPerChunk: number = 300): string[] {
+// Split text into ~100 word chunks at sentence boundaries (floor: chunk ≤ target words)
+function chunkText(text: string, targetWordsPerChunk: number = 100): string[] {
   // Split into sentences
   const sentences = text.match(/[^.!?]+[.!?]+["']?|[^.!?]+$/g) || [text];
   const chunks: string[] = [];
