@@ -484,6 +484,21 @@ function MessageBubble({
                 )}
               </button>
             )}
+
+            {/* TTS Chunk Highlight */}
+            {isTTSActive && ttsChunks && ttsCurrentChunk !== undefined && ttsChunks[ttsCurrentChunk] && (
+              <div className="mt-2 p-2 rounded-md bg-emerald-100 dark:bg-emerald-900/30 border border-emerald-200 dark:border-emerald-800">
+                <div className="text-[10px] text-emerald-600 dark:text-emerald-400 font-medium mb-1 flex items-center gap-1">
+                  <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z" />
+                  </svg>
+                  Speaking {ttsCurrentChunk + 1} of {ttsChunks.length}
+                </div>
+                <div className="text-xs text-gray-700 dark:text-gray-300 leading-relaxed bg-emerald-50 dark:bg-emerald-900/20 p-1.5 rounded">
+                  {ttsChunks[ttsCurrentChunk].text}
+                </div>
+              </div>
+            )}
           </>
         )}
       </div>
