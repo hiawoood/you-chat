@@ -2,7 +2,8 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { api } from "../lib/api";
 import type { ChatSession, Message, Agent } from "../lib/api";
 import { useChat } from "../hooks/useChat";
-import { useVastTTS } from "../hooks/useVastTTS";
+import { useChunkedVastTTS } from "../hooks/useChunkedVastTTS";
+import { useWordContextMenu } from "../hooks/useWordContextMenu";
 import { useScrollDirection } from "../hooks/useScrollDirection";
 import MessageList from "./MessageList";
 import MessageInput from "./MessageInput";
@@ -59,17 +60,26 @@ export default function ChatView({
   const [showScrollBtn, setShowScrollBtn] = useState(false);
   const [suppressMessageAutoScroll, setSuppressMessageAutoScroll] = useState(false);
 
-  // Initialize Vast TTS hook
-  const { 
-    status: ttsStatus, 
-    isActive: ttsIsActive, 
-    isHealthy: ttsIsHealthy,
-    isStarting: ttsIsStarting,
-    startInstance: startTTSInstance,
-    stopInstance: stopTTSInstance,
-    speak: ttsSpeak,
-    playAudio: ttsPlayAudio,
-  } = useVastTTS();
+  // Initialize chunked TTS hook
+  const {
+    isLoading: ttsIsLoading,
+    isPlaying: ttsIsPlaying,
+    isPaused: ttsIsPaused,
+    currentChunkIndex: ttsCurrentChunk,
+    totalChunks: ttsTotalChunks,
+    error: ttsError,
+    activeMessageId: ttsActiveMessageId,
+    chunks: ttsChunks,
+    startPlayback,
+    pause: ttsPause,
+    resume: ttsResume,
+    toggle: ttsToggle,
+    startFromWord,
+    stop: ttsStop,
+  } = useChunkedVastTTS();
+
+  // Initialize word context menu
+  const { menu: wordMenu, showMenu: showWordMenu, hideMenu: hideWordMenu } = useWordContextMenu();
 
   const isNearBottom = useCallback(() => {
     const el = scrollContainerRef.current;
@@ -191,19 +201,12 @@ export default function ChatView({
   };
 
   const handleToggleTTS = async (messageId: string, content: string) => {
-    if (!ttsIsActive || !ttsIsHealthy) {
-      // Don't play if GPU not ready - UI will show warning
-      return;
-    }
-    
-    try {
-      const result = await ttsSpeak(content);
-      if (result.success && result.audio) {
-        await ttsPlayAudio(result.audio);
-      }
-    } catch (err) {
-      console.error("TTS playback failed:", err);
-    }
+    await ttsToggle(content, messageId);
+  };
+
+  const handleStartTTSFromWord = async (messageId: string, content: string, wordIndex: number) => {
+    await startFromWord(content, messageId, wordIndex);
+    hideWordMenu();
   };
 
   const handleCompactGenerate = async ({
