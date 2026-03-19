@@ -129,6 +129,8 @@ export const api = {
 
   getTtsVoices: (): Promise<TtsVoiceListResponse> => fetchAPI("/tts/voices"),
   getTtsStatus: (): Promise<TtsStatusResponse> => fetchAPI("/tts/status"),
+  restartTtsInstance: (): Promise<{ success: boolean; message: string; instance?: TtsStatusResponse["instance"] }> =>
+    fetchAPI("/tts/restart", { method: "POST" }),
   uploadTtsVoice: (label: string, file: File): Promise<TtsVoiceListResponse & { voice: TtsVoiceReference }> => {
     const formData = new FormData();
     formData.append("label", label);

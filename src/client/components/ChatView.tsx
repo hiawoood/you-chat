@@ -75,6 +75,7 @@ export default function ChatView({
   const [ttsVoiceWarning, setTtsVoiceWarning] = useState<string | null>(null);
   const [ttsServiceStatus, setTtsServiceStatus] = useState<TtsStatusResponse | null>(null);
   const [ttsServiceStatusError, setTtsServiceStatusError] = useState<string | null>(null);
+  const [ttsInstanceActionLoading, setTtsInstanceActionLoading] = useState(false);
   const chunkPanelTouchStartRef = useRef<{ x: number; y: number } | null>(null);
 
   // Initialize chunked TTS hook
@@ -143,6 +144,9 @@ export default function ChatView({
   const ttsLifecycle = ttsServiceStatus?.lifecycle;
   const isTtsProvisioning = Boolean(ttsLifecycle?.provisioning);
   const ttsStatusSummary = ttsLifecycle?.message || (ttsServiceStatus?.active ? "GPU instance ready." : "No GPU instance is active.");
+  const roundedHourlyRate = typeof ttsServiceStatus?.instance?.hourlyRate === "number"
+    ? ttsServiceStatus.instance.hourlyRate.toFixed(3)
+    : null;
   const ttsBottomSpacerHeight = hasTtsOverlay
     ? TTS_CONTROL_BOTTOM_SPACER_PX + Math.max(
       showChunkTextPanel ? TTS_CHUNK_PANEL_EXTRA_SPACER_PX : 0,
@@ -385,6 +389,21 @@ export default function ChatView({
     }
   };
 
+  const handleRestartTtsInstance = async () => {
+    setTtsInstanceActionLoading(true);
+    setTtsServiceStatusError(null);
+
+    try {
+      await api.restartTtsInstance();
+      await loadTtsServiceStatus();
+      setShowTtsStatusPanel(true);
+    } catch (error) {
+      setTtsServiceStatusError(error instanceof Error ? error.message : "Failed to recreate the GPU instance");
+    } finally {
+      setTtsInstanceActionLoading(false);
+    }
+  };
+
   const handleChunkPanelTouchStart = (event: ReactTouchEvent<HTMLDivElement>) => {
     const touch = event.touches[0];
     if (!touch) return;
@@ -583,7 +602,7 @@ export default function ChatView({
       <div className="min-h-[3.5rem] flex items-end border-t border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 flex-shrink-0 py-2 relative">
         {hasTtsOverlay && (
           <div className="absolute -top-12 left-0 right-0 flex justify-center pointer-events-none">
-            <div className="relative bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 shadow-lg rounded-full px-3 py-1.5 flex items-center gap-2 pointer-events-auto transform transition-transform duration-200 hover:scale-105">
+            <div className="relative max-w-[calc(100vw-1rem)] overflow-hidden bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 shadow-lg rounded-full px-2 py-1 flex items-center gap-1 sm:px-3 sm:py-1.5 sm:gap-2 pointer-events-auto transform transition-transform duration-200 hover:scale-105">
               {showChunkTextPanel && ttsTotalChunks > 0 && !ttsError && (
                 <div
                   className="absolute bottom-full left-1/2 z-10 mb-2 w-[min(22rem,calc(100vw-2rem))] -translate-x-1/2 rounded-2xl border border-gray-200 bg-white/95 px-3 py-2 shadow-xl backdrop-blur dark:border-gray-700 dark:bg-gray-900/95"
@@ -720,7 +739,7 @@ export default function ChatView({
                       <div className="rounded-xl border border-gray-200 px-3 py-2 dark:border-gray-700">
                         <div className="text-gray-500 dark:text-gray-400">Rate</div>
                         <div className="mt-1 font-medium text-gray-900 dark:text-white">
-                          {ttsServiceStatus?.instance?.hourlyRate ? `$${ttsServiceStatus.instance.hourlyRate}/hr` : "-"}
+                          {roundedHourlyRate ? `$${roundedHourlyRate}/hr` : "-"}
                         </div>
                       </div>
                     </div>
@@ -738,6 +757,22 @@ export default function ChatView({
                         {ttsServiceStatusError || ttsLifecycle?.lastError}
                       </div>
                     )}
+
+                    <div className="flex justify-end gap-2 pt-1">
+                      <button
+                        onClick={() => void handleRestartTtsInstance()}
+                        disabled={ttsInstanceActionLoading}
+                        className="inline-flex items-center gap-1 rounded-lg bg-gray-900 px-3 py-1.5 text-xs text-white transition-colors hover:bg-gray-800 disabled:opacity-50 dark:bg-gray-700 dark:hover:bg-gray-600"
+                      >
+                        {ttsInstanceActionLoading && (
+                          <svg className="h-3 w-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                          </svg>
+                        )}
+                        <span>{ttsInstanceActionLoading ? "Recreating..." : "Recreate instance"}</span>
+                      </button>
+                    </div>
                   </div>
                 </div>
               )}
@@ -754,28 +789,28 @@ export default function ChatView({
                   <button
                     onClick={() => void ttsPrevChunk()}
                     disabled={ttsCurrentChunk <= 0}
-                    className="p-1.5 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-full disabled:opacity-30 transition-colors"
+                    className="p-1 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-full disabled:opacity-30 transition-colors sm:p-1.5"
                     title="Previous chunk"
                   >
-                    <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z" /></svg>
+                    <svg className="w-3.5 h-3.5 sm:w-4 sm:h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z" /></svg>
                   </button>
 
                   <button
                     onClick={() => (ttsIsPlaying || ttsIsLoading) ? void ttsPause() : void ttsResume()}
-                    className="p-1.5 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-full transition-colors"
+                    className="p-1 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-full transition-colors sm:p-1.5"
                     title={(ttsIsPlaying || ttsIsLoading) ? "Pause" : "Resume"}
                   >
                     {(ttsIsPlaying || ttsIsLoading) ? (
-                      <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z" /></svg>
+                      <svg className="w-3.5 h-3.5 sm:w-4 sm:h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z" /></svg>
                     ) : (
-                      <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
+                      <svg className="w-3.5 h-3.5 sm:w-4 sm:h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
                     )}
                   </button>
 
-                  <div className="flex items-center gap-1 text-xs font-medium tabular-nums text-gray-600 dark:text-gray-300 min-w-[3.75rem] text-center select-none">
+                  <div className="flex items-center gap-1 text-[11px] sm:text-xs font-medium tabular-nums text-gray-600 dark:text-gray-300 min-w-[3rem] sm:min-w-[3.75rem] text-center select-none">
                     <span>{currentChunkNumber} / {ttsTotalChunks}</span>
                     {isCurrentChunkLoading && (
-                      <svg className="w-3.5 h-3.5 animate-spin text-amber-500 dark:text-amber-400" fill="none" viewBox="0 0 24 24">
+                      <svg className="w-3 h-3 sm:w-3.5 sm:h-3.5 animate-spin text-amber-500 dark:text-amber-400" fill="none" viewBox="0 0 24 24">
                         <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                         <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
                       </svg>
@@ -789,7 +824,7 @@ export default function ChatView({
                         setShowVoiceMenu(false);
                         setShowTtsStatusPanel((prev) => !prev);
                       }}
-                      className={`inline-flex max-w-[12rem] items-center gap-1 rounded-full px-2 py-1 text-[11px] transition-colors ${showTtsStatusPanel ? "bg-gray-100 text-gray-900 dark:bg-gray-700 dark:text-white" : isTtsProvisioning ? "bg-amber-50 text-amber-700 hover:bg-amber-100 dark:bg-amber-900/30 dark:text-amber-300" : "bg-gray-50 text-gray-600 hover:bg-gray-100 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700"}`}
+                      className={`inline-flex items-center justify-center rounded-full p-1 transition-colors sm:p-1.5 ${showTtsStatusPanel ? "bg-gray-100 text-gray-900 dark:bg-gray-700 dark:text-white" : isTtsProvisioning ? "bg-amber-50 text-amber-700 hover:bg-amber-100 dark:bg-amber-900/30 dark:text-amber-300" : "text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700"}`}
                       title={ttsStatusSummary}
                     >
                       {isTtsProvisioning && (
@@ -798,7 +833,11 @@ export default function ChatView({
                           <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
                         </svg>
                       )}
-                      <span className="truncate">{isTtsProvisioning ? ttsStatusSummary : ttsServiceStatus?.instance?.gpuName || "Service status"}</span>
+                      {!isTtsProvisioning && (
+                        <svg className="h-3.5 w-3.5 sm:h-4 sm:w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.75 17L6 20.75V17H3.25v-5.5H6V7.75L9.75 11.5m4.5 5.5L18 20.75V17h2.75v-5.5H18V7.75L14.25 11.5" />
+                        </svg>
+                      )}
                     </button>
                   )}
 
@@ -809,10 +848,10 @@ export default function ChatView({
                         setShowVoiceMenu(false);
                         setShowChunkTextPanel((prev) => !prev);
                       }}
-                      className={`p-1.5 rounded-full transition-colors ${showChunkTextPanel ? "bg-gray-100 text-gray-900 dark:bg-gray-700 dark:text-white" : "text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"}`}
+                      className={`p-1 rounded-full transition-colors sm:p-1.5 ${showChunkTextPanel ? "bg-gray-100 text-gray-900 dark:bg-gray-700 dark:text-white" : "text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"}`}
                       title={showChunkTextPanel ? "Hide current chunk text" : "Show current chunk text"}
                     >
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <svg className="w-3.5 h-3.5 sm:w-4 sm:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 8h10M7 12h7m-7 4h10M5 5h14a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2z" />
                       </svg>
                     </button>
@@ -827,10 +866,10 @@ export default function ChatView({
                       setShowTtsStatusPanel(false);
                       setShowVoiceMenu((prev) => !prev);
                     }}
-                    className={`p-1.5 rounded-full transition-colors ${showVoiceMenu ? "bg-gray-100 text-gray-900 dark:bg-gray-700 dark:text-white" : "text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"}`}
+                    className={`p-1 rounded-full transition-colors sm:p-1.5 ${showVoiceMenu ? "bg-gray-100 text-gray-900 dark:bg-gray-700 dark:text-white" : "text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"}`}
                     title={showVoiceMenu ? "Hide voice selector" : "Choose TTS voice"}
                   >
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <svg className="w-3.5 h-3.5 sm:w-4 sm:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5h2M12 3v2m6.364 1.636l-1.414 1.414M20 12h-2M6 12H4m2.05-5.364l1.414 1.414M12 19v2m6-9a6 6 0 11-12 0 6 6 0 0112 0zm-6 3a3 3 0 100-6 3 3 0 000 6z" />
                     </svg>
                   </button>
@@ -838,10 +877,10 @@ export default function ChatView({
                   {ttsTotalChunks > 0 && (
                     <button
                       onClick={() => setTtsAutoScrollEnabled((prev) => !prev)}
-                      className={`p-1.5 rounded-full transition-colors ${ttsAutoScrollEnabled ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300" : "text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"}`}
+                      className={`p-1 rounded-full transition-colors sm:p-1.5 ${ttsAutoScrollEnabled ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300" : "text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"}`}
                       title={ttsAutoScrollEnabled ? "Disable chunk auto-scroll" : "Enable chunk auto-scroll"}
                     >
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <svg className="w-3.5 h-3.5 sm:w-4 sm:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 5v14m0 0l-4-4m4 4l4-4M5 12h14" />
                       </svg>
                     </button>
@@ -850,20 +889,20 @@ export default function ChatView({
                   <button
                     onClick={() => void ttsNextChunk()}
                     disabled={ttsCurrentChunk >= ttsTotalChunks - 1}
-                    className="p-1.5 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-full disabled:opacity-30 transition-colors"
+                    className="p-1 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-full disabled:opacity-30 transition-colors sm:p-1.5"
                     title="Next chunk"
                   >
-                    <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z" /></svg>
+                    <svg className="w-3.5 h-3.5 sm:w-4 sm:h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z" /></svg>
                   </button>
 
-                  <div className="w-px h-4 bg-gray-200 dark:bg-gray-700 mx-1" />
+                  <div className="w-px h-4 bg-gray-200 dark:bg-gray-700 mx-0.5 sm:mx-1" />
 
                   <button
                     onClick={() => void ttsStop()}
-                    className="p-1.5 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-full transition-colors"
+                    className="p-1 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-full transition-colors sm:p-1.5"
                     title="Stop"
                   >
-                    <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M6 6h12v12H6z" /></svg>
+                    <svg className="w-3.5 h-3.5 sm:w-4 sm:h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M6 6h12v12H6z" /></svg>
                   </button>
                 </>
               )}

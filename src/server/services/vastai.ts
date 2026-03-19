@@ -50,6 +50,7 @@ export interface TtsLifecycleState {
 // In-memory instance state (would be persisted to DB in production)
 let activeInstance: VastInstance | null = null;
 let instanceStartupPromise: Promise<VastInstance> | null = null;
+let instanceStartupGeneration = 0;
 let inactivityTimer: Timer | null = null;
 const INACTIVITY_TIMEOUT = 60 * 60 * 1000; // 60 minutes
 let lifecycleState: TtsLifecycleState = {
@@ -125,6 +126,43 @@ function setLifecycleError(message: string) {
     provisioning: false,
     lastError: message,
   });
+}
+
+function isManagedTtsApiInstance(instance: any): boolean {
+  return Boolean(instance && (instance.label?.includes("chatterbox") || instance.image?.includes("chatterbox")));
+}
+
+function isTerminalInstanceStatus(status: string | undefined): boolean {
+  return status === "destroyed" || status === "stopped" || status === "exited";
+}
+
+function getMappedApiPort(instance: any): number {
+  const ports = instance?.ports || {};
+  const portMapping = ports["8000/tcp"];
+  return portMapping ? parseInt(portMapping[0]?.HostPort || "8000", 10) : 8000;
+}
+
+function toVastInstance(instance: any): VastInstance {
+  return {
+    id: instance.id.toString(),
+    ip: instance.public_ipaddr || null,
+    port: getMappedApiPort(instance),
+    status: instance.actual_status === "running" && instance.public_ipaddr ? "running" : "pending",
+    createdAt: new Date((instance.start_date || instance.created_at || Date.now() / 1000) * 1000),
+    lastActivity: new Date(),
+    gpuName: instance.gpu_name,
+    hourlyRate: instance.dph_total,
+  };
+}
+
+function isRunningReachableInstance(instance: any): boolean {
+  return instance.actual_status === "running" && Boolean(instance.public_ipaddr);
+}
+
+function assertCurrentGeneration(generation: number) {
+  if (generation !== instanceStartupGeneration) {
+    throw new Error("Stale instance provisioning request");
+  }
 }
 
 function syncReferenceStateToInstance(instance: VastInstance | null) {
@@ -325,10 +363,12 @@ export async function searchBestGPU(): Promise<any[]> {
  * Create a new Vast.ai instance with Chatterbox TTS Server
  * Uses shukco/chatterbox-turbo-api:latest Docker image
  */
-export async function createInstance(offerId: string): Promise<VastInstance> {
+export async function createInstance(offerId: string, generation: number): Promise<VastInstance> {
   if (!HF_TOKEN) {
     throw new Error("HF_TOKEN environment variable is required for Hugging Face model download");
   }
+
+  assertCurrentGeneration(generation);
 
   updateLifecycleState({
     phase: "creating",
@@ -384,6 +424,16 @@ export async function createInstance(offerId: string): Promise<VastInstance> {
 
   console.log(`[VastTTS] Instance created: ${instanceId}`);
 
+  activeInstance = {
+    id: instanceId,
+    ip: null,
+    port: 8000,
+    status: "pending",
+    createdAt: new Date(),
+    lastActivity: new Date(),
+  };
+  resetReferenceState(activeInstance.id, "unknown");
+
   updateLifecycleState({
     phase: "polling",
     message: `Instance ${instanceId} created. Waiting for the API port to come online...`,
@@ -394,8 +444,13 @@ export async function createInstance(offerId: string): Promise<VastInstance> {
     lastError: null,
   });
 
+  if (generation !== instanceStartupGeneration) {
+    await destroyInstance(instanceId).catch(() => {});
+    throw new Error("Stale instance provisioning request");
+  }
+
   // Poll for instance to be running and get IP/port
-  const instanceInfo = await pollInstanceReady(instanceId);
+  const instanceInfo = await pollInstanceReady(instanceId, generation);
 
   activeInstance = {
     id: instanceId,
@@ -414,14 +469,15 @@ export async function createInstance(offerId: string): Promise<VastInstance> {
   // Start inactivity timer (60 minutes)
   resetInactivityTimer();
 
-  return activeInstance;
+  return waitForHealthyService(activeInstance);
 }
 
 /**
  * Poll instance until it's running and has ports mapped
  */
-async function pollInstanceReady(instanceId: string, maxAttempts = 30): Promise<any> {
+async function pollInstanceReady(instanceId: string, generation: number, maxAttempts = 30): Promise<any> {
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    assertCurrentGeneration(generation);
     console.log(`[VastTTS] Polling instance ${instanceId}, attempt ${attempt + 1}/${maxAttempts}`);
     updateLifecycleState({
       phase: "polling",
@@ -505,14 +561,13 @@ export async function listUserInstances(): Promise<any[]> {
 }
 
 /**
- * Find and adopt any existing running TTS instance
- * Called on startup to recover from server restarts
+ * Find and adopt any existing managed TTS instance, even if it is still provisioning.
  */
 export async function findAndAdoptExistingInstance(): Promise<VastInstance | null> {
-  console.log("[VastTTS] Checking for existing running instances...");
+  console.log("[VastTTS] Checking for existing managed instances...");
   updateLifecycleState({
     phase: "checking",
-    message: "Checking Vast.ai for an existing healthy TTS instance...",
+    message: "Checking Vast.ai for an existing TTS instance...",
     provisioning: true,
     instanceId: null,
     offerId: null,
@@ -520,61 +575,53 @@ export async function findAndAdoptExistingInstance(): Promise<VastInstance | nul
     pollAttempt: null,
     lastError: null,
   });
-  
+
   try {
     const instances = await listUserInstances();
-    
-    // Filter for running instances with our label
-    const runningInstances = instances.filter((inst: any) => {
-      return inst.actual_status === "running" && 
-             inst.public_ipaddr &&
-             (inst.label?.includes("chatterbox") || inst.image?.includes("chatterbox"));
-    });
-    
-    console.log(`[VastTTS] Found ${runningInstances.length} running TTS instances`);
-    
-    // Try each running instance to see if it's healthy
-    for (const inst of runningInstances) {
-      try {
-        const ports = inst.ports || {};
-        const portMapping = ports["8000/tcp"];
-        const apiPort = portMapping ? parseInt(portMapping[0]?.HostPort || "8000", 10) : 8000;
-        
-        console.log(`[VastTTS] Checking instance ${inst.id} at ${inst.public_ipaddr}:${apiPort}`);
-        
-        // Temporarily set activeInstance to test health
-        const testInstance: VastInstance = {
-          id: inst.id.toString(),
-          ip: inst.public_ipaddr,
-          port: apiPort,
-          status: "running",
-          createdAt: new Date(inst.start_date * 1000),
-          lastActivity: new Date(),
-          gpuName: inst.gpu_name,
-          hourlyRate: inst.dph_total,
-        };
-        
-        // Temporarily set for health check
-        activeInstance = testInstance;
-        const isHealthy = await healthCheck();
-        
-        if (isHealthy) {
-          console.log(`[VastTTS] ✓ Adopted existing healthy instance: ${inst.id}`);
-          resetReferenceState(testInstance.id, "unknown");
-          setLifecycleRunning(`Using existing GPU instance ${testInstance.id}.`, testInstance);
-          resetInactivityTimer();
-          return testInstance;
-        } else {
-          console.log(`[VastTTS] Instance ${inst.id} not healthy, trying next...`);
-          activeInstance = null;
+    const preferredId = activeInstance?.id || lifecycleState.instanceId;
+    const managedInstances = instances
+      .filter((inst: any) => isManagedTtsApiInstance(inst) && !isTerminalInstanceStatus(inst.actual_status))
+      .sort((a: any, b: any) => {
+        if (preferredId) {
+          if (a.id.toString() === preferredId) return -1;
+          if (b.id.toString() === preferredId) return 1;
         }
-      } catch (err) {
-        console.log(`[VastTTS] Failed to check instance ${inst.id}:`, err);
-      }
+        if (isRunningReachableInstance(a) && !isRunningReachableInstance(b)) return -1;
+        if (!isRunningReachableInstance(a) && isRunningReachableInstance(b)) return 1;
+        return (a.start_date || 0) - (b.start_date || 0);
+      });
+
+    console.log(`[VastTTS] Found ${managedInstances.length} managed TTS instances`);
+
+    const candidate = managedInstances[0];
+    if (!candidate) {
+      console.log("[VastTTS] No existing managed instances found");
+      return null;
     }
-    
-    console.log("[VastTTS] No healthy existing instances found");
-    return null;
+
+    const adoptedInstance = toVastInstance(candidate);
+    activeInstance = adoptedInstance;
+    resetReferenceState(adoptedInstance.id, "unknown");
+
+    if (isRunningReachableInstance(candidate)) {
+      setLifecycleRunning(`Using existing GPU instance ${adoptedInstance.id}.`, adoptedInstance);
+      resetInactivityTimer();
+      console.log(`[VastTTS] Adopted reachable instance ${adoptedInstance.id}`);
+      return adoptedInstance;
+    }
+
+    updateLifecycleState({
+      phase: "polling",
+      message: `Adopted provisioning instance ${adoptedInstance.id}. Waiting for it to become reachable...`,
+      provisioning: true,
+      instanceId: adoptedInstance.id,
+      offerId: null,
+      searchRound: null,
+      pollAttempt: null,
+      lastError: null,
+    });
+    console.log(`[VastTTS] Adopted provisioning instance ${adoptedInstance.id}`);
+    return adoptedInstance;
   } catch (error) {
     console.error("[VastTTS] Error listing instances:", error);
     setLifecycleError(error instanceof Error ? error.message : "Failed to inspect existing Vast.ai instances.");
@@ -606,6 +653,58 @@ export async function healthCheck(): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+async function waitForHealthyService(instance: VastInstance, maxAttempts = 12): Promise<VastInstance> {
+  const previousInstance = activeInstance;
+  activeInstance = instance;
+
+  try {
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      const healthy = await healthCheck();
+      if (healthy) {
+        activeInstance = {
+          ...instance,
+          status: "running",
+          lastActivity: new Date(),
+        };
+        setLifecycleRunning(`GPU instance ${instance.id} is healthy and ready.`, activeInstance);
+        resetInactivityTimer();
+        return activeInstance;
+      }
+
+      updateLifecycleState({
+        phase: "polling",
+        message: `Waiting for the TTS service on instance ${instance.id} to become healthy (${attempt + 1}/${maxAttempts})...`,
+        provisioning: true,
+        instanceId: instance.id,
+        pollAttempt: attempt + 1,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 5000));
+    }
+  } finally {
+    if (activeInstance?.id !== instance.id) {
+      activeInstance = previousInstance;
+    }
+  }
+
+  throw new Error(`Instance ${instance.id} is reachable but the TTS service is not healthy yet.`);
+}
+
+async function continueProvisioningInstance(instance: VastInstance, generation: number): Promise<VastInstance> {
+  const readyInfo = await pollInstanceReady(instance.id, generation);
+  activeInstance = {
+    id: instance.id,
+    ip: readyInfo.public_ipaddr || null,
+    port: readyInfo.apiPort || 8000,
+    status: "running",
+    createdAt: instance.createdAt,
+    lastActivity: new Date(),
+    gpuName: readyInfo.gpu_name,
+    hourlyRate: readyInfo.dph_total,
+  };
+  resetReferenceState(activeInstance.id, activeReferenceState.mode);
+  return waitForHealthyService(activeInstance);
 }
 
 /**
@@ -755,6 +854,40 @@ export async function stopInstance(instanceId: string): Promise<void> {
   await destroyInstance(instanceId);
 }
 
+export async function recreateInstance(): Promise<VastInstance> {
+  instanceStartupGeneration += 1;
+  instanceStartupPromise = null;
+  clearInactivityTimer();
+
+  updateLifecycleState({
+    phase: "stopping",
+    message: "Destroying existing Vast.ai TTS instances before requesting a new one...",
+    provisioning: true,
+    instanceId: activeInstance?.id || lifecycleState.instanceId,
+    offerId: null,
+    searchRound: null,
+    pollAttempt: null,
+    lastError: null,
+  });
+
+  const instances = await listUserInstances();
+  const managedInstances = instances.filter((inst: any) => isManagedTtsApiInstance(inst) && !isTerminalInstanceStatus(inst.actual_status));
+
+  for (const instance of managedInstances) {
+    try {
+      await destroyInstance(instance.id.toString());
+    } catch (error) {
+      console.error(`[VastTTS] Failed to destroy instance ${instance.id} during recreate:`, error);
+    }
+  }
+
+  activeInstance = null;
+  resetReferenceState();
+  setLifecycleIdle("Previous GPU instances cleared. Requesting a fresh instance...");
+
+  return startCheapestInstance({ forceNew: true });
+}
+
 /**
  * Get active instance info
  */
@@ -766,11 +899,15 @@ export function getLifecycleState(): TtsLifecycleState {
   return lifecycleState;
 }
 
-async function startCheapestInstanceInternal(): Promise<VastInstance> {
+async function startCheapestInstanceInternal(generation: number): Promise<VastInstance> {
   // Second, check Vast.ai API for any running instances we might have lost track of
   const adoptedInstance = await findAndAdoptExistingInstance();
   if (adoptedInstance) {
-    return adoptedInstance;
+    if (adoptedInstance.status === "pending" || !adoptedInstance.ip) {
+      return continueProvisioningInstance(adoptedInstance, generation);
+    }
+
+    return waitForHealthyService(adoptedInstance);
   }
 
   console.log("[VastTTS] No existing healthy instances found, creating new one...");
@@ -806,7 +943,7 @@ async function startCheapestInstanceInternal(): Promise<VastInstance> {
     for (const offer of offersToTry) {
       try {
         console.log(`[VastTTS] Trying offer ${offer.id}: ${offer.gpu_name} at $${offer.dph_total}/hour`);
-        const instance = await createInstance(offer.id.toString());
+        const instance = await createInstance(offer.id.toString(), generation);
         console.log(`[VastTTS] Successfully created instance with ${offer.gpu_name}!`);
         return instance;
       } catch (error: any) {
@@ -830,34 +967,10 @@ async function startCheapestInstanceInternal(): Promise<VastInstance> {
  * Uses aggressive retry strategy due to competitive marketplace
  * Checks for existing healthy instance first before creating new one
  */
-export async function startCheapestInstance(): Promise<VastInstance> {
-  // First, check if we already have an active instance that's healthy
-  if (activeInstance?.ip && activeInstance?.port) {
-    console.log("[VastTTS] Checking if existing active instance is healthy...");
-    const isHealthy = await healthCheck();
-    
-    if (isHealthy) {
-      console.log(`[VastTTS] Adopting existing healthy instance: ${activeInstance.id}`);
-      activeInstance.lastActivity = new Date();
-      setLifecycleRunning(`GPU instance ${activeInstance.id} is healthy and ready.`, activeInstance);
-      resetInactivityTimer();
-      return activeInstance;
-    } else {
-      console.log("[VastTTS] Existing instance not healthy, will look for others...");
-      updateLifecycleState({
-        phase: "checking",
-        message: `Existing GPU instance ${activeInstance.id} is unhealthy. Looking for another instance...`,
-        provisioning: true,
-        instanceId: activeInstance.id,
-        offerId: null,
-        searchRound: null,
-        pollAttempt: null,
-      });
-      activeInstance = null;
-    }
-  }
+export async function startCheapestInstance(options?: { forceNew?: boolean }): Promise<VastInstance> {
+  const forceNew = options?.forceNew ?? false;
 
-  if (instanceStartupPromise) {
+  if (!forceNew && instanceStartupPromise) {
     console.log("[VastTTS] Awaiting in-flight instance startup...");
     updateLifecycleState({
       phase: lifecycleState.phase,
@@ -867,14 +980,75 @@ export async function startCheapestInstance(): Promise<VastInstance> {
     return instanceStartupPromise;
   }
 
-  instanceStartupPromise = startCheapestInstanceInternal()
+  if (!forceNew && activeInstance) {
+    if (activeInstance.status === "pending" || !activeInstance.ip) {
+      console.log(`[VastTTS] Waiting for tracked provisioning instance ${activeInstance.id}...`);
+      updateLifecycleState({
+        phase: "polling",
+        message: `Waiting for tracked instance ${activeInstance.id} to finish provisioning...`,
+        provisioning: true,
+        instanceId: activeInstance.id,
+        offerId: null,
+        searchRound: null,
+        pollAttempt: lifecycleState.pollAttempt,
+      });
+      const generation = ++instanceStartupGeneration;
+      instanceStartupPromise = continueProvisioningInstance(activeInstance, generation)
+        .catch((error) => {
+          const message = error instanceof Error ? error.message : "Failed to provision a Vast.ai GPU instance.";
+          if (message !== "Stale instance provisioning request") {
+            setLifecycleError(message);
+          }
+          throw error;
+        })
+        .finally(() => {
+          instanceStartupPromise = null;
+        });
+      return instanceStartupPromise;
+    }
+
+    console.log("[VastTTS] Checking if existing active instance is healthy...");
+    const isHealthy = await healthCheck();
+
+    if (isHealthy) {
+      console.log(`[VastTTS] Adopting existing healthy instance: ${activeInstance.id}`);
+      activeInstance.lastActivity = new Date();
+      setLifecycleRunning(`GPU instance ${activeInstance.id} is healthy and ready.`, activeInstance);
+      resetInactivityTimer();
+      return activeInstance;
+    }
+
+    console.log(`[VastTTS] Existing instance ${activeInstance.id} is not healthy yet; waiting instead of creating another.`);
+    const generation = ++instanceStartupGeneration;
+    instanceStartupPromise = waitForHealthyService(activeInstance)
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : "Tracked GPU instance is not healthy.";
+        if (message !== "Stale instance provisioning request") {
+          setLifecycleError(message);
+        }
+        throw error;
+      })
+      .finally(() => {
+        if (generation === instanceStartupGeneration) {
+          instanceStartupPromise = null;
+        }
+      });
+    return instanceStartupPromise;
+  }
+
+  const generation = ++instanceStartupGeneration;
+  instanceStartupPromise = startCheapestInstanceInternal(generation)
     .catch((error) => {
       const message = error instanceof Error ? error.message : "Failed to provision a Vast.ai GPU instance.";
-      setLifecycleError(message);
+      if (message !== "Stale instance provisioning request") {
+        setLifecycleError(message);
+      }
       throw error;
     })
     .finally(() => {
-      instanceStartupPromise = null;
+      if (generation === instanceStartupGeneration) {
+        instanceStartupPromise = null;
+      }
     });
 
   return instanceStartupPromise;
@@ -917,132 +1091,52 @@ export async function cleanupDuplicateInstances(): Promise<void> {
     console.log("[VastTTS] Running cleanup: checking for duplicate instances...");
     
     const instances = await listUserInstances();
+    const managedInstances = instances.filter((inst: any) => isManagedTtsApiInstance(inst) && !isTerminalInstanceStatus(inst.actual_status));
+
+    if (managedInstances.length === 0) {
+      console.log("[VastTTS] Cleanup: No managed instances found");
+      return;
+    }
     
-    // Filter for running instances with our label/image
-    const runningInstances = instances.filter((inst: any) => {
-      return inst.actual_status === "running" && 
-             inst.public_ipaddr &&
-             (inst.label?.includes("chatterbox") || inst.image?.includes("chatterbox"));
+    console.log(`[VastTTS] Cleanup: Found ${managedInstances.length} managed TTS instances`);
+
+    const preferredId = activeInstance?.id || lifecycleState.instanceId;
+    const sortedInstances = [...managedInstances].sort((a: any, b: any) => {
+      if (preferredId) {
+        if (a.id.toString() === preferredId) return -1;
+        if (b.id.toString() === preferredId) return 1;
+      }
+      if (isRunningReachableInstance(a) && !isRunningReachableInstance(b)) return -1;
+      if (!isRunningReachableInstance(a) && isRunningReachableInstance(b)) return 1;
+      return (a.start_date || 0) - (b.start_date || 0);
     });
-    
-    if (runningInstances.length === 0) {
-      console.log("[VastTTS] Cleanup: No running instances found");
-      return;
-    }
-    
-    console.log(`[VastTTS] Cleanup: Found ${runningInstances.length} running TTS instances`);
-    
-    // If only one instance exists, ensure it's adopted
-    if (runningInstances.length === 1) {
-      const inst = runningInstances[0];
-      
-      // If we don't have an active instance, adopt this one
-      if (!activeInstance) {
-        console.log(`[VastTTS] Cleanup: Adopting single instance ${inst.id}`);
-        
-        const ports = inst.ports || {};
-        const portMapping = ports["8000/tcp"];
-        const apiPort = portMapping ? parseInt(portMapping[0]?.HostPort || "8000", 10) : 8000;
-        
-        activeInstance = {
-          id: inst.id.toString(),
-          ip: inst.public_ipaddr,
-          port: apiPort,
-          status: "running",
-          createdAt: new Date(inst.start_date * 1000),
-          lastActivity: new Date(),
-          gpuName: inst.gpu_name,
-          hourlyRate: inst.dph_total,
-        };
 
-        resetReferenceState(activeInstance.id, "unknown");
-        setLifecycleRunning(`Using existing GPU instance ${activeInstance.id}.`, activeInstance);
-
-        resetInactivityTimer();
-      }
-      return;
-    }
-    
-    // Multiple instances exist - need to clean up
-    console.log(`[VastTTS] Cleanup: ${runningInstances.length} instances found, checking health...`);
-    
-    const healthyInstances: Array<{ id: string; instance: VastInstance }> = [];
-    
-    // Check health of all instances
-    for (const inst of runningInstances) {
-      try {
-        const ports = inst.ports || {};
-        const portMapping = ports["8000/tcp"];
-        const apiPort = portMapping ? parseInt(portMapping[0]?.HostPort || "8000", 10) : 8000;
-        
-        const testInstance: VastInstance = {
-          id: inst.id.toString(),
-          ip: inst.public_ipaddr,
-          port: apiPort,
-          status: "running",
-          createdAt: new Date(inst.start_date * 1000),
-          lastActivity: new Date(),
-          gpuName: inst.gpu_name,
-          hourlyRate: inst.dph_total,
-        };
-        
-        // Temporarily set to check health
-        const prevActive = activeInstance;
-        activeInstance = testInstance;
-        const isHealthy = await healthCheck();
-        
-        if (!isHealthy && !prevActive) {
-          activeInstance = null;
-        } else {
-          activeInstance = prevActive;
-        }
-        
-        if (isHealthy) {
-          healthyInstances.push({ id: inst.id.toString(), instance: testInstance });
-        }
-      } catch (err) {
-        console.log(`[VastTTS] Cleanup: Instance ${inst.id} health check failed`);
-      }
-    }
-    
-    console.log(`[VastTTS] Cleanup: ${healthyInstances.length} healthy instances`);
-    
-    if (healthyInstances.length <= 1) {
-      // If only one healthy, adopt it
-      if (healthyInstances.length === 1 && !activeInstance) {
-        const onlyHealthyInstance = healthyInstances[0];
-        if (!onlyHealthyInstance) {
-          return;
-        }
-        activeInstance = onlyHealthyInstance.instance;
-        resetReferenceState(activeInstance.id, "unknown");
-        setLifecycleRunning(`Using existing GPU instance ${activeInstance.id}.`, activeInstance);
-        resetInactivityTimer();
-        console.log(`[VastTTS] Cleanup: Adopted healthy instance ${activeInstance.id}`);
-      }
-      return;
-    }
-    
-    // Multiple healthy instances - keep one, destroy others
-    // Prefer the currently adopted one if it's healthy
-    let instanceToKeep = healthyInstances.find(h => h.id === activeInstance?.id);
-    
-    // If no adopted instance is healthy, keep the first one
+    const instanceToKeep = sortedInstances[0];
     if (!instanceToKeep) {
-      instanceToKeep = healthyInstances[0];
-      if (!instanceToKeep) {
-        return;
-      }
-      activeInstance = instanceToKeep.instance;
-      resetReferenceState(activeInstance.id, "unknown");
-      setLifecycleRunning(`Using existing GPU instance ${activeInstance.id}.`, activeInstance);
-      resetInactivityTimer();
-      console.log(`[VastTTS] Cleanup: Adopted instance ${activeInstance.id}`);
+      return;
     }
-    
-    // Destroy all other healthy instances
-    for (const { id } of healthyInstances) {
-      if (id !== instanceToKeep.id) {
+
+    activeInstance = toVastInstance(instanceToKeep);
+    resetReferenceState(activeInstance.id, "unknown");
+    if (activeInstance.status === "running") {
+      setLifecycleRunning(`Using existing GPU instance ${activeInstance.id}.`, activeInstance);
+    } else {
+      updateLifecycleState({
+        phase: "polling",
+        message: `Tracked GPU instance ${activeInstance.id} is still provisioning...`,
+        provisioning: true,
+        instanceId: activeInstance.id,
+        offerId: null,
+        searchRound: null,
+        pollAttempt: null,
+        lastError: null,
+      });
+    }
+    resetInactivityTimer();
+
+    for (const instance of sortedInstances.slice(1)) {
+      const id = instance.id.toString();
+      if (id !== activeInstance.id) {
         try {
           console.log(`[VastTTS] Cleanup: Destroying duplicate instance ${id}`);
           await destroyInstance(id);
@@ -1052,7 +1146,7 @@ export async function cleanupDuplicateInstances(): Promise<void> {
       }
     }
     
-    console.log(`[VastTTS] Cleanup: Kept instance ${instanceToKeep.id}, destroyed ${healthyInstances.length - 1} duplicates`);
+    console.log(`[VastTTS] Cleanup: Kept instance ${activeInstance.id}, destroyed ${Math.max(0, sortedInstances.length - 1)} duplicates`);
     
   } catch (error) {
     console.error("[VastTTS] Cleanup: Error during cleanup:", error);
@@ -1069,6 +1163,7 @@ export default {
   getActiveInstance,
   getLifecycleState,
   markVoiceReferenceAsStale,
+  recreateInstance,
   startCheapestInstance,
   stopInstance,
   cleanupDuplicateInstances,

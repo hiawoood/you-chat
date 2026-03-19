@@ -11,6 +11,7 @@ import {
   applyVoiceReferenceSelection,
   markVoiceReferenceAsStale,
   getLifecycleState,
+  recreateInstance,
 } from "../services/vastai";
 import {
   createTtsVoiceReference,
@@ -176,6 +177,39 @@ tts.post("/start", async (c) => {
 });
 
 /**
+ * POST /api/tts/restart
+ * Destroy existing managed instances and request a fresh one
+ */
+tts.post("/restart", async (c) => {
+  try {
+    const instance = await recreateInstance();
+
+    return c.json({
+      success: true,
+      instance: {
+        id: instance.id,
+        ip: instance.ip,
+        port: instance.port,
+        status: instance.status,
+        gpuName: instance.gpuName,
+        hourlyRate: instance.hourlyRate,
+        createdAt: instance.createdAt,
+      },
+      message: "Requested a fresh GPU instance.",
+    });
+  } catch (error) {
+    console.error("[TTS] Failed to recreate instance:", error);
+    return c.json(
+      {
+        error: "Failed to recreate TTS instance",
+        message: error instanceof Error ? error.message : "Unknown error",
+      },
+      500
+    );
+  }
+});
+
+/**
  * POST /api/tts/stop
  * Stop the active Vast.ai instance
  */
@@ -225,7 +259,7 @@ tts.get("/status", async (c) => {
       });
     }
 
-    const isHealthy = await healthCheck();
+    const isHealthy = instance.status === "running" && instance.ip ? await healthCheck() : false;
 
     return c.json({
       active: instance.status === "running" && isHealthy,
