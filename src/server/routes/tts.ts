@@ -267,7 +267,7 @@ tts.patch("/progress/:messageId", async (c) => {
     setTtsProgress(messageId, body.chunkIndex);
     return c.json({ success: true, message: "Progress updated successfully" });
   } catch (error: any) {
-    console.error(`[TTS] Error setting progress for ${messageId}:\`, error);
+    console.error(`[TTS] Error setting progress for ${messageId}:`, error);
     return c.json({ error: "Failed to update TTS progress", message: error.message }, 500);
   }
 });
