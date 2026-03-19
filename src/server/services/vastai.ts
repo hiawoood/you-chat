@@ -282,6 +282,7 @@ export async function healthCheck(): Promise<boolean> {
 
 /**
  * Generate speech using the Chatterbox TTS Server
+ * Returns raw WAV audio data (binary)
  */
 export async function generateSpeech(
   request: TTSSpeechRequest
@@ -313,11 +314,19 @@ export async function generateSpeech(
     throw new Error(`TTS generation failed: ${error}`);
   }
 
-  const data = await response.json();
+  // Get raw audio data and convert to base64
+  const audioBuffer = await response.arrayBuffer();
+  const audioBase64 = Buffer.from(audioBuffer).toString('base64');
+  
+  // Estimate duration (rough calculation for 24kHz mono)
+  // WAV header is 44 bytes, rest is PCM data
+  const audioDataSize = audioBuffer.byteLength - 44;
+  const duration = audioDataSize / (24000 * 2); // 24kHz, 16-bit = 2 bytes per sample
+
   return {
-    audio: data.audio,
-    duration: data.duration,
-    sampleRate: data.sample_rate || 24000,
+    audio: audioBase64,
+    duration: Math.max(0, duration),
+    sampleRate: 24000,
   };
 }
 
