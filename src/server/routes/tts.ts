@@ -10,6 +10,7 @@ import {
   searchBestGPU,
   applyVoiceReferenceSelection,
   markVoiceReferenceAsStale,
+  getLifecycleState,
 } from "../services/vastai";
 import {
   createTtsVoiceReference,
@@ -214,11 +215,13 @@ tts.post("/stop", async (c) => {
 tts.get("/status", async (c) => {
   try {
     const instance = getActiveInstance();
+    const lifecycle = getLifecycleState();
     
     if (!instance) {
       return c.json({
         active: false,
-        status: "stopped",
+        status: lifecycle.phase === "error" ? "error" : lifecycle.provisioning ? lifecycle.phase : "stopped",
+        lifecycle,
       });
     }
 
@@ -227,6 +230,7 @@ tts.get("/status", async (c) => {
     return c.json({
       active: instance.status === "running" && isHealthy,
       status: instance.status,
+      lifecycle,
       instance: {
         id: instance.id,
         ip: instance.ip,
@@ -460,13 +464,11 @@ tts.post("/voices/select-none", async (c) => {
     const result = await applyVoiceReferenceSelection(null);
     applied = result.applied;
     requiresBuiltinReset = result.requiresBuiltinReset;
-    if (requiresBuiltinReset) {
-      warning = "Builtin voice will be restored on the next playback request.";
-    } else if (!result.applied) {
+    if (!result.applied) {
       warning = "Builtin voice will be used when the next playback request starts.";
     }
   } catch (error) {
-    warning = error instanceof Error ? error.message : "Builtin voice will be restored on next playback";
+    warning = error instanceof Error ? error.message : "Failed to restore builtin voice";
   }
 
   return c.json({

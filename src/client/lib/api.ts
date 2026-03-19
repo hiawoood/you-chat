@@ -68,6 +68,34 @@ export interface TtsVoiceListResponse {
   requiresBuiltinReset?: boolean;
 }
 
+export interface TtsLifecycleState {
+  phase: "idle" | "checking" | "searching" | "creating" | "polling" | "running" | "stopping" | "error";
+  message: string;
+  updatedAt: number;
+  provisioning: boolean;
+  instanceId: string | null;
+  offerId: string | null;
+  searchRound: number | null;
+  pollAttempt: number | null;
+  lastError: string | null;
+}
+
+export interface TtsStatusResponse {
+  active: boolean;
+  status: string;
+  healthy?: boolean;
+  lifecycle?: TtsLifecycleState;
+  instance?: {
+    id: string;
+    ip: string | null;
+    port: number;
+    gpuName?: string;
+    hourlyRate?: number;
+    createdAt: string;
+    lastActivity: string;
+  };
+}
+
 export const api = {
   getSessions: (): Promise<ChatSession[]> => fetchAPI("/sessions"),
   createSession: (data?: { title?: string; agent?: string }): Promise<ChatSession> =>
@@ -100,6 +128,7 @@ export const api = {
     fetchAPI("/credentials", { method: "DELETE" }),
 
   getTtsVoices: (): Promise<TtsVoiceListResponse> => fetchAPI("/tts/voices"),
+  getTtsStatus: (): Promise<TtsStatusResponse> => fetchAPI("/tts/status"),
   uploadTtsVoice: (label: string, file: File): Promise<TtsVoiceListResponse & { voice: TtsVoiceReference }> => {
     const formData = new FormData();
     formData.append("label", label);

@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback, type TouchEvent as ReactTouchEvent } from "react";
 import { api } from "../lib/api";
-import type { ChatSession, Message, Agent, TtsVoiceReference, TtsVoiceListResponse } from "../lib/api";
+import type { ChatSession, Message, Agent, TtsVoiceReference, TtsVoiceListResponse, TtsStatusResponse } from "../lib/api";
 import { useChat } from "../hooks/useChat";
 import { useChunkedVastTTS } from "../hooks/useChunkedVastTTS";
 import { useWordContextMenu } from "../hooks/useWordContextMenu";
@@ -13,6 +13,7 @@ const SCROLL_TRIGGER_BUFFER_PX = 200;
 const TTS_CONTROL_BOTTOM_SPACER_PX = 76;
 const TTS_CHUNK_PANEL_EXTRA_SPACER_PX = 168;
 const TTS_VOICE_PANEL_EXTRA_SPACER_PX = 196;
+const TTS_STATUS_PANEL_EXTRA_SPACER_PX = 212;
 const TTS_SWIPE_THRESHOLD_PX = 48;
 
 interface ChatViewProps {
@@ -65,12 +66,15 @@ export default function ChatView({
   const [suppressMessageAutoScroll, setSuppressMessageAutoScroll] = useState(false);
   const [showChunkTextPanel, setShowChunkTextPanel] = useState(false);
   const [showVoiceMenu, setShowVoiceMenu] = useState(false);
+  const [showTtsStatusPanel, setShowTtsStatusPanel] = useState(false);
   const [ttsAutoScrollEnabled, setTtsAutoScrollEnabled] = useState(false);
   const [ttsVoices, setTtsVoices] = useState<TtsVoiceReference[]>([]);
   const [selectedTtsVoiceId, setSelectedTtsVoiceId] = useState<string | null>(null);
   const [ttsVoicesLoaded, setTtsVoicesLoaded] = useState(false);
   const [ttsVoiceLoading, setTtsVoiceLoading] = useState(false);
   const [ttsVoiceWarning, setTtsVoiceWarning] = useState<string | null>(null);
+  const [ttsServiceStatus, setTtsServiceStatus] = useState<TtsStatusResponse | null>(null);
+  const [ttsServiceStatusError, setTtsServiceStatusError] = useState<string | null>(null);
   const chunkPanelTouchStartRef = useRef<{ x: number; y: number } | null>(null);
 
   // Initialize chunked TTS hook
@@ -136,16 +140,30 @@ export default function ChatView({
   const currentChunkNumber = ttsTotalChunks > 0 ? ttsCurrentChunk + 1 : 0;
   const isCurrentChunkLoading = ttsLoadingChunkIndex === ttsCurrentChunk;
   const selectedTtsVoice = ttsVoices.find((voice) => voice.id === selectedTtsVoiceId) || null;
+  const ttsLifecycle = ttsServiceStatus?.lifecycle;
+  const isTtsProvisioning = Boolean(ttsLifecycle?.provisioning);
+  const ttsStatusSummary = ttsLifecycle?.message || (ttsServiceStatus?.active ? "GPU instance ready." : "No GPU instance is active.");
   const ttsBottomSpacerHeight = hasTtsOverlay
-    ? TTS_CONTROL_BOTTOM_SPACER_PX + Math.max(showChunkTextPanel ? TTS_CHUNK_PANEL_EXTRA_SPACER_PX : 0, showVoiceMenu ? TTS_VOICE_PANEL_EXTRA_SPACER_PX : 0)
+    ? TTS_CONTROL_BOTTOM_SPACER_PX + Math.max(
+      showChunkTextPanel ? TTS_CHUNK_PANEL_EXTRA_SPACER_PX : 0,
+      showVoiceMenu ? TTS_VOICE_PANEL_EXTRA_SPACER_PX : 0,
+      showTtsStatusPanel ? TTS_STATUS_PANEL_EXTRA_SPACER_PX : 0,
+    )
     : 0;
 
   useEffect(() => {
     if (!hasTtsOverlay || ttsTotalChunks === 0) {
       setShowChunkTextPanel(false);
       setShowVoiceMenu(false);
+      setShowTtsStatusPanel(false);
     }
   }, [hasTtsOverlay, ttsTotalChunks]);
+
+  useEffect(() => {
+    if (isTtsProvisioning) {
+      setShowTtsStatusPanel(true);
+    }
+  }, [isTtsProvisioning]);
 
   const handleAgentChange = (newAgent: string) => {
     onUpdateSession(session.id, { agent: newAgent });
@@ -173,9 +191,37 @@ export default function ChatView({
     }
   }, [applyVoiceSelectionResponse]);
 
+  const loadTtsServiceStatus = useCallback(async () => {
+    try {
+      const response = await api.getTtsStatus();
+      setTtsServiceStatus(response);
+      setTtsServiceStatusError(null);
+      return response;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to load TTS service status";
+      setTtsServiceStatusError(message);
+      return null;
+    }
+  }, []);
+
   useEffect(() => {
     void loadTtsVoices();
   }, [loadTtsVoices]);
+
+  useEffect(() => {
+    if (!hasTtsOverlay && !showTtsStatusPanel && !isTtsProvisioning) {
+      return;
+    }
+
+    void loadTtsServiceStatus();
+
+    const intervalMs = isTtsProvisioning ? 2000 : 10000;
+    const interval = window.setInterval(() => {
+      void loadTtsServiceStatus();
+    }, intervalMs);
+
+    return () => window.clearInterval(interval);
+  }, [hasTtsOverlay, isTtsProvisioning, loadTtsServiceStatus, showTtsStatusPanel]);
 
   const { sendMessage, regenerate, compactMessage, stopGeneration, isStreaming, isCompacting } = useChat({
     sessionId: session.id,
@@ -636,6 +682,65 @@ export default function ChatView({
                   )}
                 </div>
               )}
+              {showTtsStatusPanel && !ttsError && (
+                <div className="absolute bottom-full left-1/2 z-10 mb-2 w-[min(22rem,calc(100vw-2rem))] -translate-x-1/2 rounded-2xl border border-gray-200 bg-white/95 px-3 py-2 shadow-xl backdrop-blur dark:border-gray-700 dark:bg-gray-900/95">
+                  <div className="mb-2 flex items-center justify-between gap-3 text-[11px] font-medium text-gray-500 dark:text-gray-400">
+                    <span>Vast.ai TTS Service</span>
+                    <span className={`inline-flex items-center gap-1 ${isTtsProvisioning ? "text-amber-600 dark:text-amber-400" : ttsServiceStatus?.active ? "text-emerald-600 dark:text-emerald-400" : "text-gray-500 dark:text-gray-400"}`}>
+                      {isTtsProvisioning && (
+                        <svg className="h-3 w-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                        </svg>
+                      )}
+                      <span>{ttsLifecycle?.phase || ttsServiceStatus?.status || "unknown"}</span>
+                    </span>
+                  </div>
+
+                  <div className="space-y-2 text-sm text-gray-700 dark:text-gray-200">
+                    <div className="rounded-xl bg-gray-50 px-3 py-2 dark:bg-gray-800/70">
+                      {ttsStatusSummary}
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2 text-[12px]">
+                      <div className="rounded-xl border border-gray-200 px-3 py-2 dark:border-gray-700">
+                        <div className="text-gray-500 dark:text-gray-400">Instance</div>
+                        <div className="mt-1 font-medium text-gray-900 dark:text-white">{ttsServiceStatus?.instance?.id || ttsLifecycle?.instanceId || "Not ready yet"}</div>
+                      </div>
+                      <div className="rounded-xl border border-gray-200 px-3 py-2 dark:border-gray-700">
+                        <div className="text-gray-500 dark:text-gray-400">Health</div>
+                        <div className="mt-1 font-medium text-gray-900 dark:text-white">
+                          {ttsServiceStatus?.healthy === undefined ? "Pending" : ttsServiceStatus.healthy ? "Healthy" : "Unhealthy"}
+                        </div>
+                      </div>
+                      <div className="rounded-xl border border-gray-200 px-3 py-2 dark:border-gray-700">
+                        <div className="text-gray-500 dark:text-gray-400">GPU</div>
+                        <div className="mt-1 font-medium text-gray-900 dark:text-white">{ttsServiceStatus?.instance?.gpuName || "Allocating"}</div>
+                      </div>
+                      <div className="rounded-xl border border-gray-200 px-3 py-2 dark:border-gray-700">
+                        <div className="text-gray-500 dark:text-gray-400">Rate</div>
+                        <div className="mt-1 font-medium text-gray-900 dark:text-white">
+                          {ttsServiceStatus?.instance?.hourlyRate ? `$${ttsServiceStatus.instance.hourlyRate}/hr` : "-"}
+                        </div>
+                      </div>
+                    </div>
+
+                    {(ttsLifecycle?.offerId || ttsLifecycle?.searchRound || ttsLifecycle?.pollAttempt) && (
+                      <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-gray-500 dark:text-gray-400">
+                        {ttsLifecycle?.searchRound && <span>Search round {ttsLifecycle.searchRound}</span>}
+                        {ttsLifecycle?.offerId && <span>Offer {ttsLifecycle.offerId}</span>}
+                        {ttsLifecycle?.pollAttempt && <span>Poll attempt {ttsLifecycle.pollAttempt}</span>}
+                      </div>
+                    )}
+
+                    {(ttsServiceStatusError || ttsLifecycle?.lastError) && (
+                      <div className="text-[11px] text-red-600 dark:text-red-400">
+                        {ttsServiceStatusError || ttsLifecycle?.lastError}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
               {ttsError ? (
                 <div className="flex items-center gap-2 text-xs font-medium text-red-600 dark:text-red-400">
                   <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" strokeWidth="2" /><path d="M12 8v4m0 4h.01" strokeWidth="2" strokeLinecap="round" /></svg>
@@ -677,9 +782,30 @@ export default function ChatView({
                     )}
                   </div>
 
+                  {(isTtsProvisioning || !!ttsServiceStatus?.instance || !!ttsServiceStatusError) && (
+                    <button
+                      onClick={() => {
+                        setShowChunkTextPanel(false);
+                        setShowVoiceMenu(false);
+                        setShowTtsStatusPanel((prev) => !prev);
+                      }}
+                      className={`inline-flex max-w-[12rem] items-center gap-1 rounded-full px-2 py-1 text-[11px] transition-colors ${showTtsStatusPanel ? "bg-gray-100 text-gray-900 dark:bg-gray-700 dark:text-white" : isTtsProvisioning ? "bg-amber-50 text-amber-700 hover:bg-amber-100 dark:bg-amber-900/30 dark:text-amber-300" : "bg-gray-50 text-gray-600 hover:bg-gray-100 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700"}`}
+                      title={ttsStatusSummary}
+                    >
+                      {isTtsProvisioning && (
+                        <svg className="h-3 w-3 animate-spin flex-shrink-0" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                        </svg>
+                      )}
+                      <span className="truncate">{isTtsProvisioning ? ttsStatusSummary : ttsServiceStatus?.instance?.gpuName || "Service status"}</span>
+                    </button>
+                  )}
+
                   {ttsTotalChunks > 0 && (
                     <button
                       onClick={() => {
+                        setShowTtsStatusPanel(false);
                         setShowVoiceMenu(false);
                         setShowChunkTextPanel((prev) => !prev);
                       }}
@@ -698,6 +824,7 @@ export default function ChatView({
                         void loadTtsVoices();
                       }
                       setShowChunkTextPanel(false);
+                      setShowTtsStatusPanel(false);
                       setShowVoiceMenu((prev) => !prev);
                     }}
                     className={`p-1.5 rounded-full transition-colors ${showVoiceMenu ? "bg-gray-100 text-gray-900 dark:bg-gray-700 dark:text-white" : "text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"}`}

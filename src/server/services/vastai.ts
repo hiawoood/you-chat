@@ -35,11 +35,34 @@ export interface TTSSpeechResponse {
   sampleRate: number;
 }
 
+export interface TtsLifecycleState {
+  phase: "idle" | "checking" | "searching" | "creating" | "polling" | "running" | "stopping" | "error";
+  message: string;
+  updatedAt: number;
+  provisioning: boolean;
+  instanceId: string | null;
+  offerId: string | null;
+  searchRound: number | null;
+  pollAttempt: number | null;
+  lastError: string | null;
+}
+
 // In-memory instance state (would be persisted to DB in production)
 let activeInstance: VastInstance | null = null;
 let instanceStartupPromise: Promise<VastInstance> | null = null;
 let inactivityTimer: Timer | null = null;
 const INACTIVITY_TIMEOUT = 60 * 60 * 1000; // 60 minutes
+let lifecycleState: TtsLifecycleState = {
+  phase: "idle",
+  message: "No GPU instance is active.",
+  updatedAt: Date.now(),
+  provisioning: false,
+  instanceId: null,
+  offerId: null,
+  searchRound: null,
+  pollAttempt: null,
+  lastError: null,
+};
 
 interface ActiveReferenceState {
   instanceId: string | null;
@@ -59,6 +82,49 @@ function resetReferenceState(instanceId: string | null = null, mode: ActiveRefer
     mode,
     voiceId: null,
   };
+}
+
+function updateLifecycleState(patch: Partial<TtsLifecycleState>) {
+  lifecycleState = {
+    ...lifecycleState,
+    ...patch,
+    updatedAt: Date.now(),
+  };
+}
+
+function setLifecycleRunning(message: string, instance?: VastInstance | null) {
+  updateLifecycleState({
+    phase: "running",
+    message,
+    provisioning: false,
+    instanceId: instance?.id || activeInstance?.id || null,
+    offerId: null,
+    searchRound: null,
+    pollAttempt: null,
+    lastError: null,
+  });
+}
+
+function setLifecycleIdle(message: string = "No GPU instance is active.") {
+  updateLifecycleState({
+    phase: "idle",
+    message,
+    provisioning: false,
+    instanceId: null,
+    offerId: null,
+    searchRound: null,
+    pollAttempt: null,
+    lastError: null,
+  });
+}
+
+function setLifecycleError(message: string) {
+  updateLifecycleState({
+    phase: "error",
+    message,
+    provisioning: false,
+    lastError: message,
+  });
 }
 
 function syncReferenceStateToInstance(instance: VastInstance | null) {
@@ -111,6 +177,24 @@ async function uploadVoiceReferenceToInstance(instance: VastInstance, voiceRefer
   };
 }
 
+async function clearVoiceReferenceOnInstance(instance: VastInstance) {
+  const response = await fetch(`${getInstanceBaseUrl(instance)}/reference`, {
+    method: "DELETE",
+    signal: AbortSignal.timeout(60000),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Failed to clear voice reference: ${errorText}`);
+  }
+
+  activeReferenceState = {
+    instanceId: instance.id,
+    mode: "builtin",
+    voiceId: null,
+  };
+}
+
 async function ensureVoiceReferenceForInstance(voiceReference: TtsVoiceReference | null): Promise<VastInstance> {
   let instance = await startCheapestInstance();
   syncReferenceStateToInstance(instance);
@@ -120,14 +204,19 @@ async function ensureVoiceReferenceForInstance(voiceReference: TtsVoiceReference
       return instance;
     }
 
-    console.log("[VastTTS] Resetting instance to builtin reference mode");
-    await destroyInstance(instance.id);
-    instance = await startCheapestInstance();
-    activeReferenceState = {
+    console.log("[VastTTS] Clearing active voice reference from instance");
+    updateLifecycleState({
+      phase: "creating",
+      message: "Clearing the custom voice reference and restoring builtin voice...",
+      provisioning: true,
       instanceId: instance.id,
-      mode: "builtin",
-      voiceId: null,
-    };
+      offerId: null,
+      searchRound: null,
+      pollAttempt: null,
+      lastError: null,
+    });
+    await clearVoiceReferenceOnInstance(instance);
+    setLifecycleRunning("GPU instance ready with builtin voice.", instance);
     return instance;
   }
 
@@ -135,7 +224,18 @@ async function ensureVoiceReferenceForInstance(voiceReference: TtsVoiceReference
     return instance;
   }
 
+  updateLifecycleState({
+    phase: "creating",
+    message: `Applying voice reference \"${voiceReference.label}\" to the active TTS service...`,
+    provisioning: true,
+    instanceId: instance.id,
+    offerId: null,
+    searchRound: null,
+    pollAttempt: null,
+    lastError: null,
+  });
   await uploadVoiceReferenceToInstance(instance, voiceReference);
+  setLifecycleRunning(`GPU instance ready with voice \"${voiceReference.label}\".`, instance);
   return instance;
 }
 
@@ -230,6 +330,16 @@ export async function createInstance(offerId: string): Promise<VastInstance> {
     throw new Error("HF_TOKEN environment variable is required for Hugging Face model download");
   }
 
+  updateLifecycleState({
+    phase: "creating",
+    message: `Creating Vast.ai instance from offer ${offerId}...`,
+    provisioning: true,
+    instanceId: null,
+    offerId,
+    pollAttempt: null,
+    lastError: null,
+  });
+
   const response = await fetch(`${VAST_API_URL}/asks/${offerId}/`, {
     method: "PUT",
     headers: {
@@ -274,6 +384,16 @@ export async function createInstance(offerId: string): Promise<VastInstance> {
 
   console.log(`[VastTTS] Instance created: ${instanceId}`);
 
+  updateLifecycleState({
+    phase: "polling",
+    message: `Instance ${instanceId} created. Waiting for the API port to come online...`,
+    provisioning: true,
+    instanceId,
+    offerId,
+    pollAttempt: 0,
+    lastError: null,
+  });
+
   // Poll for instance to be running and get IP/port
   const instanceInfo = await pollInstanceReady(instanceId);
 
@@ -289,6 +409,7 @@ export async function createInstance(offerId: string): Promise<VastInstance> {
   };
 
   resetReferenceState(activeInstance.id, "builtin");
+  setLifecycleRunning(`GPU instance ${activeInstance.id} is ready.`, activeInstance);
 
   // Start inactivity timer (60 minutes)
   resetInactivityTimer();
@@ -302,6 +423,13 @@ export async function createInstance(offerId: string): Promise<VastInstance> {
 async function pollInstanceReady(instanceId: string, maxAttempts = 30): Promise<any> {
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     console.log(`[VastTTS] Polling instance ${instanceId}, attempt ${attempt + 1}/${maxAttempts}`);
+    updateLifecycleState({
+      phase: "polling",
+      message: `Waiting for instance ${instanceId} to become reachable (${attempt + 1}/${maxAttempts})...`,
+      provisioning: true,
+      instanceId,
+      pollAttempt: attempt + 1,
+    });
     
     const response = await fetch(`${VAST_API_URL}/instances/${instanceId}/`, {
       headers: {
@@ -382,6 +510,16 @@ export async function listUserInstances(): Promise<any[]> {
  */
 export async function findAndAdoptExistingInstance(): Promise<VastInstance | null> {
   console.log("[VastTTS] Checking for existing running instances...");
+  updateLifecycleState({
+    phase: "checking",
+    message: "Checking Vast.ai for an existing healthy TTS instance...",
+    provisioning: true,
+    instanceId: null,
+    offerId: null,
+    searchRound: null,
+    pollAttempt: null,
+    lastError: null,
+  });
   
   try {
     const instances = await listUserInstances();
@@ -423,6 +561,7 @@ export async function findAndAdoptExistingInstance(): Promise<VastInstance | nul
         if (isHealthy) {
           console.log(`[VastTTS] ✓ Adopted existing healthy instance: ${inst.id}`);
           resetReferenceState(testInstance.id, "unknown");
+          setLifecycleRunning(`Using existing GPU instance ${testInstance.id}.`, testInstance);
           resetInactivityTimer();
           return testInstance;
         } else {
@@ -438,6 +577,7 @@ export async function findAndAdoptExistingInstance(): Promise<VastInstance | nul
     return null;
   } catch (error) {
     console.error("[VastTTS] Error listing instances:", error);
+    setLifecycleError(error instanceof Error ? error.message : "Failed to inspect existing Vast.ai instances.");
     return null;
   }
 }
@@ -521,6 +661,17 @@ export async function generateSpeech(
  * Destroy a Vast.ai instance
  */
 export async function destroyInstance(instanceId: string): Promise<void> {
+  updateLifecycleState({
+    phase: "stopping",
+    message: `Stopping GPU instance ${instanceId}...`,
+    provisioning: true,
+    instanceId,
+    offerId: null,
+    searchRound: null,
+    pollAttempt: null,
+    lastError: null,
+  });
+
   const response = await fetch(`${VAST_API_URL}/instances/${instanceId}/`, {
     method: "DELETE",
     headers: {
@@ -540,6 +691,7 @@ export async function destroyInstance(instanceId: string): Promise<void> {
   }
 
   console.log(`[VastTTS] Instance ${instanceId} destroyed`);
+  setLifecycleIdle(`GPU instance ${instanceId} stopped.`);
 }
 
 export async function applyVoiceReferenceSelection(voiceReference: TtsVoiceReference | null): Promise<{ applied: boolean; requiresBuiltinReset: boolean }> {
@@ -558,15 +710,15 @@ export async function applyVoiceReferenceSelection(voiceReference: TtsVoiceRefer
   syncReferenceStateToInstance(activeInstance);
 
   if (!voiceReference) {
-    const requiresBuiltinReset = activeReferenceState.mode !== "builtin";
-    activeReferenceState = {
-      instanceId: activeInstance.id,
-      mode: requiresBuiltinReset ? "unknown" : "builtin",
-      voiceId: null,
-    };
+    if (activeReferenceState.mode === "builtin") {
+      return { applied: true, requiresBuiltinReset: false };
+    }
+
+    await clearVoiceReferenceOnInstance(activeInstance);
+    setLifecycleRunning("GPU instance ready with builtin voice.", activeInstance);
     return {
-      applied: !requiresBuiltinReset,
-      requiresBuiltinReset,
+      applied: true,
+      requiresBuiltinReset: false,
     };
   }
 
@@ -610,6 +762,10 @@ export function getActiveInstance(): VastInstance | null {
   return activeInstance;
 }
 
+export function getLifecycleState(): TtsLifecycleState {
+  return lifecycleState;
+}
+
 async function startCheapestInstanceInternal(): Promise<VastInstance> {
   // Second, check Vast.ai API for any running instances we might have lost track of
   const adoptedInstance = await findAndAdoptExistingInstance();
@@ -625,6 +781,17 @@ async function startCheapestInstanceInternal(): Promise<VastInstance> {
       console.log(`[VastTTS] Search round ${searchRound + 1}/3...`);
       await new Promise(r => setTimeout(r, 1000)); // Brief pause between searches
     }
+
+    updateLifecycleState({
+      phase: "searching",
+      message: `Searching Vast.ai offers for a compatible GPU (${searchRound + 1}/3)...`,
+      provisioning: true,
+      instanceId: null,
+      offerId: null,
+      searchRound: searchRound + 1,
+      pollAttempt: null,
+      lastError: null,
+    });
 
     const offers = await searchBestGPU();
 
@@ -672,22 +839,43 @@ export async function startCheapestInstance(): Promise<VastInstance> {
     if (isHealthy) {
       console.log(`[VastTTS] Adopting existing healthy instance: ${activeInstance.id}`);
       activeInstance.lastActivity = new Date();
+      setLifecycleRunning(`GPU instance ${activeInstance.id} is healthy and ready.`, activeInstance);
       resetInactivityTimer();
       return activeInstance;
     } else {
       console.log("[VastTTS] Existing instance not healthy, will look for others...");
+      updateLifecycleState({
+        phase: "checking",
+        message: `Existing GPU instance ${activeInstance.id} is unhealthy. Looking for another instance...`,
+        provisioning: true,
+        instanceId: activeInstance.id,
+        offerId: null,
+        searchRound: null,
+        pollAttempt: null,
+      });
       activeInstance = null;
     }
   }
 
   if (instanceStartupPromise) {
     console.log("[VastTTS] Awaiting in-flight instance startup...");
+    updateLifecycleState({
+      phase: lifecycleState.phase,
+      message: lifecycleState.message || "Waiting for the active Vast.ai startup request to finish...",
+      provisioning: true,
+    });
     return instanceStartupPromise;
   }
 
-  instanceStartupPromise = startCheapestInstanceInternal().finally(() => {
-    instanceStartupPromise = null;
-  });
+  instanceStartupPromise = startCheapestInstanceInternal()
+    .catch((error) => {
+      const message = error instanceof Error ? error.message : "Failed to provision a Vast.ai GPU instance.";
+      setLifecycleError(message);
+      throw error;
+    })
+    .finally(() => {
+      instanceStartupPromise = null;
+    });
 
   return instanceStartupPromise;
 }
@@ -768,6 +956,7 @@ export async function cleanupDuplicateInstances(): Promise<void> {
         };
 
         resetReferenceState(activeInstance.id, "unknown");
+        setLifecycleRunning(`Using existing GPU instance ${activeInstance.id}.`, activeInstance);
 
         resetInactivityTimer();
       }
@@ -827,6 +1016,7 @@ export async function cleanupDuplicateInstances(): Promise<void> {
         }
         activeInstance = onlyHealthyInstance.instance;
         resetReferenceState(activeInstance.id, "unknown");
+        setLifecycleRunning(`Using existing GPU instance ${activeInstance.id}.`, activeInstance);
         resetInactivityTimer();
         console.log(`[VastTTS] Cleanup: Adopted healthy instance ${activeInstance.id}`);
       }
@@ -845,6 +1035,7 @@ export async function cleanupDuplicateInstances(): Promise<void> {
       }
       activeInstance = instanceToKeep.instance;
       resetReferenceState(activeInstance.id, "unknown");
+      setLifecycleRunning(`Using existing GPU instance ${activeInstance.id}.`, activeInstance);
       resetInactivityTimer();
       console.log(`[VastTTS] Cleanup: Adopted instance ${activeInstance.id}`);
     }
@@ -876,6 +1067,7 @@ export default {
   generateSpeech,
   applyVoiceReferenceSelection,
   getActiveInstance,
+  getLifecycleState,
   markVoiceReferenceAsStale,
   startCheapestInstance,
   stopInstance,
