@@ -152,6 +152,9 @@ export default function ChatView({
   const roundedHourlyRate = typeof ttsServiceStatus?.instance?.hourlyRate === "number"
     ? ttsServiceStatus.instance.hourlyRate.toFixed(3)
     : null;
+  const formattedBalance = typeof ttsServiceStatus?.accountBalance === "number"
+    ? `$${ttsServiceStatus.accountBalance.toFixed(2)}`
+    : null;
   const ttsBottomSpacerHeight = hasTtsOverlay
     ? TTS_CONTROL_BOTTOM_SPACER_PX + Math.max(
       showChunkTextPanel ? TTS_CHUNK_PANEL_EXTRA_SPACER_PX : 0,
@@ -212,19 +215,26 @@ export default function ChatView({
   }, [loadTtsVoices]);
 
   useEffect(() => {
-    if (!hasTtsOverlay && !showTtsStatusPanel && !isTtsProvisioning) {
+    if (!hasTtsOverlay && !showTtsStatusPanel && !showTtsLogsModal) {
       return;
     }
 
     void loadTtsServiceStatus();
 
-    const intervalMs = isTtsProvisioning ? 2000 : 10000;
-    const interval = window.setInterval(() => {
-      void loadTtsServiceStatus();
-    }, intervalMs);
+    const eventSource = api.streamTtsStatus(
+      (status) => {
+        setTtsServiceStatus(status);
+        setTtsServiceStatusError(null);
+      },
+      () => {
+        void loadTtsServiceStatus();
+      },
+    );
 
-    return () => window.clearInterval(interval);
-  }, [hasTtsOverlay, isTtsProvisioning, loadTtsServiceStatus, showTtsStatusPanel]);
+    return () => {
+      eventSource.close();
+    };
+  }, [hasTtsOverlay, loadTtsServiceStatus, showTtsLogsModal, showTtsStatusPanel]);
 
   const { sendMessage, regenerate, compactMessage, stopGeneration, isStreaming, isCompacting } = useChat({
     sessionId: session.id,
@@ -397,6 +407,21 @@ export default function ChatView({
       await loadTtsServiceStatus();
     } catch (error) {
       setTtsServiceStatusError(error instanceof Error ? error.message : "Failed to recreate the GPU instance");
+    } finally {
+      setTtsInstanceActionLoading(false);
+    }
+  };
+
+  const handleDestroyTtsInstance = async () => {
+    setTtsInstanceActionLoading(true);
+    setTtsServiceStatusError(null);
+
+    try {
+      await api.stopTtsInstance();
+      await loadTtsServiceStatus();
+      setShowTtsStatusPanel(false);
+    } catch (error) {
+      setTtsServiceStatusError(error instanceof Error ? error.message : "Failed to destroy the GPU instance");
     } finally {
       setTtsInstanceActionLoading(false);
     }
@@ -774,19 +799,11 @@ export default function ChatView({
                 <div className="absolute bottom-full left-1/2 z-10 mb-2 w-[min(22rem,calc(100vw-2rem))] -translate-x-1/2 rounded-2xl border border-gray-200 bg-white/95 px-3 py-2 shadow-xl backdrop-blur dark:border-gray-700 dark:bg-gray-900/95">
                   <div className="mb-2 flex items-center justify-between gap-3 text-[11px] font-medium text-gray-500 dark:text-gray-400">
                     <span>Vast.ai TTS Service</span>
-                    <span className={`inline-flex items-center gap-1 ${isTtsProvisioning ? "text-amber-600 dark:text-amber-400" : ttsServiceStatus?.active ? "text-emerald-600 dark:text-emerald-400" : "text-gray-500 dark:text-gray-400"}`}>
-                      {isTtsProvisioning && (
-                        <svg className="h-3 w-3 animate-spin" fill="none" viewBox="0 0 24 24">
-                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                        </svg>
-                      )}
-                      <span>{ttsLifecycle?.phase || ttsServiceStatus?.status || "unknown"}</span>
-                    </span>
+                    <span className={`inline-flex h-2.5 w-2.5 rounded-full ${isTtsProvisioning ? "bg-amber-500" : ttsServiceStatus?.active ? "bg-emerald-500" : "bg-gray-400"}`} />
                   </div>
 
                   <div className="space-y-2 text-sm text-gray-700 dark:text-gray-200">
-                    <div className="rounded-xl bg-gray-50 px-3 py-2 dark:bg-gray-800/70">
+                    <div className="text-xs text-gray-600 dark:text-gray-300">
                       {ttsStatusSummary}
                     </div>
 
@@ -811,18 +828,22 @@ export default function ChatView({
                           {roundedHourlyRate ? `$${roundedHourlyRate}/hr` : "-"}
                         </div>
                       </div>
+                      <div className="rounded-xl border border-gray-200 px-3 py-2 dark:border-gray-700">
+                        <div className="text-gray-500 dark:text-gray-400">Balance</div>
+                        <div className="mt-1 font-medium text-gray-900 dark:text-white">
+                          {formattedBalance || "-"}
+                        </div>
+                      </div>
+                      <div className="rounded-xl border border-gray-200 px-3 py-2 dark:border-gray-700">
+                        <div className="text-gray-500 dark:text-gray-400">Machine</div>
+                        <div className="mt-1 font-medium text-gray-900 dark:text-white">
+                          {ttsServiceStatus?.instance?.machineId || "-"}
+                        </div>
+                      </div>
                     </div>
 
-                    {(ttsLifecycle?.offerId || ttsLifecycle?.searchRound || ttsLifecycle?.pollAttempt) && (
-                      <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-gray-500 dark:text-gray-400">
-                        {ttsLifecycle?.searchRound && <span>Search round {ttsLifecycle.searchRound}</span>}
-                        {ttsLifecycle?.offerId && <span>Offer {ttsLifecycle.offerId}</span>}
-                        {ttsLifecycle?.pollAttempt && <span>Poll attempt {ttsLifecycle.pollAttempt}</span>}
-                      </div>
-                    )}
-
                     {(ttsServiceStatusError || ttsLifecycle?.lastError) && (
-                      <div className="text-[11px] text-red-600 dark:text-red-400">
+                      <div className="text-[11px] text-amber-600 dark:text-amber-400">
                         {ttsServiceStatusError || ttsLifecycle?.lastError}
                       </div>
                     )}
@@ -831,7 +852,8 @@ export default function ChatView({
                       <button
                         onClick={() => void handleOpenTtsLogs()}
                         disabled={ttsLogsLoading || (!ttsServiceStatus?.instance?.id && !ttsLifecycle?.instanceId)}
-                        className="inline-flex items-center gap-1 rounded-lg border border-gray-200 px-3 py-1.5 text-xs text-gray-700 transition-colors hover:bg-gray-100 disabled:opacity-50 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
+                        className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-gray-200 text-gray-700 transition-colors hover:bg-gray-100 disabled:opacity-50 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
+                        title="View instance logs"
                       >
                         {ttsLogsLoading && (
                           <svg className="h-3 w-3 animate-spin" fill="none" viewBox="0 0 24 24">
@@ -839,12 +861,17 @@ export default function ChatView({
                             <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
                           </svg>
                         )}
-                        <span>{ttsLogsLoading ? "Loading logs..." : "View logs"}</span>
+                        {!ttsLogsLoading && (
+                          <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6M7 4h7l5 5v11a2 2 0 01-2 2H7a2 2 0 01-2-2V6a2 2 0 012-2z" />
+                          </svg>
+                        )}
                       </button>
                       <button
                         onClick={() => void handleRestartTtsInstance()}
                         disabled={ttsInstanceActionLoading}
-                        className="inline-flex items-center gap-1 rounded-lg bg-gray-900 px-3 py-1.5 text-xs text-white transition-colors hover:bg-gray-800 disabled:opacity-50 dark:bg-gray-700 dark:hover:bg-gray-600"
+                        className="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-gray-900 text-white transition-colors hover:bg-gray-800 disabled:opacity-50 dark:bg-gray-700 dark:hover:bg-gray-600"
+                        title="Recreate instance"
                       >
                         {ttsInstanceActionLoading && (
                           <svg className="h-3 w-3 animate-spin" fill="none" viewBox="0 0 24 24">
@@ -852,7 +879,21 @@ export default function ChatView({
                             <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
                           </svg>
                         )}
-                        <span>{ttsInstanceActionLoading ? "Recreating..." : "Recreate instance"}</span>
+                        {!ttsInstanceActionLoading && (
+                          <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m14.836 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0H15m4.419 0A8.003 8.003 0 016.582 15" />
+                          </svg>
+                        )}
+                      </button>
+                      <button
+                        onClick={() => void handleDestroyTtsInstance()}
+                        disabled={ttsInstanceActionLoading}
+                        className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-red-200 text-red-600 transition-colors hover:bg-red-50 disabled:opacity-50 dark:border-red-900/40 dark:text-red-400 dark:hover:bg-red-950/30"
+                        title="Destroy instance"
+                      >
+                        <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 7h12m-9 0V5a1 1 0 011-1h4a1 1 0 011 1v2m-7 0l1 12h6l1-12M10 11v6m4-6v6" />
+                        </svg>
                       </button>
                     </div>
                   </div>

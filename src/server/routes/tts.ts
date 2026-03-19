@@ -1,18 +1,20 @@
 // TTS API Routes - Manages Vast.ai instances for text-to-speech
 import { Hono, type Context } from "hono";
+import { streamSSE } from "hono/streaming";
 import type { AppEnv } from "../context";
 import {
   getActiveInstance,
-  healthCheck,
   startCheapestInstance,
   stopInstance as stopActiveInstance,
   generateSpeech,
   searchBestGPU,
   applyVoiceReferenceSelection,
   markVoiceReferenceAsStale,
-  getLifecycleState,
+  getStatusSnapshot,
+  getStatusSnapshotWithBalance,
   recreateInstance,
   requestInstanceLogs,
+  subscribeStatusUpdates,
 } from "../services/vastai";
 import {
   createTtsVoiceReference,
@@ -116,14 +118,12 @@ tts.post("/speak", async (c) => {
       });
     } catch (error) {
       console.error("[TTS] Speech generation failed:", error);
-      
-      // Check if instance is still healthy
-      const isHealthy = await healthCheck();
+      const snapshot = getStatusSnapshot();
       
       return c.json(
         {
           error: "Speech generation failed",
-          instanceHealthy: isHealthy,
+          instanceHealthy: snapshot.healthy,
           message: error instanceof Error ? error.message : "Unknown error",
         },
         503
@@ -249,34 +249,7 @@ tts.post("/stop", async (c) => {
  */
 tts.get("/status", async (c) => {
   try {
-    const instance = getActiveInstance();
-    const lifecycle = getLifecycleState();
-    
-    if (!instance) {
-      return c.json({
-        active: false,
-        status: lifecycle.phase === "error" ? "error" : lifecycle.provisioning ? lifecycle.phase : "stopped",
-        lifecycle,
-      });
-    }
-
-    const isHealthy = instance.status === "running" && instance.ip ? await healthCheck() : false;
-
-    return c.json({
-      active: instance.status === "running" && isHealthy,
-      status: instance.status,
-      lifecycle,
-      instance: {
-        id: instance.id,
-        ip: instance.ip,
-        port: instance.port,
-        gpuName: instance.gpuName,
-        hourlyRate: instance.hourlyRate,
-        createdAt: instance.createdAt,
-        lastActivity: instance.lastActivity,
-      },
-      healthy: isHealthy,
-    });
+    return c.json(await getStatusSnapshotWithBalance());
   } catch (error) {
     console.error("[TTS] Status check failed:", error);
     return c.json(
@@ -290,6 +263,40 @@ tts.get("/status", async (c) => {
   }
 });
 
+tts.get("/status/stream", async (c) => {
+  const user = c.get("user");
+  if (!user) return c.json({ error: "Unauthorized" }, 401);
+
+  return streamSSE(c, async (stream) => {
+    const sendSnapshot = async () => {
+      try {
+        await stream.writeSSE({
+          event: "status",
+          data: JSON.stringify(getStatusSnapshot()),
+        });
+      } catch {
+        // stream closed
+      }
+    };
+
+    await sendSnapshot();
+    const unsubscribe = subscribeStatusUpdates(() => {
+      void sendSnapshot();
+    });
+
+    const heartbeat = setInterval(() => {
+      void stream.writeSSE({ event: "ping", data: "{}" }).catch(() => {});
+    }, 15000);
+
+    await new Promise<void>((resolve) => {
+      c.req.raw.signal.addEventListener("abort", () => resolve(), { once: true });
+    });
+
+    clearInterval(heartbeat);
+    unsubscribe();
+  });
+});
+
 /**
  * GET /api/tts/logs
  * Fetch recent logs for the tracked Vast.ai TTS instance
@@ -300,8 +307,8 @@ tts.get("/logs", async (c) => {
 
   try {
     const instance = getActiveInstance();
-    const lifecycle = getLifecycleState();
-    const instanceId = instance?.id || lifecycle.instanceId;
+    const snapshot = getStatusSnapshot();
+    const instanceId = instance?.id || snapshot.lifecycle.instanceId;
 
     if (!instanceId) {
       return c.json({ error: "No tracked TTS instance" }, 404);

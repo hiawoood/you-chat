@@ -84,14 +84,16 @@ export interface TtsLifecycleState {
 export interface TtsStatusResponse {
   active: boolean;
   status: string;
-  healthy?: boolean;
-  lifecycle?: TtsLifecycleState;
+  healthy: boolean;
+  lifecycle: TtsLifecycleState;
+  accountBalance: number | null;
   instance?: {
     id: string;
     ip: string | null;
     port: number;
     gpuName?: string;
     hourlyRate?: number;
+    machineId?: string;
     createdAt: string;
     lastActivity: string;
   };
@@ -137,8 +139,24 @@ export const api = {
   getTtsVoices: (): Promise<TtsVoiceListResponse> => fetchAPI("/tts/voices"),
   getTtsStatus: (): Promise<TtsStatusResponse> => fetchAPI("/tts/status"),
   getTtsLogs: (): Promise<TtsLogsResponse> => fetchAPI("/tts/logs"),
+  streamTtsStatus: (onStatus: (status: TtsStatusResponse) => void, onError?: () => void) => {
+    const eventSource = new EventSource(`${API_BASE}/tts/status/stream`, { withCredentials: true });
+    eventSource.addEventListener("status", (event) => {
+      try {
+        onStatus(JSON.parse((event as MessageEvent).data));
+      } catch {
+        // Ignore malformed status payloads.
+      }
+    });
+    eventSource.onerror = () => {
+      onError?.();
+    };
+    return eventSource;
+  },
   restartTtsInstance: (): Promise<{ success: boolean; message: string; instance?: TtsStatusResponse["instance"] }> =>
     fetchAPI("/tts/restart", { method: "POST" }),
+  stopTtsInstance: (): Promise<{ success: boolean; message: string }> =>
+    fetchAPI("/tts/stop", { method: "POST" }),
   uploadTtsVoice: (label: string, file: File): Promise<TtsVoiceListResponse & { voice: TtsVoiceReference }> => {
     const formData = new FormData();
     formData.append("label", label);
