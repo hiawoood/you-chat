@@ -256,6 +256,8 @@ export function useChunkedVastTTS() {
   const textRef = useRef<string>("");
   const textChunksRef = useRef<string[]>([]);
   const playbackSpeedRef = useRef(playbackSpeed);
+  const pendingResumeChunkIndexRef = useRef<number | null>(null);
+  const shouldAutoResumeOnVisibleRef = useRef(false);
 
   useEffect(() => {
     playbackSpeedRef.current = playbackSpeed;
@@ -324,6 +326,8 @@ export function useChunkedVastTTS() {
     activeVoiceReferenceIdRef.current = null;
     textRef.current = "";
     textChunksRef.current = [];
+    pendingResumeChunkIndexRef.current = null;
+    shouldAutoResumeOnVisibleRef.current = false;
     setState({
       isLoading: false,
       isPlaying: false,
@@ -525,6 +529,25 @@ export function useChunkedVastTTS() {
         } catch (err) {
           if (token !== playbackTokenRef.current) return;
 
+          const isHiddenDocument = typeof document !== "undefined" && document.hidden;
+          if (isHiddenDocument) {
+            pendingResumeChunkIndexRef.current = i;
+            shouldAutoResumeOnVisibleRef.current = true;
+            chunksRef.current = chunksRef.current.map((c, idx) =>
+              idx === i ? { ...c, status: "pending" } : c
+            );
+            setState((prev) => ({
+              ...prev,
+              isLoading: false,
+              isPlaying: false,
+              isPaused: true,
+              loadingChunkIndex: null,
+              error: null,
+              chunks: [...chunksRef.current],
+            }));
+            return;
+          }
+
           chunksRef.current = chunksRef.current.map((c, idx) =>
             idx === i ? { ...c, status: "error" } : c
           );
@@ -557,8 +580,19 @@ export function useChunkedVastTTS() {
 
         const nextIndex = i + 1;
         if (nextIndex < chunksRef.current.length) {
-          if (currentChunkIndexRef.current < nextIndex) {
+          if (scheduledSourcesRef.current.has(nextIndex) && currentChunkIndexRef.current < nextIndex) {
             syncChunkState(nextIndex);
+          } else {
+            setState((prev) => ({
+              ...prev,
+              isLoading: true,
+              isPlaying: false,
+              isPaused: true,
+              currentChunkIndex: i,
+              loadingChunkIndex: nextIndex,
+              error: null,
+              chunks: [...chunksRef.current],
+            }));
           }
           return;
         }
@@ -706,6 +740,8 @@ export function useChunkedVastTTS() {
 
   const pause = useCallback(() => {
     playbackTokenRef.current += 1;
+    shouldAutoResumeOnVisibleRef.current = false;
+    pendingResumeChunkIndexRef.current = null;
     stopAudio();
     chunksRef.current = chunksRef.current.map((chunk) => ({
       ...chunk,
@@ -777,6 +813,25 @@ export function useChunkedVastTTS() {
       await playFromChunk(currentChunkIndexRef.current, token);
     }
   }, [playFromChunk, state.isLoading, state.isPlaying]);
+
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+
+    const handleVisibilityChange = () => {
+      if (document.hidden) return;
+      const resumeChunkIndex = pendingResumeChunkIndexRef.current;
+      if (!shouldAutoResumeOnVisibleRef.current || resumeChunkIndex === null) return;
+
+      shouldAutoResumeOnVisibleRef.current = false;
+      pendingResumeChunkIndexRef.current = null;
+
+      const token = ++playbackTokenRef.current;
+      void playFromChunk(resumeChunkIndex, token);
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
+  }, [playFromChunk]);
 
   return {
     ...state,
