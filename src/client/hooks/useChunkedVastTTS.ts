@@ -23,16 +23,18 @@ export interface TTSState {
   chunks: TTSChunk[];
 }
 
-// ---- Browser audio cache (localStorage, keyed by text hash) ----
-const CACHE_PREFIX = "tts_audio_";
-const CACHE_INDEX_KEY = "tts_audio_index";
+// ---- Browser audio cache (IndexedDB, keyed by chunk hash) ----
+const CACHE_DB_NAME = "tts-audio-cache";
+const CACHE_DB_VERSION = 1;
+const CACHE_STORE_NAME = "clips";
+let cacheDbPromise: Promise<IDBDatabase> | null = null;
 
-interface CacheIndexEntry {
+interface CachedAudioRecord {
+  hash: string;
+  audio: string;
   updatedAt: number;
   size: number;
 }
-
-type CacheIndex = Record<string, CacheIndexEntry>;
 
 function hashText(text: string): string {
   let h = 0;
@@ -51,114 +53,131 @@ function buildChunkHash(
   return hashText(`${messageId}::${chunkIndex}::${voiceReferenceId || "builtin"}::${text}`);
 }
 
-function readCacheIndex(): CacheIndex {
-  try {
-    const raw = localStorage.getItem(CACHE_INDEX_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw) as CacheIndex;
-    return parsed && typeof parsed === "object" ? parsed : {};
-  } catch {
-    return {};
-  }
-}
 
-function writeCacheIndex(index: CacheIndex): void {
-  localStorage.setItem(CACHE_INDEX_KEY, JSON.stringify(index));
-}
-
-function removeCachedAudio(hash: string, index: CacheIndex): void {
-  delete index[hash];
-  localStorage.removeItem(CACHE_PREFIX + hash);
-}
-
-function pruneCacheIndex(index: CacheIndex): CacheIndex {
-  const nextIndex: CacheIndex = { ...index };
-
-  for (const hash of Object.keys(nextIndex)) {
-    if (!localStorage.getItem(CACHE_PREFIX + hash)) {
-      delete nextIndex[hash];
-    }
+function openCacheDb(): Promise<IDBDatabase> {
+  if (typeof indexedDB === "undefined") {
+    return Promise.reject(new Error("IndexedDB is unavailable"));
   }
 
-  return nextIndex;
-}
+  if (!cacheDbPromise) {
+    cacheDbPromise = new Promise((resolve, reject) => {
+      const request = indexedDB.open(CACHE_DB_NAME, CACHE_DB_VERSION);
 
-function getOldestCachedHashes(index: CacheIndex, excludeHash?: string): string[] {
-  return Object.entries(index)
-    .filter(([hash]) => hash !== excludeHash)
-    .sort(([, a], [, b]) => a.updatedAt - b.updatedAt)
-    .map(([hash]) => hash);
-}
+      request.onupgradeneeded = () => {
+        const db = request.result;
+        const store = db.objectStoreNames.contains(CACHE_STORE_NAME)
+          ? request.transaction?.objectStore(CACHE_STORE_NAME)
+          : db.createObjectStore(CACHE_STORE_NAME, { keyPath: "hash" });
 
-function getCachedAudio(hash: string): string | null {
-  try {
-    const audio = localStorage.getItem(CACHE_PREFIX + hash);
-
-    try {
-      const index = pruneCacheIndex(readCacheIndex());
-
-      if (!audio) {
-        if (index[hash]) {
-          delete index[hash];
-          writeCacheIndex(index);
+        if (store && !store.indexNames.contains("updatedAt")) {
+          store.createIndex("updatedAt", "updatedAt", { unique: false });
         }
+      };
+
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error || new Error("Failed to open IndexedDB cache"));
+    });
+  }
+
+  return cacheDbPromise;
+}
+
+function runIdbRequest<T>(request: IDBRequest<T>): Promise<T> {
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error("IndexedDB request failed"));
+  });
+}
+
+async function withCacheStore<T>(mode: IDBTransactionMode, handler: (store: IDBObjectStore) => Promise<T>): Promise<T> {
+  const db = await openCacheDb();
+  const transaction = db.transaction(CACHE_STORE_NAME, mode);
+  const store = transaction.objectStore(CACHE_STORE_NAME);
+  const result = await handler(store);
+
+  await new Promise<void>((resolve, reject) => {
+    transaction.oncomplete = () => resolve();
+    transaction.onabort = () => reject(transaction.error || new Error("IndexedDB transaction aborted"));
+    transaction.onerror = () => reject(transaction.error || new Error("IndexedDB transaction failed"));
+  });
+
+  return result;
+}
+
+async function deleteCachedAudio(hash: string): Promise<void> {
+  await withCacheStore("readwrite", async (store) => {
+    await runIdbRequest(store.delete(hash));
+  });
+}
+
+async function deleteOldestCachedAudio(excludeHash?: string): Promise<boolean> {
+  return withCacheStore("readwrite", async (store) => {
+    const index = store.index("updatedAt");
+    const records = await runIdbRequest(index.getAll()) as CachedAudioRecord[];
+
+    for (const record of records) {
+      if (record.hash === excludeHash) continue;
+      await runIdbRequest(store.delete(record.hash));
+      return true;
+    }
+
+    return false;
+  });
+}
+
+async function getCachedAudio(hash: string): Promise<string | null> {
+  try {
+    const record = await withCacheStore("readwrite", async (store) => {
+      const existing = await runIdbRequest(store.get(hash)) as CachedAudioRecord | undefined;
+      if (!existing) {
         return null;
       }
 
-      index[hash] = {
+      const updatedRecord: CachedAudioRecord = {
+        ...existing,
         updatedAt: Date.now(),
-        size: audio.length,
       };
-      writeCacheIndex(index);
-    } catch {
-      // Ignore metadata refresh failures and return the cached audio.
-    }
+      await runIdbRequest(store.put(updatedRecord));
+      return updatedRecord;
+    });
 
-    return audio;
+    return record?.audio || null;
   } catch {
     return null;
   }
 }
 
-function setCachedAudio(hash: string, audio: string): void {
-  try {
-    const key = CACHE_PREFIX + hash;
-    const index = pruneCacheIndex(readCacheIndex());
+async function setCachedAudio(hash: string, audio: string): Promise<void> {
+  const record: CachedAudioRecord = {
+    hash,
+    audio,
+    updatedAt: Date.now(),
+    size: audio.length,
+  };
 
-    index[hash] = {
-      updatedAt: Date.now(),
-      size: audio.length,
-    };
-
-    while (true) {
-      try {
-        localStorage.setItem(key, audio);
-        writeCacheIndex(index);
+  for (;;) {
+    try {
+      await withCacheStore("readwrite", async (store) => {
+        await runIdbRequest(store.put(record));
+      });
+      return;
+    } catch (error) {
+      const errorName = error instanceof DOMException ? error.name : "";
+      if (errorName !== "QuotaExceededError") {
         return;
-      } catch {
-        const oldestHashes = getOldestCachedHashes(index, hash);
-        const oldestHash = oldestHashes[0];
+      }
 
-        if (!oldestHash) {
-          removeCachedAudio(hash, index);
-          try {
-            writeCacheIndex(index);
-          } catch {
-            // Ignore cache persistence failures.
-          }
-          return;
-        }
-
-        removeCachedAudio(oldestHash, index);
+      const deleted = await deleteOldestCachedAudio(hash).catch(() => false);
+      if (!deleted) {
+        await deleteCachedAudio(hash).catch(() => {});
+        return;
       }
     }
-  } catch {
-    // Storage full or unavailable - ignore.
   }
 }
 
 // ---- Chunking ----
-export function splitTextIntoTtsChunks(text: string, targetWordsPerChunk: number = 80): string[] {
+export function splitTextIntoTtsChunks(text: string, targetWordsPerChunk: number = 60): string[] {
   const sentences = text.match(/[^.!?]+[.!?]+["']?|[^.!?]+$/g) || [text];
   const chunks: string[] = [];
   let currentChunk = "";
@@ -279,7 +298,7 @@ export function useChunkedVastTTS() {
   }, [stopAudio]);
 
   const generateChunkAudio = useCallback(async (text: string, hash: string, voiceReferenceId: string | null): Promise<string> => {
-    const cached = getCachedAudio(hash);
+    const cached = await getCachedAudio(hash);
     if (cached) return cached;
 
     const inFlight = inflightAudioRef.current.get(hash);
@@ -290,7 +309,7 @@ export function useChunkedVastTTS() {
       if (!response.success || !response.audio) {
         throw new Error(response.error || "Failed to generate audio");
       }
-      setCachedAudio(hash, response.audio);
+      await setCachedAudio(hash, response.audio);
       return response.audio;
     })();
 
@@ -504,11 +523,16 @@ export function useChunkedVastTTS() {
     startChunkIndex = Math.max(0, Math.min(startChunkIndex, textChunks.length - 1));
 
     let wordOffset = 0;
-    chunksRef.current = textChunks.map((chunkTextValue, index) => {
+    const builtChunks: TTSChunk[] = [];
+    for (let index = 0; index < textChunks.length; index++) {
+      const chunkTextValue = textChunks[index];
+      if (!chunkTextValue) continue;
+
       const hash = buildChunkHash(messageId, index, chunkTextValue, activeVoiceReferenceIdRef.current);
-      const cachedAudio = getCachedAudio(hash);
+      const cachedAudio = await getCachedAudio(hash);
       const words = chunkTextValue.split(/\s+/).length;
-      const chunk: TTSChunk = {
+
+      builtChunks.push({
         id: index,
         text: chunkTextValue,
         hash,
@@ -516,10 +540,14 @@ export function useChunkedVastTTS() {
         endWord: wordOffset + words,
         audio: cachedAudio,
         status: cachedAudio ? "ready" : "pending",
-      };
+      });
+
       wordOffset += words;
-      return chunk;
-    });
+    }
+
+    chunksRef.current = builtChunks;
+
+    if (requestToken !== playbackTokenRef.current) return;
 
     currentChunkIndexRef.current = startChunkIndex;
     const startChunk = chunksRef.current[startChunkIndex];

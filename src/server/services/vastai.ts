@@ -746,6 +746,25 @@ export async function listUserInstances(): Promise<any[]> {
   return data.instances || [];
 }
 
+export async function getInstanceDetails(instanceId: string): Promise<any | null> {
+  const response = await fetch(`${VAST_API_URL}/instances/${instanceId}/`, {
+    headers: {
+      Authorization: `Bearer ${VAST_API_KEY}`,
+    },
+  });
+
+  if (response.status === 404) {
+    return null;
+  }
+
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`Failed to fetch instance ${instanceId}: ${error}`);
+  }
+
+  return await response.json();
+}
+
 export async function requestInstanceLogs(instanceId: string, tail: number = 400): Promise<string> {
   const response = await fetch(`${VAST_API_URL}/instances/request_logs/${instanceId}`, {
     method: "PUT",
@@ -826,6 +845,22 @@ async function selectManagedInstance(): Promise<VastInstance | null> {
   return nextActiveInstance;
 }
 
+async function adoptTrackedInstanceIfPresent(): Promise<VastInstance | null> {
+  const trackedInstanceId = activeInstance?.id || lifecycleState.instanceId;
+  if (!trackedInstanceId) return null;
+
+  const details = await getInstanceDetails(trackedInstanceId);
+  if (!details || isTerminalInstanceStatus(details.actual_status)) {
+    return null;
+  }
+
+  const trackedInstance = toVastInstance(details);
+  activeInstance = trackedInstance;
+  resetReferenceState(trackedInstance.id, activeReferenceState.mode);
+  emitStatusUpdate();
+  return trackedInstance;
+}
+
 /**
  * Find and adopt any existing managed TTS instance, even if it is still provisioning.
  */
@@ -879,16 +914,16 @@ export async function findAndAdoptExistingInstance(): Promise<VastInstance | nul
   } catch (error) {
     console.error("[VastTTS] Error listing instances:", error);
     updateLifecycleState({
-      phase: "idle",
-      message: "No GPU instance is active.",
-      provisioning: false,
-      instanceId: null,
+      phase: lifecycleState.phase,
+      message: lifecycleState.message,
+      provisioning: lifecycleState.provisioning,
+      instanceId: lifecycleState.instanceId,
       offerId: null,
       searchRound: null,
       pollAttempt: null,
       lastError: error instanceof Error ? error.message : "Failed to inspect existing Vast.ai instances.",
     });
-    return null;
+    throw error;
   }
 }
 
@@ -1261,6 +1296,25 @@ async function startCheapestInstanceInternal(
   options?: { skipAdoptExisting?: boolean },
 ): Promise<VastInstance> {
   if (!options?.skipAdoptExisting) {
+    const trackedInstance = await adoptTrackedInstanceIfPresent();
+    if (trackedInstance) {
+      if (trackedInstance.status === "pending" || !trackedInstance.ip) {
+        updateLifecycleState({
+          phase: "polling",
+          message: "Provisioning GPU instance...",
+          provisioning: true,
+          instanceId: trackedInstance.id,
+          offerId: null,
+          searchRound: null,
+          pollAttempt: null,
+          lastError: null,
+        });
+        return continueProvisioningInstance(trackedInstance, generation);
+      }
+
+      return waitForHealthyService(trackedInstance);
+    }
+
     const adoptedInstance = await findAndAdoptExistingInstance();
     if (adoptedInstance) {
       if (adoptedInstance.status === "pending" || !adoptedInstance.ip) {
