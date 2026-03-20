@@ -195,6 +195,7 @@ function updateLifecycleState(patch: Partial<TtsLifecycleState>) {
 }
 
 function setLifecycleRunning(message: string, instance?: VastInstance | null) {
+  const healthChanged = !lastKnownServiceHealth;
   lastKnownServiceHealth = true;
   updateLifecycleState({
     phase: "running",
@@ -207,9 +208,14 @@ function setLifecycleRunning(message: string, instance?: VastInstance | null) {
     lastError: null,
     excludedMachineIds: [],
   });
+
+  if (healthChanged) {
+    emitStatusUpdate();
+  }
 }
 
 function setLifecycleIdle(message: string = "No GPU instance is active.") {
+  const healthChanged = lastKnownServiceHealth;
   lastKnownServiceHealth = false;
   updateLifecycleState({
     phase: "idle",
@@ -222,9 +228,14 @@ function setLifecycleIdle(message: string = "No GPU instance is active.") {
     lastError: null,
     excludedMachineIds: [],
   });
+
+  if (healthChanged) {
+    emitStatusUpdate();
+  }
 }
 
 function setLifecycleError(message: string) {
+  const healthChanged = lastKnownServiceHealth;
   lastKnownServiceHealth = false;
   updateLifecycleState({
     phase: "error",
@@ -232,6 +243,19 @@ function setLifecycleError(message: string) {
     provisioning: false,
     lastError: message,
   });
+
+  if (healthChanged) {
+    emitStatusUpdate();
+  }
+}
+
+function updateKnownServiceHealth(nextHealth: boolean) {
+  if (lastKnownServiceHealth !== nextHealth) {
+    lastKnownServiceHealth = nextHealth;
+    emitStatusUpdate();
+  } else {
+    lastKnownServiceHealth = nextHealth;
+  }
 }
 
 function rememberMachineId(machineId?: string) {
@@ -966,15 +990,16 @@ export async function healthCheck(options?: { useCachedWhileBusy?: boolean }): P
 
       if (response.ok) {
         const data = await response.json();
-        lastKnownServiceHealth = data.status === "ok";
-        return lastKnownServiceHealth;
+        const nextHealth = data.status === "ok";
+        updateKnownServiceHealth(nextHealth);
+        return nextHealth;
       }
 
-      lastKnownServiceHealth = false;
+      updateKnownServiceHealth(false);
       return false;
     });
   } catch {
-    lastKnownServiceHealth = false;
+    updateKnownServiceHealth(false);
     return false;
   }
 }
@@ -1521,16 +1546,29 @@ export async function cleanupDuplicateInstances(): Promise<void> {
     }
 
     if (selectedInstance.status === "running") {
-      updateLifecycleState({
-        phase: "running",
-        message: "GPU instance ready.",
-        provisioning: false,
-        instanceId: selectedInstance.id,
-        offerId: null,
-        searchRound: null,
-        pollAttempt: null,
-        lastError: null,
-      });
+      if (lastKnownServiceHealth) {
+        updateLifecycleState({
+          phase: "running",
+          message: "GPU instance ready.",
+          provisioning: false,
+          instanceId: selectedInstance.id,
+          offerId: null,
+          searchRound: null,
+          pollAttempt: null,
+          lastError: null,
+        });
+      } else {
+        updateLifecycleState({
+          phase: "polling",
+          message: "Warming up TTS service...",
+          provisioning: true,
+          instanceId: selectedInstance.id,
+          offerId: null,
+          searchRound: null,
+          pollAttempt: null,
+          lastError: null,
+        });
+      }
     } else {
       updateLifecycleState({
         phase: "polling",
