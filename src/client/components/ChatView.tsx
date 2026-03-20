@@ -86,6 +86,7 @@ export default function ChatView({
   const chunkPanelTouchStartRef = useRef<{ x: number; y: number } | null>(null);
   const playButtonLongPressTimerRef = useRef<number | null>(null);
   const suppressPlayButtonClickRef = useRef(false);
+  const pendingCollapseSessionIdRef = useRef<string | null>(session.id);
 
   // Initialize chunked TTS hook
   const {
@@ -145,6 +146,18 @@ export default function ChatView({
   useEffect(() => {
     api.getAgents().then(setAgents).catch(console.error);
   }, []);
+
+  useEffect(() => {
+    pendingCollapseSessionIdRef.current = session.id;
+  }, [session.id]);
+
+  useEffect(() => {
+    if (pendingCollapseSessionIdRef.current !== session.id) return;
+    if (messagesLoading) return;
+
+    setCollapsedIds(new Set(messages.map((message) => message.id)));
+    pendingCollapseSessionIdRef.current = null;
+  }, [messages, messagesLoading, session.id]);
 
   const hasTtsOverlay = Boolean(ttsActiveMessageId || ttsIsLoading || ttsIsPlaying || ttsIsPaused || ttsError);
   const activeChunk = ttsChunks[ttsCurrentChunk] ?? null;
