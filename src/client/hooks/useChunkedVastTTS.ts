@@ -479,7 +479,6 @@ export function useChunkedVastTTS() {
           isLoading: true,
           isPlaying: true,
           isPaused: false,
-          currentChunkIndex: i,
           loadingChunkIndex: i,
           error: null,
           chunks: [...chunksRef.current],
@@ -505,7 +504,6 @@ export function useChunkedVastTTS() {
             isLoading: false,
             isPlaying: false,
             isPaused: false,
-            currentChunkIndex: i,
             loadingChunkIndex: null,
             error: err instanceof Error ? err.message : "TTS error",
             chunks: [...chunksRef.current],
@@ -650,13 +648,19 @@ export function useChunkedVastTTS() {
   }, [fetchProgress, playFromChunk, prefetchUpcomingChunks, reset]);
 
   const pause = useCallback(() => {
+    playbackTokenRef.current += 1;
     stopAudio();
+    chunksRef.current = chunksRef.current.map((chunk) => ({
+      ...chunk,
+      status: chunk.status === "playing" ? "ready" : chunk.status,
+    }));
     setState((prev) => ({
       ...prev,
       isLoading: false,
       isPaused: true,
       isPlaying: false,
       loadingChunkIndex: null,
+      chunks: [...chunksRef.current],
     }));
   }, [stopAudio]);
 
