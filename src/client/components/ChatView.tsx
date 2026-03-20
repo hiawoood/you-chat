@@ -387,13 +387,23 @@ export default function ChatView({
   };
 
   const handleCompactCommit = async (content: string) => {
-    if (!compactTarget || !onEditMessage) return;
-    await onEditMessage(compactTarget.id, content);
+    if (!compactTarget) return;
+    await handleEditMessage(compactTarget.id, content);
     closeCompact();
   };
 
   const closeCompact = () => {
     setCompactTarget(null);
+  };
+
+  const handleEditMessage = async (messageId: string, content: string) => {
+    if (!onEditMessage) return;
+
+    if (ttsActiveMessageId === messageId) {
+      ttsStop();
+    }
+
+    await onEditMessage(messageId, content);
   };
 
   const handleSelectTtsVoice = async (voiceId: string | null) => {
@@ -660,7 +670,7 @@ export default function ChatView({
               messages={messages}
               streamingContent={streamingContent}
               thinkingStatus={thinkingStatus}
-              onEditMessage={onEditMessage}
+              onEditMessage={handleEditMessage}
               onDeleteMessage={onDeleteMessage}
               onRegenerate={handleRegenerate}
               onFork={onFork}

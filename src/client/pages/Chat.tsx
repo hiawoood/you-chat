@@ -259,11 +259,25 @@ export default function Chat() {
     await stopThenRun(async () => {
       if (!activeSessionId) return;
       setActionLoading(`edit-msg-${messageId}`);
+      const previousMessages = messages;
       try {
+        setMessages((prev) => prev.map((message) => (
+          message.id === messageId
+            ? { ...message, content }
+            : message
+        )));
+
         const updated = await api.editMessage(activeSessionId, messageId, content);
-        setMessages((prev) => prev.map((m) => (m.id === messageId ? { ...m, content: updated.content } : m)));
+        setMessages((prev) => prev.map((message) => (
+          message.id === messageId
+            ? { ...message, ...updated }
+            : message
+        )));
+
+        await loadMessages(activeSessionId);
       } catch (error) {
         console.error("Failed to edit message:", error);
+        setMessages(previousMessages);
       } finally {
         setActionLoading(null);
       }
