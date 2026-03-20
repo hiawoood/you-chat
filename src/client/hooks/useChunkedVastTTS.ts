@@ -246,6 +246,7 @@ export function useChunkedVastTTS() {
   const playbackCompletionTimerRef = useRef<number | null>(null);
   const scheduledEndTimeRef = useRef(0);
   const decodedBufferCacheRef = useRef(new Map<string, AudioBuffer>());
+  const lookaheadWaitersRef = useRef<Array<() => void>>([]);
   const chunksRef = useRef<TTSChunk[]>([]);
   const messageIdRef = useRef<string | null>(null);
   const playbackTokenRef = useRef(0);
@@ -273,8 +274,13 @@ export function useChunkedVastTTS() {
     }
   }, []);
 
+  const releaseLookaheadWaiters = useCallback(() => {
+    lookaheadWaitersRef.current.splice(0).forEach((resolve) => resolve());
+  }, []);
+
   const stopAudio = useCallback(() => {
     clearPlaybackTimers();
+    releaseLookaheadWaiters();
     scheduledSourcesRef.current.forEach((source) => {
       try {
         source.stop();
@@ -290,7 +296,7 @@ export function useChunkedVastTTS() {
       void audioContextRef.current.close().catch(() => {});
       audioContextRef.current = null;
     }
-  }, [clearPlaybackTimers]);
+  }, [clearPlaybackTimers, releaseLookaheadWaiters]);
 
   const saveProgress = useCallback(async (messageId: string, index: number) => {
     try {
@@ -413,6 +419,7 @@ export function useChunkedVastTTS() {
 
   const syncChunkState = useCallback((chunkIndex: number) => {
     currentChunkIndexRef.current = chunkIndex;
+    releaseLookaheadWaiters();
     chunksRef.current = chunksRef.current.map((chunk, idx) => ({
       ...chunk,
       status: idx === chunkIndex ? "playing" : chunk.status === "playing" ? "ready" : chunk.status,
@@ -432,7 +439,7 @@ export function useChunkedVastTTS() {
     if (messageIdRef.current) {
       void saveProgress(messageIdRef.current, chunkIndex);
     }
-  }, [saveProgress]);
+  }, [releaseLookaheadWaiters, saveProgress]);
 
   const scheduleChunkStart = useCallback((chunkIndex: number, startAt: number, token: number) => {
     const audioContext = audioContextRef.current;
@@ -484,7 +491,9 @@ export function useChunkedVastTTS() {
 
       while (i - currentChunkIndexRef.current > MAX_PREFETCH_AHEAD) {
         if (token !== playbackTokenRef.current) return;
-        await new Promise((resolve) => window.setTimeout(resolve, 150));
+        await new Promise<void>((resolve) => {
+          lookaheadWaitersRef.current.push(resolve);
+        });
       }
 
       let chunk = chunksRef.current[i];
@@ -540,6 +549,33 @@ export function useChunkedVastTTS() {
       source.buffer = decodedBuffer;
       source.connect(audioContext.destination);
       source.playbackRate.value = playbackSpeedRef.current;
+      source.onended = () => {
+        scheduledSourcesRef.current.delete(i);
+        source.disconnect();
+
+        if (token !== playbackTokenRef.current) return;
+
+        const nextIndex = i + 1;
+        if (nextIndex < chunksRef.current.length) {
+          if (currentChunkIndexRef.current < nextIndex) {
+            syncChunkState(nextIndex);
+          }
+          return;
+        }
+
+        chunksRef.current = chunksRef.current.map((chunk) => ({
+          ...chunk,
+          status: chunk.status === "playing" ? "ready" : chunk.status,
+        }));
+        setState((prev) => ({
+          ...prev,
+          isLoading: false,
+          isPlaying: false,
+          isPaused: false,
+          loadingChunkIndex: null,
+          chunks: [...chunksRef.current],
+        }));
+      };
 
       const startAt = Math.max(audioContext.currentTime + PLAYBACK_START_DELAY_SECONDS, scheduledEndTimeRef.current);
       const endAt = startAt + (decodedBuffer.duration / playbackSpeedRef.current);
