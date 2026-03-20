@@ -609,7 +609,7 @@ function MessageBubble({
             </button>
           </div>
         ) : (
-          <div className={`flex items-center gap-0.5 mt-0.5 opacity-0 group-hover:opacity-100 transition-opacity ${isUser ? "flex-row-reverse" : ""}`}>
+          <div className={`flex items-center gap-0.5 mt-0.5 opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto transition-opacity ${isUser ? "flex-row-reverse" : ""}`}>
             <CopyButton text={message.content} />
 
             {/* TTS Button */}
