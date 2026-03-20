@@ -23,6 +23,9 @@ export interface TTSState {
   chunks: TTSChunk[];
 }
 
+const MAX_PREFETCH_AHEAD = 2;
+const PLAYBACK_START_DELAY_SECONDS = 0.05;
+
 // ---- Browser audio cache (IndexedDB, keyed by chunk hash) ----
 const CACHE_DB_NAME = "tts-audio-cache";
 const CACHE_DB_VERSION = 1;
@@ -225,8 +228,12 @@ export function useChunkedVastTTS() {
     chunks: [],
   });
 
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-  const audioWaitResolverRef = useRef<((options?: { preserveAudio?: boolean }) => void) | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const scheduledSourcesRef = useRef(new Map<number, AudioBufferSourceNode>());
+  const scheduledChunkTimersRef = useRef(new Map<number, number>());
+  const playbackCompletionTimerRef = useRef<number | null>(null);
+  const scheduledEndTimeRef = useRef(0);
+  const decodedBufferCacheRef = useRef(new Map<string, AudioBuffer>());
   const chunksRef = useRef<TTSChunk[]>([]);
   const messageIdRef = useRef<string | null>(null);
   const playbackTokenRef = useRef(0);
@@ -236,27 +243,34 @@ export function useChunkedVastTTS() {
   const textRef = useRef<string>("");
   const textChunksRef = useRef<string[]>([]);
 
-  const stopAudio = useCallback((options?: { preserveAudio?: boolean }) => {
-    const preserveAudio = options?.preserveAudio ?? false;
+  const clearPlaybackTimers = useCallback(() => {
+    scheduledChunkTimersRef.current.forEach((timerId) => window.clearTimeout(timerId));
+    scheduledChunkTimersRef.current.clear();
 
-    if (audioRef.current) {
-      audioRef.current.pause();
-      if (!preserveAudio) {
-        audioRef.current.currentTime = 0;
-      }
-    }
-
-    if (audioWaitResolverRef.current) {
-      const resolve = audioWaitResolverRef.current;
-      audioWaitResolverRef.current = null;
-      resolve({ preserveAudio });
-      return;
-    }
-
-    if (!preserveAudio) {
-      audioRef.current = null;
+    if (playbackCompletionTimerRef.current !== null) {
+      window.clearTimeout(playbackCompletionTimerRef.current);
+      playbackCompletionTimerRef.current = null;
     }
   }, []);
+
+  const stopAudio = useCallback(() => {
+    clearPlaybackTimers();
+    scheduledSourcesRef.current.forEach((source) => {
+      try {
+        source.stop();
+      } catch {
+        // Ignore already-stopped nodes.
+      }
+      source.disconnect();
+    });
+    scheduledSourcesRef.current.clear();
+    scheduledEndTimeRef.current = 0;
+
+    if (audioContextRef.current) {
+      void audioContextRef.current.close().catch(() => {});
+      audioContextRef.current = null;
+    }
+  }, [clearPlaybackTimers]);
 
   const saveProgress = useCallback(async (messageId: string, index: number) => {
     try {
@@ -345,13 +359,116 @@ export function useChunkedVastTTS() {
     }
   }, [generateChunkAudio]);
 
+  const prefetchUpcomingChunks = useCallback(async (currentIndex: number) => {
+    for (let step = 1; step <= MAX_PREFETCH_AHEAD; step++) {
+      const nextIndex = currentIndex + step;
+      if (nextIndex >= chunksRef.current.length) return;
+      await prefetchChunk(nextIndex);
+    }
+  }, [prefetchChunk]);
+
+  const getAudioContext = useCallback(() => {
+    if (!audioContextRef.current || audioContextRef.current.state === "closed") {
+      audioContextRef.current = new AudioContext();
+    }
+    return audioContextRef.current;
+  }, []);
+
+  const decodeAudioBuffer = useCallback(async (hash: string, audio: string) => {
+    const cachedBuffer = decodedBufferCacheRef.current.get(hash);
+    if (cachedBuffer) return cachedBuffer;
+
+    const audioContext = getAudioContext();
+    const byteCharacters = atob(audio);
+    const byteNumbers = new Uint8Array(byteCharacters.length);
+    for (let i = 0; i < byteCharacters.length; i++) {
+      byteNumbers[i] = byteCharacters.charCodeAt(i);
+    }
+
+    const arrayBuffer = byteNumbers.buffer.slice(0);
+    const decodedBuffer = await audioContext.decodeAudioData(arrayBuffer);
+    decodedBufferCacheRef.current.set(hash, decodedBuffer);
+    return decodedBuffer;
+  }, [getAudioContext]);
+
+  const syncChunkState = useCallback((chunkIndex: number) => {
+    currentChunkIndexRef.current = chunkIndex;
+    chunksRef.current = chunksRef.current.map((chunk, idx) => ({
+      ...chunk,
+      status: idx === chunkIndex ? "playing" : chunk.status === "playing" ? "ready" : chunk.status,
+    }));
+
+    setState((prev) => ({
+      ...prev,
+      isLoading: false,
+      isPlaying: true,
+      isPaused: false,
+      currentChunkIndex: chunkIndex,
+      loadingChunkIndex: null,
+      error: null,
+      chunks: [...chunksRef.current],
+    }));
+
+    if (messageIdRef.current) {
+      void saveProgress(messageIdRef.current, chunkIndex);
+    }
+  }, [saveProgress]);
+
+  const scheduleChunkStart = useCallback((chunkIndex: number, startAt: number, token: number) => {
+    const audioContext = audioContextRef.current;
+    if (!audioContext) return;
+
+    const delayMs = Math.max(0, (startAt - audioContext.currentTime) * 1000);
+    const timerId = window.setTimeout(() => {
+      if (token !== playbackTokenRef.current) return;
+      syncChunkState(chunkIndex);
+      scheduledChunkTimersRef.current.delete(chunkIndex);
+    }, delayMs);
+
+    scheduledChunkTimersRef.current.set(chunkIndex, timerId);
+  }, [syncChunkState]);
+
+  const schedulePlaybackCompletion = useCallback((token: number) => {
+    const audioContext = audioContextRef.current;
+    if (!audioContext) return;
+
+    if (playbackCompletionTimerRef.current !== null) {
+      window.clearTimeout(playbackCompletionTimerRef.current);
+    }
+
+    const remainingMs = Math.max(0, (scheduledEndTimeRef.current - audioContext.currentTime) * 1000);
+    playbackCompletionTimerRef.current = window.setTimeout(() => {
+      if (token !== playbackTokenRef.current) return;
+      chunksRef.current = chunksRef.current.map((chunk) => ({
+        ...chunk,
+        status: chunk.status === "playing" ? "ready" : chunk.status,
+      }));
+      setState((prev) => ({
+        ...prev,
+        isLoading: false,
+        isPlaying: false,
+        isPaused: false,
+        loadingChunkIndex: null,
+        chunks: [...chunksRef.current],
+      }));
+    }, remainingMs);
+  }, []);
+
   const playFromChunk = useCallback(async (startIndex: number, token: number) => {
+    stopAudio();
+    const audioContext = getAudioContext();
+    scheduledEndTimeRef.current = audioContext.currentTime;
+
     for (let i = startIndex; i < chunksRef.current.length; i++) {
       if (token !== playbackTokenRef.current) return;
 
+      while (i - currentChunkIndexRef.current > MAX_PREFETCH_AHEAD) {
+        if (token !== playbackTokenRef.current) return;
+        await new Promise((resolve) => window.setTimeout(resolve, 150));
+      }
+
       let chunk = chunksRef.current[i];
       if (!chunk) return;
-      currentChunkIndexRef.current = i;
 
       if (!chunk.audio) {
         chunksRef.current = chunksRef.current.map((c, idx) =>
@@ -398,66 +515,27 @@ export function useChunkedVastTTS() {
       }
 
       if (token !== playbackTokenRef.current || !chunk.audio) return;
-
-      chunksRef.current = chunksRef.current.map((c, idx) => ({
-        ...c,
-        status: idx === i ? "playing" : c.status === "playing" ? "ready" : c.status,
-      }));
-      setState((prev) => ({
-        ...prev,
-        isLoading: false,
-        isPlaying: true,
-        isPaused: false,
-        currentChunkIndex: i,
-        loadingChunkIndex: null,
-        error: null,
-        chunks: [...chunksRef.current],
-      }));
-
-      if (i + 1 < chunksRef.current.length) {
-        void prefetchChunk(i + 1);
-      }
-
-      if (messageIdRef.current) {
-        void saveProgress(messageIdRef.current, i);
-      }
-
-      stopAudio();
-      const audio = new Audio(`data:audio/wav;base64,${chunk.audio}`);
-      audioRef.current = audio;
-
-      await new Promise<void>((resolve) => {
-        const finish = (options?: { preserveAudio?: boolean }) => {
-          if (audioWaitResolverRef.current === finish) {
-            audioWaitResolverRef.current = null;
-          }
-          audio.onended = null;
-          audio.onerror = null;
-          if (!(options?.preserveAudio) && audioRef.current === audio) {
-            audioRef.current = null;
-          }
-          resolve();
-        };
-
-        audioWaitResolverRef.current = finish;
-        audio.onended = () => finish();
-        audio.onerror = () => finish();
-        audio.play().catch(() => finish());
-      });
-
+      const decodedBuffer = await decodeAudioBuffer(chunk.hash, chunk.audio);
       if (token !== playbackTokenRef.current) return;
-    }
 
-    if (token === playbackTokenRef.current) {
-      setState((prev) => ({
-        ...prev,
-        isLoading: false,
-        isPlaying: false,
-        isPaused: false,
-        loadingChunkIndex: null,
-      }));
+      const source = audioContext.createBufferSource();
+      source.buffer = decodedBuffer;
+      source.connect(audioContext.destination);
+
+      const startAt = Math.max(audioContext.currentTime + PLAYBACK_START_DELAY_SECONDS, scheduledEndTimeRef.current);
+      const endAt = startAt + decodedBuffer.duration;
+      source.start(startAt);
+
+      scheduledSourcesRef.current.set(i, source);
+      scheduledEndTimeRef.current = endAt;
+      scheduleChunkStart(i, startAt, token);
+      schedulePlaybackCompletion(token);
+
+      if (i === startIndex) {
+        syncChunkState(i);
+      }
     }
-  }, [generateChunkAudio, prefetchChunk, saveProgress, stopAudio]);
+  }, [decodeAudioBuffer, getAudioContext, scheduleChunkStart, schedulePlaybackCompletion, stopAudio, syncChunkState, generateChunkAudio]);
 
   const jumpToChunk = useCallback(async (index: number) => {
     if (index < 0 || index >= chunksRef.current.length) return;
@@ -565,17 +643,14 @@ export function useChunkedVastTTS() {
       chunks: [...chunksRef.current],
     });
 
-    if (startChunkIndex + 1 < textChunks.length) {
-      void prefetchChunk(startChunkIndex + 1);
-    }
+    void prefetchUpcomingChunks(startChunkIndex);
 
     const token = ++playbackTokenRef.current;
     await playFromChunk(startChunkIndex, token);
-  }, [fetchProgress, playFromChunk, prefetchChunk, reset]);
+  }, [fetchProgress, playFromChunk, prefetchUpcomingChunks, reset]);
 
   const pause = useCallback(() => {
-    playbackTokenRef.current += 1;
-    stopAudio({ preserveAudio: !!audioRef.current });
+    stopAudio();
     setState((prev) => ({
       ...prev,
       isLoading: false,
@@ -589,54 +664,6 @@ export function useChunkedVastTTS() {
     if (chunksRef.current.length === 0) return;
 
     const resumeIdx = Math.max(0, Math.min(currentChunkIndexRef.current, chunksRef.current.length - 1));
-
-    if (audioRef.current && audioRef.current.paused) {
-      const pausedAudio = audioRef.current;
-      const token = ++playbackTokenRef.current;
-
-      setState((prev) => ({
-        ...prev,
-        isLoading: false,
-        isPaused: false,
-        isPlaying: true,
-        loadingChunkIndex: null,
-        error: null,
-      }));
-
-      await new Promise<void>((resolve) => {
-        const finish = (options?: { preserveAudio?: boolean }) => {
-          if (audioWaitResolverRef.current === finish) {
-            audioWaitResolverRef.current = null;
-          }
-          pausedAudio.onended = null;
-          pausedAudio.onerror = null;
-          if (!(options?.preserveAudio) && audioRef.current === pausedAudio) {
-            audioRef.current = null;
-          }
-          resolve();
-        };
-
-        audioWaitResolverRef.current = finish;
-        pausedAudio.onended = () => finish();
-        pausedAudio.onerror = () => finish();
-        pausedAudio.play().catch(() => finish());
-      });
-
-      if (token !== playbackTokenRef.current) return;
-
-      if (resumeIdx + 1 < chunksRef.current.length) {
-        await playFromChunk(resumeIdx + 1, token);
-      } else {
-        setState((prev) => ({
-          ...prev,
-          isLoading: false,
-          isPlaying: false,
-          isPaused: false,
-          loadingChunkIndex: null,
-        }));
-      }
-      return;
-    }
 
     const token = ++playbackTokenRef.current;
     await playFromChunk(resumeIdx, token);

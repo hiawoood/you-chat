@@ -6,10 +6,15 @@ import Sidebar from "../components/Sidebar";
 import ChatView from "../components/ChatView";
 import Settings from "./Settings";
 
+const ACTIVE_SESSION_STORAGE_KEY = "active-chat-session-id";
+
 export default function Chat() {
   const [showSettings, setShowSettings] = useState(false);
   const [sessions, setSessions] = useState<ChatSession[]>([]);
-  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    return window.localStorage.getItem(ACTIVE_SESSION_STORAGE_KEY);
+  });
   const [messages, setMessages] = useState<Message[]>([]);
   const [sidebarOpen, setSidebarOpen] = useState(window.innerWidth >= 1024);
   const [loading, setLoading] = useState(true);
@@ -31,13 +36,37 @@ export default function Chat() {
     try {
       const data = await api.getSessions();
       setSessions(data);
-      if (data.length > 0 && !activeSessionId) {
-        setActiveSessionId(data[0]?.id || null);
+
+      const storedSessionId = typeof window !== "undefined"
+        ? window.localStorage.getItem(ACTIVE_SESSION_STORAGE_KEY)
+        : null;
+      const preferredSessionId = activeSessionId || storedSessionId;
+      const preferredSessionExists = preferredSessionId
+        ? data.some((session) => session.id === preferredSessionId)
+        : false;
+
+      if (preferredSessionExists) {
+        if (activeSessionId !== preferredSessionId) {
+          setActiveSessionId(preferredSessionId);
+        }
+      } else {
+        const fallbackSessionId = data[0]?.id || null;
+        setActiveSessionId(fallbackSessionId);
       }
     } catch (error) {
       console.error("Failed to load sessions:", error);
     } finally {
       setLoading(false);
+    }
+  }, [activeSessionId]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    if (activeSessionId) {
+      window.localStorage.setItem(ACTIVE_SESSION_STORAGE_KEY, activeSessionId);
+    } else {
+      window.localStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY);
     }
   }, [activeSessionId]);
 
