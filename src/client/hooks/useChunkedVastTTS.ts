@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import { api } from "../lib/api";
 
 export interface TTSChunk {
@@ -25,6 +25,10 @@ export interface TTSState {
 
 const MAX_PREFETCH_AHEAD = 2;
 const PLAYBACK_START_DELAY_SECONDS = 0.05;
+const DEFAULT_PLAYBACK_SPEED = 1;
+const MIN_PLAYBACK_SPEED = 0.5;
+const MAX_PLAYBACK_SPEED = 3;
+const PLAYBACK_SPEED_STORAGE_KEY = "tts-playback-speed";
 
 // ---- Browser audio cache (IndexedDB, keyed by chunk hash) ----
 const CACHE_DB_NAME = "tts-audio-cache";
@@ -216,6 +220,14 @@ function findChunkForWordIndex(chunks: string[], targetWordIndex: number): numbe
 
 // ---- Hook ----
 export function useChunkedVastTTS() {
+  const [playbackSpeed, setPlaybackSpeedState] = useState<number>(() => {
+    if (typeof window === "undefined") return DEFAULT_PLAYBACK_SPEED;
+    const stored = Number(window.localStorage.getItem(PLAYBACK_SPEED_STORAGE_KEY) || DEFAULT_PLAYBACK_SPEED);
+    if (Number.isFinite(stored)) {
+      return Math.min(MAX_PLAYBACK_SPEED, Math.max(MIN_PLAYBACK_SPEED, stored));
+    }
+    return DEFAULT_PLAYBACK_SPEED;
+  });
   const [state, setState] = useState<TTSState>({
     isLoading: false,
     isPlaying: false,
@@ -242,6 +254,14 @@ export function useChunkedVastTTS() {
   const inflightAudioRef = useRef(new Map<string, Promise<string>>());
   const textRef = useRef<string>("");
   const textChunksRef = useRef<string[]>([]);
+  const playbackSpeedRef = useRef(playbackSpeed);
+
+  useEffect(() => {
+    playbackSpeedRef.current = playbackSpeed;
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(PLAYBACK_SPEED_STORAGE_KEY, String(playbackSpeed));
+    }
+  }, [playbackSpeed]);
 
   const clearPlaybackTimers = useCallback(() => {
     scheduledChunkTimersRef.current.forEach((timerId) => window.clearTimeout(timerId));
@@ -519,9 +539,10 @@ export function useChunkedVastTTS() {
       const source = audioContext.createBufferSource();
       source.buffer = decodedBuffer;
       source.connect(audioContext.destination);
+      source.playbackRate.value = playbackSpeedRef.current;
 
       const startAt = Math.max(audioContext.currentTime + PLAYBACK_START_DELAY_SECONDS, scheduledEndTimeRef.current);
-      const endAt = startAt + decodedBuffer.duration;
+      const endAt = startAt + (decodedBuffer.duration / playbackSpeedRef.current);
       source.start(startAt);
 
       scheduledSourcesRef.current.set(i, source);
@@ -710,8 +731,21 @@ export function useChunkedVastTTS() {
     await startPlayback(text, messageId, chunkIndex, voiceReferenceId);
   }, [startPlayback]);
 
+  const setPlaybackSpeed = useCallback(async (nextSpeed: number) => {
+    const clampedSpeed = Math.min(MAX_PLAYBACK_SPEED, Math.max(MIN_PLAYBACK_SPEED, nextSpeed));
+    playbackSpeedRef.current = clampedSpeed;
+    setPlaybackSpeedState(clampedSpeed);
+
+    if (state.isPlaying || state.isLoading) {
+      const token = ++playbackTokenRef.current;
+      await playFromChunk(currentChunkIndexRef.current, token);
+    }
+  }, [playFromChunk, state.isLoading, state.isPlaying]);
+
   return {
     ...state,
+    playbackSpeed,
+    setPlaybackSpeed,
     startPlayback,
     pause,
     resume,

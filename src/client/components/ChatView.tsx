@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, type TouchEvent as ReactTouchEvent } from "react";
+import { useState, useRef, useEffect, useCallback, type PointerEvent as ReactPointerEvent, type TouchEvent as ReactTouchEvent } from "react";
 import { api } from "../lib/api";
 import type { ChatSession, Message, Agent, TtsVoiceReference, TtsVoiceListResponse, TtsStatusResponse } from "../lib/api";
 import { useChat } from "../hooks/useChat";
@@ -15,6 +15,7 @@ const TTS_CHUNK_PANEL_EXTRA_SPACER_PX = 168;
 const TTS_VOICE_PANEL_EXTRA_SPACER_PX = 196;
 const TTS_STATUS_PANEL_EXTRA_SPACER_PX = 212;
 const TTS_SWIPE_THRESHOLD_PX = 48;
+const TTS_PLAY_BUTTON_LONG_PRESS_MS = 450;
 
 interface ChatViewProps {
   session: ChatSession;
@@ -67,6 +68,7 @@ export default function ChatView({
   const [showChunkTextPanel, setShowChunkTextPanel] = useState(false);
   const [showVoiceMenu, setShowVoiceMenu] = useState(false);
   const [showTtsStatusPanel, setShowTtsStatusPanel] = useState(false);
+  const [showTtsSpeedModal, setShowTtsSpeedModal] = useState(false);
   const [ttsAutoScrollEnabled, setTtsAutoScrollEnabled] = useState(false);
   const [ttsVoices, setTtsVoices] = useState<TtsVoiceReference[]>([]);
   const [selectedTtsVoiceId, setSelectedTtsVoiceId] = useState<string | null>(null);
@@ -82,6 +84,8 @@ export default function ChatView({
   const [ttsLogsLoading, setTtsLogsLoading] = useState(false);
   const [ttsLogsError, setTtsLogsError] = useState<string | null>(null);
   const chunkPanelTouchStartRef = useRef<{ x: number; y: number } | null>(null);
+  const playButtonLongPressTimerRef = useRef<number | null>(null);
+  const suppressPlayButtonClickRef = useRef(false);
 
   // Initialize chunked TTS hook
   const {
@@ -94,6 +98,8 @@ export default function ChatView({
     error: ttsError,
     activeMessageId: ttsActiveMessageId,
     chunks: ttsChunks,
+    playbackSpeed: ttsPlaybackSpeed,
+    setPlaybackSpeed: ttsSetPlaybackSpeed,
     startPlayback,
     pause: ttsPause,
     resume: ttsResume,
@@ -168,6 +174,7 @@ export default function ChatView({
       setShowChunkTextPanel(false);
       setShowVoiceMenu(false);
       setShowTtsStatusPanel(false);
+      setShowTtsSpeedModal(false);
     }
   }, [hasTtsOverlay, ttsTotalChunks]);
 
@@ -450,6 +457,45 @@ export default function ChatView({
     setTtsLogsError(null);
   };
 
+  const clearPlayButtonLongPress = () => {
+    if (playButtonLongPressTimerRef.current !== null) {
+      window.clearTimeout(playButtonLongPressTimerRef.current);
+      playButtonLongPressTimerRef.current = null;
+    }
+  };
+
+  const handlePlayButtonPointerDown = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+
+    clearPlayButtonLongPress();
+    playButtonLongPressTimerRef.current = window.setTimeout(() => {
+      suppressPlayButtonClickRef.current = true;
+      setShowTtsSpeedModal(true);
+    }, TTS_PLAY_BUTTON_LONG_PRESS_MS);
+  };
+
+  const handlePlayButtonPointerUp = () => {
+    clearPlayButtonLongPress();
+  };
+
+  const handlePlayButtonClick = async () => {
+    if (suppressPlayButtonClickRef.current) {
+      suppressPlayButtonClickRef.current = false;
+      return;
+    }
+
+    if (ttsIsPlaying || ttsIsLoading) {
+      await ttsPause();
+      return;
+    }
+
+    await ttsResume();
+  };
+
+  useEffect(() => () => {
+    clearPlayButtonLongPress();
+  }, []);
+
   const handleChunkPanelTouchStart = (event: ReactTouchEvent<HTMLDivElement>) => {
     const touch = event.touches[0];
     if (!touch) return;
@@ -692,6 +738,58 @@ export default function ChatView({
         </div>
       )}
 
+      {showTtsSpeedModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 px-4 dark:bg-black/65">
+          <div className="w-full max-w-sm rounded-2xl border border-gray-200 bg-white p-4 shadow-2xl dark:border-gray-700 dark:bg-gray-900">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h2 className="text-sm font-semibold text-gray-900 dark:text-white">Playback Speed</h2>
+                <p className="text-xs text-gray-500 dark:text-gray-400">Adjust TTS speed from 0.5x to 3x.</p>
+              </div>
+              <button
+                onClick={() => setShowTtsSpeedModal(false)}
+                className="rounded-md p-1 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-white"
+                title="Close speed controls"
+              >
+                <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="mt-5">
+              <div className="mb-2 flex items-center justify-between text-xs font-medium text-gray-500 dark:text-gray-400">
+                <span>0.5x</span>
+                <span className="rounded-full bg-gray-100 px-2 py-1 text-gray-900 dark:bg-gray-800 dark:text-white">
+                  {ttsPlaybackSpeed.toFixed(2).replace(/\.00$/, "") }x
+                </span>
+                <span>3x</span>
+              </div>
+              <input
+                type="range"
+                min="0.5"
+                max="3"
+                step="0.05"
+                value={ttsPlaybackSpeed}
+                onChange={(event) => {
+                  void ttsSetPlaybackSpeed(Number(event.target.value));
+                }}
+                className="w-full accent-gray-900 dark:accent-gray-200"
+              />
+            </div>
+
+            <div className="mt-4 flex justify-end">
+              <button
+                onClick={() => setShowTtsSpeedModal(false)}
+                className="rounded-lg bg-gray-900 px-3 py-1.5 text-sm text-white transition-colors hover:bg-gray-800 dark:bg-gray-700 dark:hover:bg-gray-600"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Input */}
       <div className="min-h-[3.5rem] flex items-end border-t border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 flex-shrink-0 py-2 relative">
         {hasTtsOverlay && (
@@ -919,9 +1017,14 @@ export default function ChatView({
                   </button>
 
                   <button
-                    onClick={() => (ttsIsPlaying || ttsIsLoading) ? void ttsPause() : void ttsResume()}
+                    onClick={() => void handlePlayButtonClick()}
+                    onPointerDown={handlePlayButtonPointerDown}
+                    onPointerUp={handlePlayButtonPointerUp}
+                    onPointerLeave={handlePlayButtonPointerUp}
+                    onPointerCancel={handlePlayButtonPointerUp}
+                    onContextMenu={(event) => event.preventDefault()}
                     className="p-1 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-full transition-colors sm:p-1.5"
-                    title={(ttsIsPlaying || ttsIsLoading) ? "Pause" : "Resume"}
+                    title={`${(ttsIsPlaying || ttsIsLoading) ? "Pause" : "Resume"} (long press for speed)`}
                   >
                     {(ttsIsPlaying || ttsIsLoading) ? (
                       <svg className="w-3.5 h-3.5 sm:w-4 sm:h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z" /></svg>

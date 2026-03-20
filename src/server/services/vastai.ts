@@ -66,6 +66,8 @@ export interface TtsStatusSnapshot {
   };
 }
 
+type DestroyReason = "manual-stop" | "manual-recreate" | "idle-timeout" | "duplicate-cleanup" | "stale-startup";
+
 // In-memory instance state (would be persisted to DB in production)
 let activeInstance: VastInstance | null = null;
 let instanceStartupPromise: Promise<VastInstance> | null = null;
@@ -620,7 +622,7 @@ export async function createInstance(offerId: string, generation: number): Promi
   });
 
   if (generation !== instanceStartupGeneration) {
-    await destroyInstance(instanceId).catch(() => {});
+    await destroyInstance(instanceId, { reason: "stale-startup" }).catch(() => {});
     throw new Error("Stale instance provisioning request");
   }
 
@@ -801,7 +803,7 @@ export async function requestInstanceLogs(instanceId: string, tail: number = 400
   return await logResponse.text();
 }
 
-async function selectManagedInstance(): Promise<VastInstance | null> {
+async function selectManagedInstance(preferredInstanceId?: string | null): Promise<VastInstance | null> {
   const instances = await fetchManagedInstances();
   if (instances.length === 0) {
     activeInstance = null;
@@ -809,7 +811,7 @@ async function selectManagedInstance(): Promise<VastInstance | null> {
     return null;
   }
 
-  const preferredId = activeInstance?.id || lifecycleState.instanceId;
+  const preferredId = preferredInstanceId || activeInstance?.id || lifecycleState.instanceId;
   const sortedInstances = [...instances].sort((a: any, b: any) => {
     if (preferredId) {
       if (a.id.toString() === preferredId) return -1;
@@ -833,10 +835,13 @@ async function selectManagedInstance(): Promise<VastInstance | null> {
   emitStatusUpdate();
 
   for (const duplicate of sortedInstances.slice(1)) {
+    if (preferredId && duplicate.id.toString() === preferredId) {
+      continue;
+    }
     try {
       rememberMachineId(getMachineId(duplicate));
-      console.log(`[VastTTS] Destroying duplicate managed instance ${duplicate.id}`);
-      await destroyInstance(duplicate.id.toString(), { preserveLifecycle: true });
+      console.log(`[VastTTS] Destroying duplicate managed instance ${duplicate.id} [reason=duplicate-cleanup]`);
+      await destroyInstance(duplicate.id.toString(), { preserveLifecycle: true, reason: "duplicate-cleanup" });
     } catch (error) {
       console.error(`[VastTTS] Failed to destroy duplicate instance ${duplicate.id}:`, error);
     }
@@ -878,7 +883,7 @@ export async function findAndAdoptExistingInstance(): Promise<VastInstance | nul
   });
 
   try {
-    const candidate = await selectManagedInstance();
+    const candidate = await selectManagedInstance(activeInstance?.id || lifecycleState.instanceId);
     if (!candidate) {
       console.log("[VastTTS] No existing managed instances found");
       return null;
@@ -1128,7 +1133,8 @@ export async function generateSpeech(
 /**
  * Destroy a Vast.ai instance
  */
-export async function destroyInstance(instanceId: string, options?: { preserveLifecycle?: boolean }): Promise<void> {
+export async function destroyInstance(instanceId: string, options?: { preserveLifecycle?: boolean; reason?: DestroyReason }): Promise<void> {
+  const reason = options?.reason || "manual-stop";
   if (!options?.preserveLifecycle) {
     updateLifecycleState({
       phase: "stopping",
@@ -1164,7 +1170,7 @@ export async function destroyInstance(instanceId: string, options?: { preserveLi
     emitStatusUpdate();
   }
 
-  console.log(`[VastTTS] Instance ${instanceId} destroyed`);
+  console.log(`[VastTTS] Instance ${instanceId} destroyed [reason=${reason}]`);
   if (!options?.preserveLifecycle) {
     setLifecycleIdle("No GPU instance is active.");
   }
@@ -1228,7 +1234,7 @@ export async function startInstance(instanceId: string): Promise<void> {
  * Stop an instance by destroying it
  */
 export async function stopInstance(instanceId: string): Promise<void> {
-  await destroyInstance(instanceId);
+  await destroyInstance(instanceId, { reason: "manual-stop" });
 }
 
 function getRecentMachineIdsToAvoid(extraMachineIds: string[] = []): Set<string> {
@@ -1266,7 +1272,7 @@ export async function recreateInstance(): Promise<VastInstance> {
 
   for (const instance of instances) {
     try {
-      await destroyInstance(instance.id.toString());
+      await destroyInstance(instance.id.toString(), { reason: "manual-recreate" });
     } catch (error) {
       console.error(`[VastTTS] Failed to destroy instance ${instance.id} during recreate:`, error);
     }
@@ -1481,7 +1487,7 @@ function resetInactivityTimer(): void {
     if (activeInstance) {
       console.log(`[VastTTS] Instance ${activeInstance.id} inactive for 60 minutes, destroying...`);
       try {
-        await destroyInstance(activeInstance.id);
+        await destroyInstance(activeInstance.id, { reason: "idle-timeout" });
       } catch (error) {
         console.error("[VastTTS] Failed to destroy inactive instance:", error);
       }
@@ -1506,7 +1512,8 @@ function clearInactivityTimer(): void {
 export async function cleanupDuplicateInstances(): Promise<void> {
   try {
     console.log("[VastTTS] Running cleanup: checking for duplicate instances...");
-    const selectedInstance = await selectManagedInstance();
+    const protectedInstanceId = activeInstance?.id || lifecycleState.instanceId;
+    const selectedInstance = await selectManagedInstance(protectedInstanceId);
 
     if (!selectedInstance) {
       console.log("[VastTTS] Cleanup: No managed instances found");
