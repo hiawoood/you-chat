@@ -1043,6 +1043,51 @@ async function waitForHealthyService(instance: VastInstance, maxAttempts = HEALT
   throw new Error(`Instance ${instance.id} is still warming up. You can wait longer or recreate it manually.`);
 }
 
+async function probeInstanceHealthDirect(instance: VastInstance): Promise<boolean> {
+  if (!instance.ip || !instance.port) return false;
+
+  try {
+    const response = await fetch(`${getInstanceBaseUrl(instance)}/healthz`, {
+      signal: AbortSignal.timeout(15000),
+    });
+
+    if (!response.ok) {
+      updateKnownServiceHealth(false);
+      return false;
+    }
+
+    const data = await response.json();
+    const nextHealth = data.status === "ok";
+    updateKnownServiceHealth(nextHealth);
+    return nextHealth;
+  } catch {
+    updateKnownServiceHealth(false);
+    return false;
+  }
+}
+
+function isRecoverableSpeechFailure(errorText: string | null, statusCode: number | null): boolean {
+  if (statusCode !== null && statusCode >= 500) {
+    return true;
+  }
+
+  if (!errorText) {
+    return true;
+  }
+
+  const normalized = errorText.toLowerCase();
+  return [
+    "aborterror",
+    "domexception",
+    "networkerror",
+    "failed to fetch",
+    "fetch",
+    "timeout",
+    "network",
+    "terminated",
+  ].some((fragment) => normalized.includes(fragment));
+}
+
 async function continueProvisioningInstance(instance: VastInstance, generation: number): Promise<VastInstance> {
   const readyInfo = await pollInstanceReady(instance.id, generation);
   activeInstance = {
@@ -1078,6 +1123,7 @@ export async function generateSpeech(
   const audioBuffer = await runExclusiveTtsServiceRequest("tts", async () => {
     let response: Response | null = null;
     let lastError: string | null = null;
+    let lastStatusCode: number | null = null;
 
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
@@ -1096,10 +1142,11 @@ export async function generateSpeech(
         );
 
         if (response.ok) {
-          lastKnownServiceHealth = true;
+          updateKnownServiceHealth(true);
           return await response.arrayBuffer();
         }
 
+        lastStatusCode = response.status;
         lastError = await response.text();
         if (attempt < 2) {
           updateLifecycleState({
@@ -1117,6 +1164,7 @@ export async function generateSpeech(
         }
       } catch (error) {
         lastError = error instanceof Error ? error.message : "Unknown TTS request error";
+        lastStatusCode = null;
         if (attempt < 2) {
           updateLifecycleState({
             phase: "polling",
@@ -1134,7 +1182,53 @@ export async function generateSpeech(
       }
     }
 
-    lastKnownServiceHealth = false;
+    const canRetryAfterProbe = isRecoverableSpeechFailure(lastError, lastStatusCode);
+    if (canRetryAfterProbe) {
+      updateLifecycleState({
+        phase: "polling",
+        message: "Checking TTS service health before retrying...",
+        provisioning: true,
+        instanceId: instance.id,
+        offerId: null,
+        searchRound: null,
+        pollAttempt: null,
+        lastError,
+      });
+
+      const healthy = await probeInstanceHealthDirect(instance);
+      if (healthy) {
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+
+        try {
+          response = await fetch(
+            `${getInstanceBaseUrl(instance)}/tts`,
+            {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                text: request.text,
+              }),
+              signal: AbortSignal.timeout(180000),
+            }
+          );
+
+          if (response.ok) {
+            updateKnownServiceHealth(true);
+            return await response.arrayBuffer();
+          }
+
+          lastStatusCode = response.status;
+          lastError = await response.text();
+        } catch (error) {
+          lastError = error instanceof Error ? error.message : "Unknown TTS request error";
+          lastStatusCode = null;
+        }
+      }
+    }
+
+    updateKnownServiceHealth(false);
     throw new Error(`TTS generation failed: ${lastError || "Unknown error"}`);
   });
 
