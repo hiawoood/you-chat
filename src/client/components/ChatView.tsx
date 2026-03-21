@@ -192,7 +192,7 @@ export default function ChatView({
     )
     : 0;
   const motionAutoStopLabel = ttsMotionAutoStopEnabled && ttsMotionIdleRemainingMs !== null
-    ? `${ttsMotionFadeActive ? "Fading" : "Stop in"} ${formatCountdown(ttsMotionIdleRemainingMs)}`
+    ? `${ttsMotionFadeActive ? "Fade" : "Stop"} ${formatCountdown(ttsMotionIdleRemainingMs)}`
     : null;
 
   useEffect(() => {
@@ -570,7 +570,7 @@ export default function ChatView({
   const hasActiveStream = isStreaming || isCompacting || hasInFlightStream;
 
   return (
-    <div className="flex flex-col h-full bg-white dark:bg-gray-900">
+    <div className="relative flex flex-col h-full bg-white dark:bg-gray-900">
       {/* Header wrapper - collapses on mobile scroll-down */}
       <div className={`overflow-hidden transition-all duration-300 ease-in-out flex-shrink-0 lg:!max-h-12 ${hideHeader ? "max-h-0" : "max-h-12"}`}>
         <div className="h-12 flex items-center px-3 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 gap-2">
@@ -660,6 +660,22 @@ export default function ChatView({
           </div>
         </div>
       </div>
+
+      {motionAutoStopLabel && (
+        <div
+          className={`pointer-events-none absolute left-1/2 z-20 -translate-x-1/2 transition-all duration-300 ease-in-out ${hideHeader ? "top-2" : "top-14"}`}
+        >
+          <div
+            className={`flex items-center gap-1 rounded-full border px-2.5 py-1 text-[10px] font-medium tabular-nums shadow-sm backdrop-blur sm:text-[11px] ${ttsMotionFadeActive ? "border-amber-200 bg-amber-50/95 text-amber-700 dark:border-amber-800 dark:bg-amber-950/85 dark:text-amber-300" : "border-sky-200 bg-sky-50/95 text-sky-700 dark:border-sky-800 dark:bg-sky-950/85 dark:text-sky-300"}`}
+            title="Countdown until playback fades out and stops if the phone stays still"
+          >
+            <svg className="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l2.5 2.5M9 3h6M12 5a8 8 0 100 16 8 8 0 000-16z" />
+            </svg>
+            <span>{motionAutoStopLabel}</span>
+          </div>
+        </div>
+      )}
 
       {/* Messages */}
       <div
@@ -1078,15 +1094,6 @@ export default function ChatView({
                       </svg>
                     )}
                   </div>
-
-                  {motionAutoStopLabel && (
-                    <div
-                      className={`rounded-full px-2 py-1 text-[10px] font-medium tabular-nums sm:text-[11px] ${ttsMotionFadeActive ? "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300" : "bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300"}`}
-                      title="Countdown until playback fades out and stops if the phone stays still"
-                    >
-                      {motionAutoStopLabel}
-                    </div>
-                  )}
 
                   {(isTtsProvisioning || !!ttsServiceStatus?.instance || !!ttsServiceStatusError) && (
                     <button
