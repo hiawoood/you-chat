@@ -27,6 +27,7 @@ interface NativeTtsPlugin {
     voiceReferenceId?: string | null;
     playbackSpeed: number;
     baseUrl: string;
+    streaming?: boolean;
   }): Promise<void>;
   pause(): Promise<void>;
   resume(): Promise<void>;

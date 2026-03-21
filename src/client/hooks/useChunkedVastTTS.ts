@@ -923,6 +923,7 @@ export function useChunkedVastTTS() {
         voiceReferenceId,
         playbackSpeed: playbackSpeedRef.current,
         baseUrl: window.location.origin,
+        streaming: Boolean(options.streaming),
       });
       return;
     }

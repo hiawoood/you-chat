@@ -16,7 +16,7 @@ const TTS_VOICE_PANEL_EXTRA_SPACER_PX = 196;
 const TTS_STATUS_PANEL_EXTRA_SPACER_PX = 212;
 const TTS_SWIPE_THRESHOLD_PX = 48;
 const TTS_PLAY_BUTTON_LONG_PRESS_MS = 450;
-const STREAMING_TTS_MESSAGE_ID = "streaming";
+const STREAMING_TTS_PLACEHOLDER_ID = "streaming";
 
 interface ChatViewProps {
   session: ChatSession;
@@ -56,6 +56,7 @@ export default function ChatView({
   actionLoading,
 }: ChatViewProps) {
   const [streamingContent, setStreamingContent] = useState("");
+  const [streamingAssistantMessageId, setStreamingAssistantMessageId] = useState<string | null>(null);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [collapsedIds, setCollapsedIds] = useState<Set<string>>(new Set());
   const [compactTarget, setCompactTarget] = useState<Message | null>(null);
@@ -81,6 +82,7 @@ export default function ChatView({
   const [ttsInstanceActionLoading, setTtsInstanceActionLoading] = useState(false);
   const [showTtsLogsModal, setShowTtsLogsModal] = useState(false);
   const [ttsLogsContent, setTtsLogsContent] = useState("");
+  const activeStreamingTtsMessageId = streamingAssistantMessageId ?? STREAMING_TTS_PLACEHOLDER_ID;
   const [ttsLogsInstanceId, setTtsLogsInstanceId] = useState<string | null>(null);
   const [ttsLogsLoading, setTtsLogsLoading] = useState(false);
   const [ttsLogsError, setTtsLogsError] = useState<string | null>(null);
@@ -279,6 +281,9 @@ export default function ChatView({
         pendingTempIdRef.current = null;
       }
     },
+    onAssistantMessageId: (messageId) => {
+      setStreamingAssistantMessageId(messageId);
+    },
     onThinking: (status) => {
       setThinkingStatus(status);
     },
@@ -299,6 +304,7 @@ export default function ChatView({
         created_at: Math.floor(Date.now() / 1000),
       });
       void syncActiveStreamingTtsToFinalMessage(messageId, finalContent);
+      setStreamingAssistantMessageId(null);
       streamingContentRef.current = "";
       setStreamingContent("");
     },
@@ -308,6 +314,7 @@ export default function ChatView({
     onError: (error) => {
       console.error("Chat error:", error);
       setThinkingStatus(null);
+      setStreamingAssistantMessageId(null);
       streamingContentRef.current = "";
       setStreamingContent("");
     },
@@ -338,6 +345,7 @@ export default function ChatView({
       created_at: Math.floor(Date.now() / 1000),
     };
     pendingTempIdRef.current = tempId;
+    setStreamingAssistantMessageId(null);
     onMessageSent(userMessage);
     await sendMessage(content);
   };
@@ -364,7 +372,7 @@ export default function ChatView({
   };
 
   const syncActiveStreamingTtsToFinalMessage = async (messageId: string, content: string) => {
-    if (ttsActiveMessageId !== STREAMING_TTS_MESSAGE_ID || (!ttsIsPlaying && !ttsIsLoading) || !content.trim()) {
+    if (ttsActiveMessageId !== STREAMING_TTS_PLACEHOLDER_ID || (!ttsIsPlaying && !ttsIsLoading) || !content.trim()) {
       return;
     }
 
@@ -373,15 +381,15 @@ export default function ChatView({
   };
 
   useEffect(() => {
-    if (ttsActiveMessageId !== STREAMING_TTS_MESSAGE_ID || !streamingContent.trim()) {
+    if (ttsActiveMessageId !== activeStreamingTtsMessageId || !streamingContent.trim()) {
       return;
     }
 
-    void syncStreamingPlayback(streamingContent, STREAMING_TTS_MESSAGE_ID, selectedTtsVoiceId);
-  }, [selectedTtsVoiceId, streamingContent, syncStreamingPlayback, ttsActiveMessageId]);
+    void syncStreamingPlayback(streamingContent, activeStreamingTtsMessageId, selectedTtsVoiceId);
+  }, [activeStreamingTtsMessageId, selectedTtsVoiceId, streamingContent, syncStreamingPlayback, ttsActiveMessageId]);
 
   const handleToggleTTS = async (messageId: string, content: string) => {
-    if (messageId === STREAMING_TTS_MESSAGE_ID) {
+    if (messageId === activeStreamingTtsMessageId && !!streamingContent.trim()) {
       const voiceId = await resolvePlaybackVoiceId();
 
       if (ttsActiveMessageId === messageId && (ttsIsPlaying || ttsIsLoading)) {
@@ -389,7 +397,7 @@ export default function ChatView({
         return;
       }
 
-       if (ttsActiveMessageId === messageId && ttsIsPaused) {
+      if (ttsActiveMessageId === messageId && ttsIsPaused) {
         await ttsResume();
         return;
       }
@@ -415,7 +423,7 @@ export default function ChatView({
     }
 
     const voiceId = await resolvePlaybackVoiceId();
-    await startPlayback(content, messageId, chunkIndex, voiceId, { streaming: messageId === STREAMING_TTS_MESSAGE_ID });
+    await startPlayback(content, messageId, chunkIndex, voiceId, { streaming: messageId === activeStreamingTtsMessageId });
   };
 
   const handleCompactGenerate = async ({
@@ -467,8 +475,8 @@ export default function ChatView({
       setShowVoiceMenu(false);
 
       if (ttsActiveMessageId && (ttsIsPlaying || ttsIsLoading)) {
-        if (ttsActiveMessageId === STREAMING_TTS_MESSAGE_ID && streamingContentRef.current.trim()) {
-          await startPlayback(streamingContentRef.current, STREAMING_TTS_MESSAGE_ID, ttsCurrentChunk, voiceId, { streaming: true });
+        if (ttsActiveMessageId === activeStreamingTtsMessageId && streamingContentRef.current.trim()) {
+          await startPlayback(streamingContentRef.current, activeStreamingTtsMessageId, ttsCurrentChunk, voiceId, { streaming: true });
         } else {
           const activeMessage = messages.find((message) => message.id === ttsActiveMessageId);
           if (activeMessage) {
@@ -740,6 +748,7 @@ export default function ChatView({
             <MessageList
               messages={messages}
               streamingContent={streamingContent}
+              streamingMessageId={streamingAssistantMessageId}
               thinkingStatus={thinkingStatus}
               onEditMessage={handleEditMessage}
               onDeleteMessage={onDeleteMessage}
@@ -1235,6 +1244,7 @@ export default function ChatView({
               onClick={async () => {
                 const stopRequest = onStopGeneration?.();
                 stopGeneration();
+                setStreamingAssistantMessageId(null);
                 setStreamingContent("");
                 setThinkingStatus(null);
                 await stopRequest;

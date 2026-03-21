@@ -13,6 +13,7 @@ const MOBILE_EDIT_MEDIA_QUERY = "(max-width: 768px), (pointer: coarse)";
 interface MessageListProps {
   messages: Message[];
   streamingContent: string;
+  streamingMessageId?: string | null;
   thinkingStatus?: string | null;
   onEditMessage?: (messageId: string, content: string) => void;
   onDeleteMessage?: (messageId: string) => void;
@@ -58,6 +59,7 @@ function formatTime(ts: number): string {
 export default function MessageList({
   messages,
   streamingContent,
+  streamingMessageId,
   thinkingStatus,
   onEditMessage,
   onDeleteMessage,
@@ -91,7 +93,7 @@ export default function MessageList({
     ...messages,
     ...(streamingContent
       ? [{
-          id: "streaming",
+          id: streamingMessageId || "streaming",
           session_id: "",
           role: "assistant" as const,
           content: streamingContent,

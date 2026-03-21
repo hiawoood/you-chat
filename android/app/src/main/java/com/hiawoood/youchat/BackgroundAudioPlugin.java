@@ -50,6 +50,7 @@ public class BackgroundAudioPlugin extends Plugin {
         intent.putExtra(BackgroundPlaybackService.EXTRA_START_CHUNK_INDEX, call.getInt("startChunkIndex", 0));
         intent.putExtra(BackgroundPlaybackService.EXTRA_BASE_URL, baseUrl);
         intent.putExtra(BackgroundPlaybackService.EXTRA_PLAYBACK_SPEED, call.getDouble("playbackSpeed", 1d).floatValue());
+        intent.putExtra(BackgroundPlaybackService.EXTRA_STREAMING_PLAYBACK, call.getBoolean("streaming", false));
 
         String voiceReferenceId = call.getString("voiceReferenceId");
         if (voiceReferenceId != null) {

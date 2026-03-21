@@ -56,6 +56,8 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class BackgroundPlaybackService extends Service {
     public static final String ACTION_START_PLAYBACK = "com.hiawoood.youchat.action.START_PLAYBACK";
@@ -77,6 +79,7 @@ public class BackgroundPlaybackService extends Service {
     public static final String EXTRA_BASE_URL = "baseUrl";
     public static final String EXTRA_CHUNK_INDEX = "chunkIndex";
     public static final String EXTRA_MOTION_AUTO_STOP_ENABLED = "motionAutoStopEnabled";
+    public static final String EXTRA_STREAMING_PLAYBACK = "streamingPlayback";
 
     private static final String CHANNEL_ID = "you-chat-tts-playback";
     private static final int NOTIFICATION_ID = 4207;
@@ -87,9 +90,12 @@ public class BackgroundPlaybackService extends Service {
     private static final long MOTION_STATUS_UPDATE_INTERVAL_MS = 1000L;
     private static final long MOTION_FADE_UPDATE_INTERVAL_MS = 250L;
     private static final long MOTION_RESET_MIN_INTERVAL_MS = 1500L;
+    private static final long STREAMING_CHUNK_POLL_INTERVAL_MS = 1500L;
     private static final float LINEAR_ACCELERATION_THRESHOLD = 1.35f;
     private static final float ACCELEROMETER_THRESHOLD = 1.8f;
     private static final float ACCELEROMETER_GRAVITY_ALPHA = 0.8f;
+    private static final int TTS_TARGET_WORDS_PER_CHUNK = 60;
+    private static final Pattern STREAMING_SENTENCE_PATTERN = Pattern.compile("[^.!?]+(?:[.!?]+[\\\"')\\]]*|$)");
 
     private static volatile BackgroundPlaybackService instance;
 
@@ -120,6 +126,9 @@ public class BackgroundPlaybackService extends Service {
     private boolean isPlaying = false;
     private boolean isPaused = false;
     private String errorMessage = null;
+    private boolean activeMessageStreamingPlayback = false;
+    private boolean waitingForStreamingChunks = false;
+    private boolean streamingChunkPollInFlight = false;
     private boolean motionAutoStopEnabled = false;
     private boolean motionFadeActive = false;
     private boolean motionSensorRegistered = false;
@@ -132,6 +141,12 @@ public class BackgroundPlaybackService extends Service {
         @Override
         public void run() {
             handleMotionAutoStopTick();
+        }
+    };
+    private final Runnable streamingChunkPollRunnable = new Runnable() {
+        @Override
+        public void run() {
+            pollStreamingChunkState();
         }
     };
 
@@ -226,6 +241,9 @@ public class BackgroundPlaybackService extends Service {
         activeMessageId = intent.getStringExtra(EXTRA_MESSAGE_ID);
         baseUrl = intent.getStringExtra(EXTRA_BASE_URL);
         voiceReferenceId = intent.getStringExtra(EXTRA_VOICE_REFERENCE_ID);
+        activeMessageStreamingPlayback = intent.getBooleanExtra(EXTRA_STREAMING_PLAYBACK, false);
+        waitingForStreamingChunks = false;
+        streamingChunkPollInFlight = false;
         playbackSpeed = intent.getFloatExtra(EXTRA_PLAYBACK_SPEED, 1f);
         currentChunkIndex = Math.max(0, intent.getIntExtra(EXTRA_START_CHUNK_INDEX, 0));
         loadingChunkIndex = currentChunkIndex;
@@ -242,6 +260,7 @@ public class BackgroundPlaybackService extends Service {
 
         resetMotionAutoStopWindow(false);
         updateMotionMonitoringState();
+        updateStreamingChunkPollingState();
 
         publishState();
         playChunk(currentChunkIndex, generation);
@@ -259,8 +278,10 @@ public class BackgroundPlaybackService extends Service {
         isLoading = true;
         isPlaying = false;
         isPaused = false;
+        waitingForStreamingChunks = false;
         errorMessage = null;
         updateMotionMonitoringState();
+        updateStreamingChunkPollingState();
         publishState();
 
         ensurePrefetch(chunkIndex, generation);
@@ -351,10 +372,12 @@ public class BackgroundPlaybackService extends Service {
                 isLoading = false;
                 isPlaying = true;
                 isPaused = false;
+                waitingForStreamingChunks = false;
                 errorMessage = null;
                 ensurePrefetch(chunkIndex + 1, generation);
                 saveProgress(chunkIndex);
                 updateMotionMonitoringState();
+                updateStreamingChunkPollingState();
                 publishState();
             });
             mediaPlayer.setOnCompletionListener(player -> handleChunkCompleted(chunkIndex, generation));
@@ -365,6 +388,7 @@ public class BackgroundPlaybackService extends Service {
                 isPaused = true;
                 loadingChunkIndex = -1;
                 updateMotionMonitoringState();
+                updateStreamingChunkPollingState();
                 publishState();
                 return true;
             });
@@ -376,6 +400,7 @@ public class BackgroundPlaybackService extends Service {
             isPaused = true;
             loadingChunkIndex = -1;
             updateMotionMonitoringState();
+            updateStreamingChunkPollingState();
             publishState();
         }
     }
@@ -385,6 +410,16 @@ public class BackgroundPlaybackService extends Service {
 
         int nextChunkIndex = completedChunkIndex + 1;
         if (nextChunkIndex >= chunkTexts.size()) {
+            if (activeMessageStreamingPlayback) {
+                waitingForStreamingChunks = true;
+                loadingChunkIndex = -1;
+                isLoading = true;
+                isPlaying = false;
+                isPaused = false;
+                updateStreamingChunkPollingState();
+                publishState();
+                return;
+            }
             completePlayback();
             return;
         }
@@ -400,22 +435,31 @@ public class BackgroundPlaybackService extends Service {
         isPlaying = false;
         isPaused = true;
         updateMotionMonitoringState();
+        updateStreamingChunkPollingState();
         publishState();
     }
 
     private void resumePlayback() {
+        if (waitingForStreamingChunks) {
+            updateStreamingChunkPollingState();
+            publishState();
+            return;
+        }
+
         if (mediaPlayer != null && !mediaPlayer.isPlaying() && !isLoading) {
             mediaPlayer.start();
             isPlaying = true;
             isPaused = false;
             resetMotionAutoStopWindow(false);
             updateMotionMonitoringState();
+            updateStreamingChunkPollingState();
             publishState();
             return;
         }
 
         resetMotionAutoStopWindow(false);
         updateMotionMonitoringState();
+        updateStreamingChunkPollingState();
         playChunk(currentChunkIndex, sessionGeneration.get());
     }
 
@@ -459,11 +503,169 @@ public class BackgroundPlaybackService extends Service {
             loadingChunkIndex = chunkTexts.size() - 1;
         }
 
-        if ((isLoading || isPlaying) && chunkTexts.size() > previousSize) {
+        if ((isLoading || isPlaying || waitingForStreamingChunks) && chunkTexts.size() > previousSize) {
             ensurePrefetch(Math.max(currentChunkIndex, 0), sessionGeneration.get());
         }
 
+        if (waitingForStreamingChunks && currentChunkIndex + 1 < chunkTexts.size()) {
+            waitingForStreamingChunks = false;
+            playChunk(currentChunkIndex + 1, sessionGeneration.get());
+            return;
+        }
+
         publishState();
+    }
+
+    private void updateStreamingChunkPollingState() {
+        mainHandler.removeCallbacks(streamingChunkPollRunnable);
+        if (!shouldPollStreamingChunks()) {
+            return;
+        }
+        mainHandler.postDelayed(streamingChunkPollRunnable, STREAMING_CHUNK_POLL_INTERVAL_MS);
+    }
+
+    private boolean shouldPollStreamingChunks() {
+        return activeMessageStreamingPlayback && activeMessageId != null && baseUrl != null && !baseUrl.isEmpty();
+    }
+
+    private void pollStreamingChunkState() {
+        if (!shouldPollStreamingChunks() || streamingChunkPollInFlight) {
+            return;
+        }
+
+        streamingChunkPollInFlight = true;
+        final String messageId = activeMessageId;
+        final String requestBaseUrl = baseUrl;
+
+        metadataExecutor.submit(() -> {
+            HttpURLConnection connection = null;
+
+            try {
+                URL url = new URL(requestBaseUrl + "/api/chat/poll/" + messageId);
+                connection = (HttpURLConnection) url.openConnection();
+                connection.setRequestMethod("GET");
+                connection.setConnectTimeout(10000);
+                connection.setReadTimeout(15000);
+                connection.setRequestProperty("Accept", "application/json");
+
+                String cookies = CookieManager.getInstance().getCookie(requestBaseUrl);
+                if (cookies != null && !cookies.isEmpty()) {
+                    connection.setRequestProperty("Cookie", cookies);
+                }
+
+                int statusCode = connection.getResponseCode();
+                if (statusCode >= 200 && statusCode < 300) {
+                    JSONObject response = new JSONObject(readStream(connection.getInputStream()));
+                    String content = response.optString("content", "");
+                    boolean stillStreaming = "streaming".equalsIgnoreCase(response.optString("status", ""));
+                    ArrayList<String> updatedChunks = buildStreamingChunks(content);
+
+                    mainHandler.post(() -> applyPolledStreamingChunks(messageId, updatedChunks, stillStreaming));
+                }
+            } catch (Exception ignored) {
+            } finally {
+                if (connection != null) {
+                    connection.disconnect();
+                }
+
+                mainHandler.post(() -> {
+                    streamingChunkPollInFlight = false;
+                    if (shouldPollStreamingChunks()) {
+                        updateStreamingChunkPollingState();
+                    }
+                });
+            }
+        });
+    }
+
+    private void applyPolledStreamingChunks(String messageId, ArrayList<String> updatedChunks, boolean stillStreaming) {
+        if (activeMessageId == null || !activeMessageId.equals(messageId)) {
+            return;
+        }
+
+        if (!stillStreaming) {
+            activeMessageStreamingPlayback = false;
+        }
+
+        if (!updatedChunks.equals(chunkTexts)) {
+            int previousSize = chunkTexts.size();
+            chunkTexts = updatedChunks;
+            trimPreparedChunks(chunkTexts.size());
+
+            if ((isLoading || isPlaying || waitingForStreamingChunks) && chunkTexts.size() > previousSize) {
+                ensurePrefetch(Math.max(currentChunkIndex, 0), sessionGeneration.get());
+            }
+
+            if (chunkTexts.isEmpty()) {
+                if (!activeMessageStreamingPlayback && waitingForStreamingChunks) {
+                    completePlayback();
+                    return;
+                }
+            } else {
+                currentChunkIndex = Math.max(0, Math.min(currentChunkIndex, chunkTexts.size() - 1));
+                if (loadingChunkIndex >= chunkTexts.size()) {
+                    loadingChunkIndex = -1;
+                }
+
+                if (waitingForStreamingChunks && currentChunkIndex + 1 < chunkTexts.size()) {
+                    waitingForStreamingChunks = false;
+                    playChunk(currentChunkIndex + 1, sessionGeneration.get());
+                    return;
+                }
+            }
+        }
+
+        if (!activeMessageStreamingPlayback && waitingForStreamingChunks) {
+            completePlayback();
+            return;
+        }
+
+        publishState();
+    }
+
+    private ArrayList<String> buildStreamingChunks(String text) {
+        ArrayList<String> chunks = new ArrayList<>();
+        if (text == null || text.trim().isEmpty()) {
+            return chunks;
+        }
+
+        Matcher matcher = STREAMING_SENTENCE_PATTERN.matcher(text.trim());
+        StringBuilder currentChunk = new StringBuilder();
+        int currentWordCount = 0;
+
+        while (matcher.find()) {
+            String sentence = matcher.group().trim();
+            if (sentence.isEmpty() || !sentence.matches(".*[.!?]+[\\\"')\\]]*$")) {
+                continue;
+            }
+
+            int sentenceWordCount = countWords(sentence);
+            if (currentWordCount + sentenceWordCount > TTS_TARGET_WORDS_PER_CHUNK && currentChunk.length() > 0) {
+                chunks.add(currentChunk.toString().trim());
+                currentChunk.setLength(0);
+                currentWordCount = 0;
+            }
+
+            if (currentChunk.length() > 0) {
+                currentChunk.append(' ');
+            }
+            currentChunk.append(sentence);
+            currentWordCount += sentenceWordCount;
+        }
+
+        if (currentChunk.length() > 0) {
+            chunks.add(currentChunk.toString().trim());
+        }
+
+        return chunks;
+    }
+
+    private int countWords(String text) {
+        String trimmed = text == null ? "" : text.trim();
+        if (trimmed.isEmpty()) {
+            return 0;
+        }
+        return trimmed.split("\\s+").length;
     }
 
     private void completePlayback() {
@@ -476,12 +678,16 @@ public class BackgroundPlaybackService extends Service {
         clearPreparedChunks();
         activeMessageId = null;
         chunkTexts = new ArrayList<>();
+        activeMessageStreamingPlayback = false;
+        waitingForStreamingChunks = false;
+        streamingChunkPollInFlight = false;
         currentChunkIndex = 0;
         loadingChunkIndex = -1;
         isLoading = false;
         isPlaying = false;
         isPaused = false;
         errorMessage = null;
+        mainHandler.removeCallbacks(streamingChunkPollRunnable);
         stopMotionAutoStopMonitoring();
         publishState();
 
@@ -738,6 +944,11 @@ public class BackgroundPlaybackService extends Service {
             .addAction(createAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop", ACTION_STOP))
             .setStyle(new MediaStyle().setMediaSession(mediaSession.getSessionToken()).setShowActionsInCompactView(0, 1, 2));
 
+        String countdownText = buildNotificationCountdownText();
+        if (countdownText != null) {
+            builder.setSubText(countdownText);
+        }
+
         if (contentIntent != null) {
             builder.setContentIntent(contentIntent);
         }
@@ -760,10 +971,29 @@ public class BackgroundPlaybackService extends Service {
         if (chunkTexts.isEmpty()) {
             return "TTS playback is ready";
         }
+        if (waitingForStreamingChunks) {
+            return "Waiting for chunk " + (currentChunkIndex + 2) + " of " + chunkTexts.size();
+        }
         if (isLoading && loadingChunkIndex >= 0) {
             return "Loading chunk " + (loadingChunkIndex + 1) + " of " + chunkTexts.size();
         }
         return "Playing chunk " + (currentChunkIndex + 1) + " of " + chunkTexts.size();
+    }
+
+    private String buildNotificationCountdownText() {
+        Long remainingMs = computeMotionAutoStopRemainingMs(System.currentTimeMillis());
+        if (remainingMs == null) {
+            return null;
+        }
+
+        return (motionFadeActive ? "Fade " : "Auto-stop ") + formatDuration(remainingMs);
+    }
+
+    private String formatDuration(long durationMs) {
+        long totalSeconds = Math.max(0L, (durationMs + 999L) / 1000L);
+        long minutes = totalSeconds / 60L;
+        long seconds = totalSeconds % 60L;
+        return String.format(java.util.Locale.US, "%02d:%02d", minutes, seconds);
     }
 
     private void initializeMotionAutoStop() {
@@ -961,7 +1191,7 @@ public class BackgroundPlaybackService extends Service {
         long remainingSeconds = (remainingMs + 999L) / 1000L;
         if (remainingSeconds != motionLastPublishedRemainingSeconds || refreshNotification) {
             motionLastPublishedRemainingSeconds = remainingSeconds;
-            publishState(refreshNotification);
+            publishState(true);
         }
 
         scheduleMotionAutoStopTick(motionFadeActive ? MOTION_FADE_UPDATE_INTERVAL_MS : MOTION_STATUS_UPDATE_INTERVAL_MS);

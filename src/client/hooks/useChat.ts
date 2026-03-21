@@ -4,6 +4,7 @@ interface UseChatOptions {
   sessionId: string;
   onMessage?: (content: string) => void;
   onUserMessageId?: (realId: string) => void;
+  onAssistantMessageId?: (realId: string) => void;
   onDone?: (messageId: string) => void;
   onTitleGenerated?: (title: string) => void;
   onThinking?: (status: string) => void;
@@ -110,12 +111,11 @@ async function pollUntilDone(
 
   while (!signal?.aborted) {
     try {
-      const res = await fetch(`/api/chat/poll/${messageId}`, { credentials: "include", signal });
-      if (!res.ok) {
+      const data = await fetchMessageSnapshot(messageId, signal);
+      if (!data) {
         callbacks.onError?.("Polling failed");
         return;
       }
-      const data = await res.json();
 
       if (data.content && data.content !== lastContent) {
         lastContent = data.content;
@@ -135,7 +135,16 @@ async function pollUntilDone(
   }
 }
 
-export function useChat({ sessionId, onMessage, onUserMessageId, onDone, onTitleGenerated, onThinking, onError }: UseChatOptions) {
+async function fetchMessageSnapshot(messageId: string, signal?: AbortSignal): Promise<{ content: string; status: string } | null> {
+  const res = await fetch(`/api/chat/poll/${messageId}`, { credentials: "include", signal });
+  if (!res.ok) {
+    return null;
+  }
+
+  return res.json();
+}
+
+export function useChat({ sessionId, onMessage, onUserMessageId, onAssistantMessageId, onDone, onTitleGenerated, onThinking, onError }: UseChatOptions) {
   const [isStreaming, setIsStreaming] = useState(false);
   const [isCompacting, setIsCompacting] = useState(false);
   const [thinkingStatus, setThinkingStatus] = useState<string | null>(null);
@@ -158,6 +167,55 @@ export function useChat({ sessionId, onMessage, onUserMessageId, onDone, onTitle
       setThinkingStatus(null);
       let fullContent = "";
       let assistantMsgId: string | null = null;
+      let streamCompleted = false;
+      let didFinish = false;
+      let mirrorPollingStarted = false;
+
+      const applyStreamContent = (content: string) => {
+        if (content === fullContent) return;
+        fullContent = content;
+        setStreamedContent(content);
+        onMessage?.(content);
+      };
+
+      const finishStream = (messageId: string, generatedTitle?: string) => {
+        if (didFinish) return;
+        didFinish = true;
+        streamCompleted = true;
+        setThinkingStatus(null);
+        onDone?.(messageId);
+        if (generatedTitle) onTitleGenerated?.(generatedTitle);
+      };
+
+      const startMirrorPolling = (messageId: string) => {
+        if (mirrorPollingStarted) return;
+        mirrorPollingStarted = true;
+
+        void (async () => {
+          const POLL_INTERVAL = 1500;
+
+          while (!controller.signal.aborted && !streamCompleted) {
+            try {
+              const snapshot = await fetchMessageSnapshot(messageId, controller.signal);
+              if (snapshot) {
+                if (snapshot.content) {
+                  setThinkingStatus(null);
+                  applyStreamContent(snapshot.content);
+                }
+
+                if (snapshot.status !== "streaming") {
+                  finishStream(messageId);
+                  return;
+                }
+              }
+            } catch {
+              if (controller.signal.aborted) return;
+            }
+
+            await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL));
+          }
+        })();
+      };
 
       try {
         const response = await fetch("/api/chat", {
@@ -170,8 +228,6 @@ export function useChat({ sessionId, onMessage, onUserMessageId, onDone, onTitle
 
         if (!response.ok) throw new Error("Failed to send message");
 
-        let streamCompleted = false;
-
         await readStream(response, {
           onThinking: (status) => {
             setThinkingStatus(status);
@@ -179,18 +235,17 @@ export function useChat({ sessionId, onMessage, onUserMessageId, onDone, onTitle
           },
           onDelta: (delta) => {
             setThinkingStatus(null);
-            fullContent += delta;
-            setStreamedContent(fullContent);
-            onMessage?.(fullContent);
+            applyStreamContent(fullContent + delta);
           },
           onUserMessageId,
-          onAssistantMessageId: (id) => { assistantMsgId = id; },
+          onAssistantMessageId: (id) => {
+            assistantMsgId = id;
+            onAssistantMessageId?.(id);
+            startMirrorPolling(id);
+          },
           onDone: (messageId, generatedTitle) => {
-            streamCompleted = true;
             assistantMsgId = messageId;
-            setThinkingStatus(null);
-            onDone?.(messageId);
-            if (generatedTitle) onTitleGenerated?.(generatedTitle);
+            finishStream(messageId, generatedTitle);
           },
           onError: (err) => {
             streamCompleted = true;
@@ -206,13 +261,10 @@ export function useChat({ sessionId, onMessage, onUserMessageId, onDone, onTitle
           await pollUntilDone(assistantMsgId, {
             onContent: (content) => {
               setThinkingStatus(null);
-              fullContent = content;
-              setStreamedContent(content);
-              onMessage?.(content);
+              applyStreamContent(content);
             },
             onDone: (msgId) => {
-              setThinkingStatus(null);
-              onDone?.(msgId);
+              finishStream(msgId);
             },
             onError,
           }, controller.signal);
@@ -226,13 +278,10 @@ export function useChat({ sessionId, onMessage, onUserMessageId, onDone, onTitle
           await pollUntilDone(assistantMsgId, {
             onContent: (content) => {
               setThinkingStatus(null);
-              fullContent = content;
-              setStreamedContent(content);
-              onMessage?.(content);
+              applyStreamContent(content);
             },
             onDone: (msgId) => {
-              setThinkingStatus(null);
-              onDone?.(msgId);
+              finishStream(msgId);
             },
             onError,
           }, controller.signal);
@@ -246,7 +295,7 @@ export function useChat({ sessionId, onMessage, onUserMessageId, onDone, onTitle
         abortRef.current = null;
       }
     },
-    [sessionId, onMessage, onUserMessageId, onDone, onTitleGenerated, onThinking, onError]
+    [sessionId, onAssistantMessageId, onMessage, onUserMessageId, onDone, onTitleGenerated, onThinking, onError]
   );
 
   const regenerate = useCallback(
@@ -257,6 +306,55 @@ export function useChat({ sessionId, onMessage, onUserMessageId, onDone, onTitle
       setStreamedContent("");
       setThinkingStatus(null);
       let fullContent = "";
+      let regenCompleted = false;
+      let regenMsgId: string | null = null;
+      let didFinish = false;
+      let mirrorPollingStarted = false;
+
+      const applyStreamContent = (content: string) => {
+        if (content === fullContent) return;
+        fullContent = content;
+        setStreamedContent(content);
+        onMessage?.(content);
+      };
+
+      const finishRegeneration = (nextMessageId: string) => {
+        if (didFinish) return;
+        didFinish = true;
+        regenCompleted = true;
+        setThinkingStatus(null);
+        onDone?.(nextMessageId);
+      };
+
+      const startMirrorPolling = (nextMessageId: string) => {
+        if (mirrorPollingStarted) return;
+        mirrorPollingStarted = true;
+
+        void (async () => {
+          const POLL_INTERVAL = 1500;
+
+          while (!controller.signal.aborted && !regenCompleted) {
+            try {
+              const snapshot = await fetchMessageSnapshot(nextMessageId, controller.signal);
+              if (snapshot) {
+                if (snapshot.content) {
+                  setThinkingStatus(null);
+                  applyStreamContent(snapshot.content);
+                }
+
+                if (snapshot.status !== "streaming") {
+                  finishRegeneration(nextMessageId);
+                  return;
+                }
+              }
+            } catch {
+              if (controller.signal.aborted) return;
+            }
+
+            await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL));
+          }
+        })();
+      };
 
       try {
         const response = await fetch("/api/chat/regenerate", {
@@ -269,9 +367,6 @@ export function useChat({ sessionId, onMessage, onUserMessageId, onDone, onTitle
 
         if (!response.ok) throw new Error("Failed to regenerate");
 
-        let regenCompleted = false;
-        let regenMsgId: string | null = null;
-
         await readStream(response, {
           onThinking: (status) => {
             setThinkingStatus(status);
@@ -279,15 +374,15 @@ export function useChat({ sessionId, onMessage, onUserMessageId, onDone, onTitle
           },
           onDelta: (delta) => {
             setThinkingStatus(null);
-            fullContent += delta;
-            setStreamedContent(fullContent);
-            onMessage?.(fullContent);
+            applyStreamContent(fullContent + delta);
           },
-          onAssistantMessageId: (id) => { regenMsgId = id; },
+          onAssistantMessageId: (id) => {
+            regenMsgId = id;
+            onAssistantMessageId?.(id);
+            startMirrorPolling(id);
+          },
           onDone: (msgId) => {
-            regenCompleted = true;
-            setThinkingStatus(null);
-            onDone?.(msgId);
+            finishRegeneration(msgId);
           },
           onError: (err) => {
             regenCompleted = true;
@@ -302,13 +397,10 @@ export function useChat({ sessionId, onMessage, onUserMessageId, onDone, onTitle
           await pollUntilDone(regenMsgId, {
             onContent: (content) => {
               setThinkingStatus(null);
-              fullContent = content;
-              setStreamedContent(content);
-              onMessage?.(content);
+              applyStreamContent(content);
             },
             onDone: (msgId) => {
-              setThinkingStatus(null);
-              onDone?.(msgId);
+              finishRegeneration(msgId);
             },
             onError,
           }, controller.signal);
@@ -323,7 +415,7 @@ export function useChat({ sessionId, onMessage, onUserMessageId, onDone, onTitle
         abortRef.current = null;
       }
     },
-    [sessionId, onMessage, onDone, onThinking, onError]
+    [sessionId, onAssistantMessageId, onMessage, onDone, onThinking, onError]
   );
 
   const compactMessage = useCallback(
