@@ -28,7 +28,7 @@ public class BackgroundAudioPlugin extends Plugin {
 
     public static void emitState(JSObject payload) {
         if (instance != null) {
-            instance.notifyListeners("stateChange", payload, true);
+            instance.notifyListeners("stateChange", payload, false);
         }
     }
 

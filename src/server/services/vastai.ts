@@ -138,6 +138,10 @@ export function getStatusSnapshot(): TtsStatusSnapshot {
 }
 
 export async function getStatusSnapshotWithBalance(forceRefresh = false): Promise<TtsStatusSnapshot> {
+  if (activeInstance?.status === "running" && activeInstance.ip && !lastKnownServiceHealth && activeTtsServiceRequest === null) {
+    await probeInstanceHealthDirect(activeInstance);
+  }
+
   await refreshAccountBalance(forceRefresh);
   return getStatusSnapshot();
 }
