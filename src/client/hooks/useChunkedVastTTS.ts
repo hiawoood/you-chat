@@ -262,6 +262,7 @@ export function useChunkedVastTTS() {
   const playbackSpeedRef = useRef(playbackSpeed);
   const pendingResumeChunkIndexRef = useRef<number | null>(null);
   const shouldAutoResumeOnVisibleRef = useRef(false);
+  const backgroundModeEnabledRef = useRef(false);
 
   useEffect(() => {
     playbackSpeedRef.current = playbackSpeed;
@@ -274,15 +275,25 @@ export function useChunkedVastTTS() {
     const shouldKeepBackgroundMode = Boolean(state.activeMessageId) && (state.isPlaying || state.isLoading);
 
     if (shouldKeepBackgroundMode) {
-      enableNativeBackgroundMode();
-      return () => {
-        disableNativeBackgroundMode();
-      };
+      if (!backgroundModeEnabledRef.current) {
+        backgroundModeEnabledRef.current = true;
+        void enableNativeBackgroundMode();
+      }
+      return;
     }
 
-    disableNativeBackgroundMode();
-    return undefined;
+    if (backgroundModeEnabledRef.current) {
+      backgroundModeEnabledRef.current = false;
+      void disableNativeBackgroundMode();
+    }
   }, [state.activeMessageId, state.isLoading, state.isPlaying]);
+
+  useEffect(() => () => {
+    if (backgroundModeEnabledRef.current) {
+      backgroundModeEnabledRef.current = false;
+      void disableNativeBackgroundMode();
+    }
+  }, []);
 
   const clearPlaybackTimers = useCallback(() => {
     scheduledChunkTimersRef.current.forEach((timerId) => window.clearTimeout(timerId));
