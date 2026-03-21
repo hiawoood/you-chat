@@ -640,6 +640,11 @@ export function useChunkedVastTTS() {
 
         const nextIndex = i + 1;
         if (nextIndex < chunksRef.current.length) {
+          chunksRef.current = chunksRef.current.map((chunk, idx) => ({
+            ...chunk,
+            status: idx === i && chunk.status === "playing" ? "ready" : chunk.status,
+          }));
+
           if (scheduledSourcesRef.current.has(nextIndex) && currentChunkIndexRef.current < nextIndex) {
             markChunkStarted(nextIndex);
           } else {
@@ -648,7 +653,7 @@ export function useChunkedVastTTS() {
               isLoading: true,
               isPlaying: false,
               isPaused: true,
-              currentChunkIndex: i,
+              currentChunkIndex: nextIndex,
               loadingChunkIndex: nextIndex,
               error: null,
               chunks: [...chunksRef.current],
