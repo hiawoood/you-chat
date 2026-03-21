@@ -8,9 +8,14 @@
     "dev:client": "vite --config vite.config.ts",
     "build": "vite build --config vite.config.ts",
     "start": "bun run src/server/index.ts",
-    "dev:all": "bun run dev & bun run dev:client"
+    "dev:all": "bun run dev & bun run dev:client",
+    "cap:copy": "cap copy",
+    "cap:sync": "cap sync",
+    "cap:open:android": "cap open android",
+    "cap:run:android": "cap run android"
   },
   "devDependencies": {
+    "@capacitor/cli": "^8.2.0",
     "@tailwindcss/postcss": "^4.1.18",
     "@types/bun": "latest",
     "@types/react": "^19.2.13",
@@ -23,6 +28,9 @@
     "vite": "^7.3.1"
   },
   "dependencies": {
+    "@capacitor/android": "^8.2.0",
+    "@capacitor/core": "^8.2.0",
+    "@capacitor/status-bar": "^8.0.1",
     "@tanstack/react-virtual": "^3.13.18",
     "better-auth": "^1.4.18",
     "hono": "^4.11.7",

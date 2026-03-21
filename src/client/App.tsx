@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { Capacitor } from "@capacitor/core";
 import { useSession } from "./lib/auth";
 import { api } from "./lib/api";
 import Login from "./pages/Login";
@@ -6,6 +7,17 @@ import Chat from "./pages/Chat";
 import CookieSetup from "./pages/CookieSetup";
 
 export default function App() {
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+
+    const isNativeApp = Capacitor.isNativePlatform();
+    document.body.classList.toggle("native-app", isNativeApp);
+
+    return () => {
+      document.body.classList.remove("native-app");
+    };
+  }, []);
+
   const { data: session, isPending } = useSession();
   const [hasCredentials, setHasCredentials] = useState<boolean | null>(null);
   const [checkingCredentials, setCheckingCredentials] = useState(false);

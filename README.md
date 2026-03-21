@@ -60,6 +60,42 @@ bun run dev         # Server on :8080
 5. Copy the `DS` and `DSR` cookie values
 6. Paste them into the setup form
 
+## Android Wrapper (Capacitor)
+
+This repo now includes a Capacitor Android shell app. It does not replace the web deployment flow; the web app still builds and deploys normally.
+
+The Android app can either:
+
+- load the bundled `dist` build, or
+- act as a thin wrapper around your deployed site so it always shows the latest version
+
+For the live-wrapper setup, point Capacitor at your deployed URL before syncing Android:
+
+```bash
+bun install
+bun run build
+CAPACITOR_SERVER_URL=https://your-live-url.example.com bun run cap:sync
+```
+
+Then open Android Studio and build an APK:
+
+```bash
+bun run cap:open:android
+```
+
+Useful scripts:
+
+- `bun run cap:copy`
+- `bun run cap:sync`
+- `bun run cap:open:android`
+- `bun run cap:run:android`
+
+Notes:
+
+- `CAPACITOR_SERVER_URL` is only needed when you want the APK to load your deployed site instead of bundled static files.
+- Re-run `CAPACITOR_SERVER_URL=... bun run cap:sync` whenever you change the wrapper configuration.
+- The wrapper keeps the existing web deployment path untouched.
+
 ## Stack
 
 - **Runtime:** [Bun](https://bun.sh)

@@ -76,6 +76,11 @@ body {
   margin: 0;
 }
 
+body.native-app .native-app-safe-top {
+  box-sizing: border-box;
+  padding-top: max(env(safe-area-inset-top, 0px), 32px);
+}
+
 /* Markdown styles for chat messages */
 .markdown-content h1,
 .markdown-content h2,

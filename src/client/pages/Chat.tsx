@@ -330,7 +330,7 @@ export default function Chat() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center min-h-screen bg-gray-50 dark:bg-gray-900">
+      <div className="native-app-safe-top flex items-center justify-center min-h-screen bg-gray-50 dark:bg-gray-900">
         <div className="flex flex-col items-center gap-3">
           <div className="animate-spin rounded-full h-8 w-8 border-2 border-gray-300 dark:border-gray-600 border-t-gray-900 dark:border-t-white"></div>
           <p className="text-sm text-gray-500 dark:text-gray-400">Loading...</p>
@@ -344,7 +344,7 @@ export default function Chat() {
   }
 
   return (
-    <div className="flex h-[100dvh] bg-gray-100 dark:bg-gray-950 overflow-hidden">
+    <div className="native-app-safe-top flex h-[100dvh] bg-gray-100 dark:bg-gray-950 overflow-hidden">
       {/* Sidebar - always fixed/overlay so main area gets full width */}
       <div
         className={`${

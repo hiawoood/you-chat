@@ -32,7 +32,7 @@ export default function CookieSetup({ onComplete }: CookieSetupProps) {
   };
 
   return (
-    <div className="flex items-center justify-center min-h-screen bg-gray-50 dark:bg-gray-950 p-4">
+    <div className="native-app-safe-top flex items-center justify-center min-h-screen bg-gray-50 dark:bg-gray-950 p-4">
       <div className="w-full max-w-lg">
         <div className="bg-white dark:bg-gray-900 rounded-lg shadow-sm border border-gray-200 dark:border-gray-800 p-6 sm:p-8">
           <h1 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">

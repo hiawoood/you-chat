@@ -249,7 +249,7 @@ export default function Settings({ onBack }: SettingsProps) {
   );
 
   return (
-    <div className="flex flex-col h-[100dvh] bg-white dark:bg-gray-900">
+    <div className="native-app-safe-top flex flex-col h-[100dvh] bg-white dark:bg-gray-900">
       {/* Header */}
       <div className="h-12 flex items-center px-4 border-b border-gray-200 dark:border-gray-800 gap-3 flex-shrink-0">
         <button
