@@ -659,7 +659,8 @@ export function useChunkedVastTTS() {
       scheduleChunkStart(i, startAt, token);
       schedulePlaybackCompletion(token);
 
-      if (i === startIndex) {
+      const shouldSyncImmediately = startAt - audioContext.currentTime <= PLAYBACK_START_DELAY_SECONDS * 2;
+      if (i === startIndex || (shouldSyncImmediately && currentChunkIndexRef.current !== i)) {
         syncChunkState(i);
       }
     }
