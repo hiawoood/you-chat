@@ -367,6 +367,12 @@ function syncReferenceStateToInstance(instance: VastInstance | null) {
   }
 }
 
+function preserveReferenceStateForTrackedInstance(instanceId: string, fallbackMode: ActiveReferenceState["mode"] = "unknown") {
+  if (activeReferenceState.instanceId !== instanceId) {
+    resetReferenceState(instanceId, fallbackMode);
+  }
+}
+
 function getInstanceBaseUrl(instance: VastInstance) {
   if (!instance.ip || !instance.port) {
     throw new Error("No active TTS instance");
@@ -855,7 +861,7 @@ async function selectManagedInstance(preferredInstanceId?: string | null): Promi
 
   const nextActiveInstance = toVastInstance(kept);
   activeInstance = nextActiveInstance;
-  resetReferenceState(nextActiveInstance.id, activeReferenceState.mode);
+  preserveReferenceStateForTrackedInstance(nextActiveInstance.id, activeReferenceState.mode);
   emitStatusUpdate();
 
   for (const duplicate of sortedInstances.slice(1)) {
@@ -885,7 +891,7 @@ async function adoptTrackedInstanceIfPresent(): Promise<VastInstance | null> {
 
   const trackedInstance = toVastInstance(details);
   activeInstance = trackedInstance;
-  resetReferenceState(trackedInstance.id, activeReferenceState.mode);
+  preserveReferenceStateForTrackedInstance(trackedInstance.id, activeReferenceState.mode);
   emitStatusUpdate();
   return trackedInstance;
 }
@@ -1101,7 +1107,7 @@ async function continueProvisioningInstance(instance: VastInstance, generation: 
     gpuName: readyInfo.gpu_name,
     hourlyRate: readyInfo.dph_total,
   };
-  resetReferenceState(activeInstance.id, activeReferenceState.mode);
+  preserveReferenceStateForTrackedInstance(activeInstance.id, activeReferenceState.mode);
   emitStatusUpdate();
   return waitForHealthyService(activeInstance);
 }
