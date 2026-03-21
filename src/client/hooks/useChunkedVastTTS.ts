@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { api } from "../lib/api";
+import { disableNativeBackgroundMode, enableNativeBackgroundMode } from "../lib/native-background-mode";
 
 export interface TTSChunk {
   id: number;
@@ -268,6 +269,20 @@ export function useChunkedVastTTS() {
       window.localStorage.setItem(PLAYBACK_SPEED_STORAGE_KEY, String(playbackSpeed));
     }
   }, [playbackSpeed]);
+
+  useEffect(() => {
+    const shouldKeepBackgroundMode = Boolean(state.activeMessageId) && (state.isPlaying || state.isLoading);
+
+    if (shouldKeepBackgroundMode) {
+      enableNativeBackgroundMode();
+      return () => {
+        disableNativeBackgroundMode();
+      };
+    }
+
+    disableNativeBackgroundMode();
+    return undefined;
+  }, [state.activeMessageId, state.isLoading, state.isPlaying]);
 
   const clearPlaybackTimers = useCallback(() => {
     scheduledChunkTimersRef.current.forEach((timerId) => window.clearTimeout(timerId));
