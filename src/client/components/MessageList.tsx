@@ -196,7 +196,7 @@ export default function MessageList({
             onContinue={onContinue && !isActivelyStreaming && !isUserItem ? () => onContinue(item.content) : undefined}
             onCompact={onCompact && !isActivelyStreaming ? () => onCompact(item.id) : undefined}
             onToggleTTS={onToggleTTS && !isUserItem ? () => onToggleTTS(item.id, item.content) : undefined}
-            onPlayTTSChunk={onPlayTTSChunk && !isActivelyStreaming && !isUserItem ? (chunkIndex: number) => onPlayTTSChunk(item.id, item.content, chunkIndex) : undefined}
+            onPlayTTSChunk={onPlayTTSChunk && !isUserItem ? (chunkIndex: number) => onPlayTTSChunk(item.id, item.content, chunkIndex) : undefined}
             onWordClick={onWordClick ? (e, wordIndex) => onWordClick(e, wordIndex, item.id, item.content) : undefined}
             forceCollapsed={collapsedIds.has(item.id)}
             isSaving={actionLoading === `edit-msg-${item.id}`}
@@ -432,7 +432,7 @@ function MessageBubble({
 
   const isCollapsed = collapsed && isLong && !editing;
   const isBusy = isDeleting || isSaving || isForking || actionDisabled;
-  const shouldRenderChunkButtons = !isUser && !isStreaming && !!onPlayTTSChunk && (ttsTextChunks?.length ?? 0) > 1;
+  const shouldRenderChunkButtons = !isUser && !!onPlayTTSChunk && (ttsTextChunks?.length ?? 0) > 1 && (!isStreaming || isTTSActive);
   const showInlineTtsButton = !isUser && !editing && !!onToggleTTS;
 
   useEffect(() => {
@@ -470,7 +470,7 @@ function MessageBubble({
         className={`w-full sm:max-w-[85%] md:max-w-[80%] rounded-lg relative ${
           isUser
             ? "bg-gray-900 text-white dark:bg-gray-700 px-4 py-2"
-            : `bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 border px-4 ${showInlineTtsButton ? "pr-12 pt-3 pb-2" : "py-2"} ${
+            : `bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 border px-4 py-2 ${
                 isTTSActive
                   ? "border-emerald-500 dark:border-emerald-400 ring-2 ring-emerald-500/20 dark:ring-emerald-400/20"
                   : "border-gray-200 dark:border-gray-700"
@@ -483,7 +483,7 @@ function MessageBubble({
               e.stopPropagation();
               onToggleTTS?.();
             }}
-            className={`absolute right-2 top-2 inline-flex h-7 w-7 items-center justify-center rounded-full border transition-colors ${isTTSActive ? "border-emerald-300 bg-emerald-50 text-emerald-600 hover:bg-emerald-100 dark:border-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300 dark:hover:bg-emerald-900/40" : "border-gray-200 bg-white/90 text-gray-400 hover:border-gray-300 hover:bg-gray-100 hover:text-gray-600 dark:border-gray-700 dark:bg-gray-800/90 dark:text-gray-400 dark:hover:border-gray-600 dark:hover:bg-gray-700 dark:hover:text-gray-200"}`}
+            className={`absolute right-2 top-2 z-10 inline-flex h-7 w-7 items-center justify-center rounded-full border shadow-sm backdrop-blur transition-colors ${isTTSActive ? "border-emerald-300 bg-emerald-50/95 text-emerald-600 hover:bg-emerald-100 dark:border-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300 dark:hover:bg-emerald-900/70" : "border-gray-200 bg-white/95 text-gray-400 hover:border-gray-300 hover:bg-gray-100 hover:text-gray-600 dark:border-gray-700 dark:bg-gray-800/95 dark:text-gray-400 dark:hover:border-gray-600 dark:hover:bg-gray-700 dark:hover:text-gray-200"}`}
             title={isTTSPlaying ? "Pause (Space)" : isTTSActive ? "Resume (Space)" : isStreaming ? "Read current stream aloud" : "Read aloud"}
             aria-label={isTTSPlaying ? "Pause reading aloud" : isTTSActive ? "Resume reading aloud" : isStreaming ? "Read current stream aloud" : "Read message aloud"}
           >

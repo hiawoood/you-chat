@@ -106,6 +106,7 @@ export default function ChatView({
     playbackSpeed: ttsPlaybackSpeed,
     setPlaybackSpeed: ttsSetPlaybackSpeed,
     startPlayback,
+    syncStreamingPlayback,
     pause: ttsPause,
     resume: ttsResume,
     toggle: ttsToggle,
@@ -371,6 +372,14 @@ export default function ChatView({
     await startPlayback(content, messageId, Math.max(0, ttsCurrentChunk), voiceId);
   };
 
+  useEffect(() => {
+    if (ttsActiveMessageId !== STREAMING_TTS_MESSAGE_ID || !streamingContent.trim()) {
+      return;
+    }
+
+    void syncStreamingPlayback(streamingContent, STREAMING_TTS_MESSAGE_ID, selectedTtsVoiceId);
+  }, [selectedTtsVoiceId, streamingContent, syncStreamingPlayback, ttsActiveMessageId]);
+
   const handleToggleTTS = async (messageId: string, content: string) => {
     if (messageId === STREAMING_TTS_MESSAGE_ID) {
       const voiceId = await resolvePlaybackVoiceId();
@@ -380,7 +389,12 @@ export default function ChatView({
         return;
       }
 
-      await startPlayback(content, messageId, ttsActiveMessageId === messageId ? Math.max(0, ttsCurrentChunk) : 0, voiceId);
+       if (ttsActiveMessageId === messageId && ttsIsPaused) {
+        await ttsResume();
+        return;
+      }
+
+      await startPlayback(content, messageId, ttsActiveMessageId === messageId ? Math.max(0, ttsCurrentChunk) : 0, voiceId, { streaming: true });
       return;
     }
 
@@ -401,7 +415,7 @@ export default function ChatView({
     }
 
     const voiceId = await resolvePlaybackVoiceId();
-    await startPlayback(content, messageId, chunkIndex, voiceId);
+    await startPlayback(content, messageId, chunkIndex, voiceId, { streaming: messageId === STREAMING_TTS_MESSAGE_ID });
   };
 
   const handleCompactGenerate = async ({
@@ -454,7 +468,7 @@ export default function ChatView({
 
       if (ttsActiveMessageId && (ttsIsPlaying || ttsIsLoading)) {
         if (ttsActiveMessageId === STREAMING_TTS_MESSAGE_ID && streamingContentRef.current.trim()) {
-          await startPlayback(streamingContentRef.current, STREAMING_TTS_MESSAGE_ID, ttsCurrentChunk, voiceId);
+          await startPlayback(streamingContentRef.current, STREAMING_TTS_MESSAGE_ID, ttsCurrentChunk, voiceId, { streaming: true });
         } else {
           const activeMessage = messages.find((message) => message.id === ttsActiveMessageId);
           if (activeMessage) {

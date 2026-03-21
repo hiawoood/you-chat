@@ -107,6 +107,23 @@ public class BackgroundAudioPlugin extends Plugin {
     }
 
     @PluginMethod
+    public void updatePlaybackChunks(PluginCall call) {
+        String messageId = call.getString("messageId");
+        JSArray chunksArray = call.getArray("chunks");
+
+        if (messageId == null || chunksArray == null) {
+            call.reject("Missing playback chunk update parameters.");
+            return;
+        }
+
+        Intent intent = createServiceIntent(BackgroundPlaybackService.ACTION_UPDATE_CHUNKS);
+        intent.putExtra(BackgroundPlaybackService.EXTRA_MESSAGE_ID, messageId);
+        intent.putStringArrayListExtra(BackgroundPlaybackService.EXTRA_CHUNKS, toArrayList(chunksArray));
+        dispatchIfRunning(intent);
+        call.resolve();
+    }
+
+    @PluginMethod
     public void getMotionAutoStopConfig(PluginCall call) {
         JSObject payload = new JSObject();
         payload.put("enabled", readMotionAutoStopEnabled());

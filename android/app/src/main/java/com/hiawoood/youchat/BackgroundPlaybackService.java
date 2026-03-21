@@ -66,6 +66,7 @@ public class BackgroundPlaybackService extends Service {
     public static final String ACTION_PREV = "com.hiawoood.youchat.action.PREV";
     public static final String ACTION_SEEK = "com.hiawoood.youchat.action.SEEK";
     public static final String ACTION_SET_SPEED = "com.hiawoood.youchat.action.SET_SPEED";
+    public static final String ACTION_UPDATE_CHUNKS = "com.hiawoood.youchat.action.UPDATE_CHUNKS";
     public static final String ACTION_SET_MOTION_AUTO_STOP = "com.hiawoood.youchat.action.SET_MOTION_AUTO_STOP";
 
     public static final String EXTRA_MESSAGE_ID = "messageId";
@@ -165,6 +166,7 @@ public class BackgroundPlaybackService extends Service {
             case ACTION_PREV -> skipToChunk(currentChunkIndex - 1);
             case ACTION_SEEK -> skipToChunk(intent.getIntExtra(EXTRA_CHUNK_INDEX, currentChunkIndex));
             case ACTION_SET_SPEED -> setPlaybackSpeedInternal(intent.getFloatExtra(EXTRA_PLAYBACK_SPEED, playbackSpeed));
+            case ACTION_UPDATE_CHUNKS -> updatePlaybackChunks(intent);
             case ACTION_SET_MOTION_AUTO_STOP -> setMotionAutoStopEnabledInternal(intent.getBooleanExtra(EXTRA_MOTION_AUTO_STOP_ENABLED, motionAutoStopEnabled));
             default -> {
             }
@@ -435,6 +437,35 @@ public class BackgroundPlaybackService extends Service {
         publishState();
     }
 
+    private void updatePlaybackChunks(Intent intent) {
+        String messageId = intent.getStringExtra(EXTRA_MESSAGE_ID);
+        ArrayList<String> updatedChunks = intent.getStringArrayListExtra(EXTRA_CHUNKS);
+
+        if (messageId == null || updatedChunks == null || activeMessageId == null || !activeMessageId.equals(messageId)) {
+            return;
+        }
+
+        int previousSize = chunkTexts.size();
+        chunkTexts = new ArrayList<>(updatedChunks);
+        trimPreparedChunks(chunkTexts.size());
+
+        if (chunkTexts.isEmpty()) {
+            publishState();
+            return;
+        }
+
+        currentChunkIndex = Math.max(0, Math.min(currentChunkIndex, chunkTexts.size() - 1));
+        if (loadingChunkIndex >= chunkTexts.size()) {
+            loadingChunkIndex = chunkTexts.size() - 1;
+        }
+
+        if ((isLoading || isPlaying) && chunkTexts.size() > previousSize) {
+            ensurePrefetch(Math.max(currentChunkIndex, 0), sessionGeneration.get());
+        }
+
+        publishState();
+    }
+
     private void completePlayback() {
         stopPlayback(true);
     }
@@ -482,6 +513,28 @@ public class BackgroundPlaybackService extends Service {
             }
         }
         preparedChunkFiles.clear();
+    }
+
+    private void trimPreparedChunks(int maxChunkCount) {
+        preparedChunkIndices.removeIf((index) -> index >= maxChunkCount);
+        fetchTasks.entrySet().removeIf((entry) -> {
+            if (entry.getKey() >= maxChunkCount) {
+                entry.getValue().cancel(true);
+                return true;
+            }
+            return false;
+        });
+        preparedChunkFiles.entrySet().removeIf((entry) -> {
+            if (entry.getKey() >= maxChunkCount) {
+                File file = entry.getValue();
+                if (file.exists()) {
+                    //noinspection ResultOfMethodCallIgnored
+                    file.delete();
+                }
+                return true;
+            }
+            return false;
+        });
     }
 
     private File fetchChunkAudioToFile(int chunkIndex, String text) throws Exception {

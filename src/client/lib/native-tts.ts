@@ -35,6 +35,7 @@ interface NativeTtsPlugin {
   prevChunk(): Promise<void>;
   seekToChunk(options: { chunkIndex: number }): Promise<void>;
   setPlaybackSpeed(options: { playbackSpeed: number }): Promise<void>;
+  updatePlaybackChunks(options: { messageId: string; chunks: string[] }): Promise<void>;
   getState(): Promise<NativeTtsStatePayload>;
   getMotionAutoStopConfig(): Promise<NativeMotionAutoStopConfig>;
   setMotionAutoStopConfig(options: NativeMotionAutoStopConfig): Promise<NativeMotionAutoStopConfig>;
