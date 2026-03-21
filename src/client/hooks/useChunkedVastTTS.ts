@@ -243,7 +243,9 @@ export function useChunkedVastTTS() {
   const audioContextRef = useRef<AudioContext | null>(null);
   const scheduledSourcesRef = useRef(new Map<number, AudioBufferSourceNode>());
   const scheduledChunkTimersRef = useRef(new Map<number, number>());
+  const scheduledChunkWindowsRef = useRef(new Map<number, { startAt: number; endAt: number }>());
   const playbackCompletionTimerRef = useRef<number | null>(null);
+  const playbackMonitorTimerRef = useRef<number | null>(null);
   const scheduledEndTimeRef = useRef(0);
   const decodedBufferCacheRef = useRef(new Map<string, AudioBuffer>());
   const lookaheadWaitersRef = useRef<Array<() => void>>([]);
@@ -274,6 +276,13 @@ export function useChunkedVastTTS() {
       window.clearTimeout(playbackCompletionTimerRef.current);
       playbackCompletionTimerRef.current = null;
     }
+
+    if (playbackMonitorTimerRef.current !== null) {
+      window.clearInterval(playbackMonitorTimerRef.current);
+      playbackMonitorTimerRef.current = null;
+    }
+
+    scheduledChunkWindowsRef.current.clear();
   }, []);
 
   const releaseLookaheadWaiters = useCallback(() => {
@@ -485,10 +494,38 @@ export function useChunkedVastTTS() {
     }, remainingMs);
   }, []);
 
+  const startPlaybackMonitor = useCallback((token: number) => {
+    const audioContext = audioContextRef.current;
+    if (!audioContext) return;
+
+    if (playbackMonitorTimerRef.current !== null) {
+      window.clearInterval(playbackMonitorTimerRef.current);
+    }
+
+    playbackMonitorTimerRef.current = window.setInterval(() => {
+      if (token !== playbackTokenRef.current) return;
+      const currentTime = audioContext.currentTime;
+
+      let activeChunkIndex: number | null = null;
+      for (const [chunkIndex, windowRange] of scheduledChunkWindowsRef.current.entries()) {
+        if (currentTime >= windowRange.startAt && currentTime < windowRange.endAt) {
+          if (activeChunkIndex === null || chunkIndex > activeChunkIndex) {
+            activeChunkIndex = chunkIndex;
+          }
+        }
+      }
+
+      if (activeChunkIndex !== null && activeChunkIndex !== currentChunkIndexRef.current) {
+        syncChunkState(activeChunkIndex);
+      }
+    }, 100);
+  }, [syncChunkState]);
+
   const playFromChunk = useCallback(async (startIndex: number, token: number) => {
     stopAudio();
     const audioContext = getAudioContext();
     scheduledEndTimeRef.current = audioContext.currentTime;
+    startPlaybackMonitor(token);
 
     for (let i = startIndex; i < chunksRef.current.length; i++) {
       if (token !== playbackTokenRef.current) return;
@@ -574,6 +611,7 @@ export function useChunkedVastTTS() {
       source.playbackRate.value = playbackSpeedRef.current;
       source.onended = () => {
         scheduledSourcesRef.current.delete(i);
+        scheduledChunkWindowsRef.current.delete(i);
         source.disconnect();
 
         if (token !== playbackTokenRef.current) return;
@@ -613,6 +651,7 @@ export function useChunkedVastTTS() {
 
       const startAt = Math.max(audioContext.currentTime + PLAYBACK_START_DELAY_SECONDS, scheduledEndTimeRef.current);
       const endAt = startAt + (decodedBuffer.duration / playbackSpeedRef.current);
+      scheduledChunkWindowsRef.current.set(i, { startAt, endAt });
       source.start(startAt);
 
       scheduledSourcesRef.current.set(i, source);
@@ -624,7 +663,7 @@ export function useChunkedVastTTS() {
         syncChunkState(i);
       }
     }
-  }, [decodeAudioBuffer, getAudioContext, scheduleChunkStart, schedulePlaybackCompletion, stopAudio, syncChunkState, generateChunkAudio]);
+  }, [decodeAudioBuffer, getAudioContext, scheduleChunkStart, schedulePlaybackCompletion, startPlaybackMonitor, stopAudio, syncChunkState, generateChunkAudio]);
 
   const jumpToChunk = useCallback(async (index: number) => {
     if (index < 0 || index >= chunksRef.current.length) return;
