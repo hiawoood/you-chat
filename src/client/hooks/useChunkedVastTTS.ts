@@ -457,6 +457,16 @@ export function useChunkedVastTTS() {
   }, [releaseLookaheadWaiters, saveProgress]);
 
   const markChunkStarted = useCallback((chunkIndex: number) => {
+    const existingTimer = scheduledChunkTimersRef.current.get(chunkIndex);
+    if (existingTimer !== undefined) {
+      window.clearTimeout(existingTimer);
+      scheduledChunkTimersRef.current.delete(chunkIndex);
+    }
+
+    if (chunkIndex < currentChunkIndexRef.current) {
+      return;
+    }
+
     playbackLookaheadBaseIndexRef.current = chunkIndex;
     void prefetchUpcomingChunks(chunkIndex);
     syncChunkState(chunkIndex);
@@ -469,6 +479,10 @@ export function useChunkedVastTTS() {
     const delayMs = Math.max(0, (startAt - audioContext.currentTime) * 1000);
     const timerId = window.setTimeout(() => {
       if (token !== playbackTokenRef.current) return;
+      if (chunkIndex <= currentChunkIndexRef.current) {
+        scheduledChunkTimersRef.current.delete(chunkIndex);
+        return;
+      }
       markChunkStarted(chunkIndex);
       scheduledChunkTimersRef.current.delete(chunkIndex);
     }, delayMs);
