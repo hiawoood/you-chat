@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { api } from "../lib/api";
-import { disableNativeBackgroundMode, enableNativeBackgroundMode } from "../lib/native-background-mode";
+import { getNativeTtsPlugin, isNativeTtsAvailable, type NativeTtsStatePayload } from "../lib/native-tts";
 
 export interface TTSChunk {
   id: number;
@@ -221,6 +221,8 @@ function findChunkForWordIndex(chunks: string[], targetWordIndex: number): numbe
 
 // ---- Hook ----
 export function useChunkedVastTTS() {
+  const nativeTtsEnabled = isNativeTtsAvailable();
+  const nativeTtsPlugin = nativeTtsEnabled ? getNativeTtsPlugin() : null;
   const [playbackSpeed, setPlaybackSpeedState] = useState<number>(() => {
     if (typeof window === "undefined") return DEFAULT_PLAYBACK_SPEED;
     const stored = Number(window.localStorage.getItem(PLAYBACK_SPEED_STORAGE_KEY) || DEFAULT_PLAYBACK_SPEED);
@@ -262,7 +264,6 @@ export function useChunkedVastTTS() {
   const playbackSpeedRef = useRef(playbackSpeed);
   const pendingResumeChunkIndexRef = useRef<number | null>(null);
   const shouldAutoResumeOnVisibleRef = useRef(false);
-  const backgroundModeEnabledRef = useRef(false);
 
   useEffect(() => {
     playbackSpeedRef.current = playbackSpeed;
@@ -271,29 +272,62 @@ export function useChunkedVastTTS() {
     }
   }, [playbackSpeed]);
 
-  useEffect(() => {
-    const shouldKeepBackgroundMode = Boolean(state.activeMessageId) && (state.isPlaying || state.isLoading);
+  const applyNativeState = useCallback((payload: NativeTtsStatePayload) => {
+    const preparedChunkIndices = new Set(payload.preparedChunkIndices || []);
 
-    if (shouldKeepBackgroundMode) {
-      if (!backgroundModeEnabledRef.current) {
-        backgroundModeEnabledRef.current = true;
-        void enableNativeBackgroundMode();
+    currentChunkIndexRef.current = payload.currentChunkIndex;
+    playbackLookaheadBaseIndexRef.current = payload.currentChunkIndex;
+    messageIdRef.current = payload.activeMessageId;
+
+    chunksRef.current = chunksRef.current.map((chunk, index) => {
+      let status: TTSChunk["status"] = "pending";
+
+      if (payload.error && index === payload.loadingChunkIndex) {
+        status = "error";
+      } else if (payload.isPlaying && index === payload.currentChunkIndex) {
+        status = "playing";
+      } else if (payload.loadingChunkIndex === index) {
+        status = "generating";
+      } else if (preparedChunkIndices.has(index)) {
+        status = "ready";
       }
-      return;
-    }
 
-    if (backgroundModeEnabledRef.current) {
-      backgroundModeEnabledRef.current = false;
-      void disableNativeBackgroundMode();
-    }
-  }, [state.activeMessageId, state.isLoading, state.isPlaying]);
+      return {
+        ...chunk,
+        status,
+      };
+    });
 
-  useEffect(() => () => {
-    if (backgroundModeEnabledRef.current) {
-      backgroundModeEnabledRef.current = false;
-      void disableNativeBackgroundMode();
-    }
+    setState((prev) => ({
+      ...prev,
+      isLoading: payload.isLoading,
+      isPlaying: payload.isPlaying,
+      isPaused: payload.isPaused,
+      currentChunkIndex: payload.currentChunkIndex,
+      loadingChunkIndex: payload.loadingChunkIndex,
+      totalChunks: payload.totalChunks,
+      error: payload.error,
+      activeMessageId: payload.activeMessageId,
+      chunks: [...chunksRef.current],
+    }));
   }, []);
+
+  useEffect(() => {
+    if (!nativeTtsEnabled || !nativeTtsPlugin) return;
+
+    let removeListener: (() => Promise<void>) | null = null;
+
+    void nativeTtsPlugin.getState().then(applyNativeState).catch(() => {});
+    void nativeTtsPlugin.addListener("stateChange", applyNativeState).then((listener) => {
+      removeListener = listener.remove;
+    }).catch(() => {});
+
+    return () => {
+      if (removeListener) {
+        void removeListener();
+      }
+    };
+  }, [applyNativeState, nativeTtsEnabled, nativeTtsPlugin]);
 
   const clearPlaybackTimers = useCallback(() => {
     scheduledChunkTimersRef.current.forEach((timerId) => window.clearTimeout(timerId));
@@ -720,6 +754,11 @@ export function useChunkedVastTTS() {
   }, [decodeAudioBuffer, getAudioContext, markChunkStarted, scheduleChunkStart, schedulePlaybackCompletion, startPlaybackMonitor, stopAudio, generateChunkAudio]);
 
   const jumpToChunk = useCallback(async (index: number) => {
+    if (nativeTtsEnabled && nativeTtsPlugin) {
+      await nativeTtsPlugin.seekToChunk({ chunkIndex: index });
+      return;
+    }
+
     if (index < 0 || index >= chunksRef.current.length) return;
 
     const token = ++playbackTokenRef.current;
@@ -749,7 +788,7 @@ export function useChunkedVastTTS() {
 
     stopAudio();
     await playFromChunk(index, token);
-  }, [playFromChunk, stopAudio]);
+  }, [nativeTtsEnabled, nativeTtsPlugin, playFromChunk, stopAudio]);
 
   const startPlayback = useCallback(async (
     text: string,
@@ -757,6 +796,72 @@ export function useChunkedVastTTS() {
     startChunkIndex: number = -1,
     voiceReferenceId: string | null = null
   ) => {
+    if (nativeTtsEnabled && nativeTtsPlugin) {
+      messageIdRef.current = messageId;
+      activeVoiceReferenceIdRef.current = voiceReferenceId;
+      textRef.current = text;
+
+      if (startChunkIndex < 0) {
+        startChunkIndex = await fetchProgress(messageId);
+      }
+
+      const textChunks = splitTextIntoTtsChunks(text);
+      textChunksRef.current = textChunks;
+
+      if (textChunks.length === 0) {
+        setState((prev) => ({
+          ...prev,
+          activeMessageId: messageId,
+          totalChunks: 0,
+          chunks: [],
+        }));
+        return;
+      }
+
+      startChunkIndex = Math.max(0, Math.min(startChunkIndex, textChunks.length - 1));
+
+      let wordOffset = 0;
+      chunksRef.current = textChunks.map((chunkTextValue, index) => {
+        const words = chunkTextValue.split(/\s+/).length;
+        const chunk: TTSChunk = {
+          id: index,
+          text: chunkTextValue,
+          hash: buildChunkHash(messageId, index, chunkTextValue, voiceReferenceId),
+          startWord: wordOffset,
+          endWord: wordOffset + words,
+          audio: null,
+          status: index === startChunkIndex ? "generating" : "pending",
+        };
+        wordOffset += words;
+        return chunk;
+      });
+
+      currentChunkIndexRef.current = startChunkIndex;
+      playbackLookaheadBaseIndexRef.current = startChunkIndex;
+
+      setState({
+        isLoading: true,
+        isPlaying: false,
+        isPaused: false,
+        currentChunkIndex: startChunkIndex,
+        loadingChunkIndex: startChunkIndex,
+        totalChunks: textChunks.length,
+        error: null,
+        activeMessageId: messageId,
+        chunks: [...chunksRef.current],
+      });
+
+      await nativeTtsPlugin.startPlayback({
+        messageId,
+        chunks: textChunks,
+        startChunkIndex,
+        voiceReferenceId,
+        playbackSpeed: playbackSpeedRef.current,
+        baseUrl: window.location.origin,
+      });
+      return;
+    }
+
     reset();
     const requestToken = playbackTokenRef.current;
     messageIdRef.current = messageId;
@@ -831,9 +936,14 @@ export function useChunkedVastTTS() {
 
     const token = ++playbackTokenRef.current;
     await playFromChunk(startChunkIndex, token);
-  }, [fetchProgress, playFromChunk, prefetchUpcomingChunks, reset]);
+  }, [fetchProgress, nativeTtsEnabled, nativeTtsPlugin, playFromChunk, prefetchUpcomingChunks, reset]);
 
   const pause = useCallback(() => {
+    if (nativeTtsEnabled && nativeTtsPlugin) {
+      void nativeTtsPlugin.pause();
+      return;
+    }
+
     playbackTokenRef.current += 1;
     shouldAutoResumeOnVisibleRef.current = false;
     pendingResumeChunkIndexRef.current = null;
@@ -850,16 +960,21 @@ export function useChunkedVastTTS() {
       loadingChunkIndex: null,
       chunks: [...chunksRef.current],
     }));
-  }, [stopAudio]);
+  }, [nativeTtsEnabled, nativeTtsPlugin, stopAudio]);
 
   const resume = useCallback(async () => {
+    if (nativeTtsEnabled && nativeTtsPlugin) {
+      await nativeTtsPlugin.resume();
+      return;
+    }
+
     if (chunksRef.current.length === 0) return;
 
     const resumeIdx = Math.max(0, Math.min(currentChunkIndexRef.current, chunksRef.current.length - 1));
 
     const token = ++playbackTokenRef.current;
     await playFromChunk(resumeIdx, token);
-  }, [playFromChunk]);
+  }, [nativeTtsEnabled, nativeTtsPlugin, playFromChunk]);
 
   const toggle = useCallback(async (text: string, messageId: string, voiceReferenceId: string | null = null) => {
     if (state.activeMessageId === messageId) {
@@ -876,12 +991,20 @@ export function useChunkedVastTTS() {
   }, [pause, resume, startPlayback, state.activeMessageId, state.isPaused, state.isPlaying]);
 
   const nextChunk = useCallback(async () => {
+    if (nativeTtsEnabled && nativeTtsPlugin) {
+      await nativeTtsPlugin.nextChunk();
+      return;
+    }
     await jumpToChunk(currentChunkIndexRef.current + 1);
-  }, [jumpToChunk]);
+  }, [jumpToChunk, nativeTtsEnabled, nativeTtsPlugin]);
 
   const prevChunk = useCallback(async () => {
+    if (nativeTtsEnabled && nativeTtsPlugin) {
+      await nativeTtsPlugin.prevChunk();
+      return;
+    }
     await jumpToChunk(currentChunkIndexRef.current - 1);
-  }, [jumpToChunk]);
+  }, [jumpToChunk, nativeTtsEnabled, nativeTtsPlugin]);
 
   const seekToChunk = useCallback(async (chunkIndex: number) => {
     await jumpToChunk(chunkIndex);
@@ -903,13 +1026,19 @@ export function useChunkedVastTTS() {
     playbackSpeedRef.current = clampedSpeed;
     setPlaybackSpeedState(clampedSpeed);
 
+    if (nativeTtsEnabled && nativeTtsPlugin) {
+      await nativeTtsPlugin.setPlaybackSpeed({ playbackSpeed: clampedSpeed });
+      return;
+    }
+
     if (state.isPlaying || state.isLoading) {
       const token = ++playbackTokenRef.current;
       await playFromChunk(currentChunkIndexRef.current, token);
     }
-  }, [playFromChunk, state.isLoading, state.isPlaying]);
+  }, [nativeTtsEnabled, nativeTtsPlugin, playFromChunk, state.isLoading, state.isPlaying]);
 
   useEffect(() => {
+    if (nativeTtsEnabled) return;
     if (typeof document === "undefined") return;
 
     const handleVisibilityChange = () => {
@@ -926,7 +1055,7 @@ export function useChunkedVastTTS() {
 
     document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
-  }, [playFromChunk]);
+  }, [nativeTtsEnabled, playFromChunk]);
 
   return {
     ...state,
@@ -940,7 +1069,12 @@ export function useChunkedVastTTS() {
     prevChunk,
     seekToChunk,
     startFromWord,
-    stop: reset,
+    stop: nativeTtsEnabled && nativeTtsPlugin
+      ? async () => {
+          await nativeTtsPlugin.stop();
+          reset();
+        }
+      : reset,
   };
 }
 
