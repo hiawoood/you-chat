@@ -253,6 +253,7 @@ export function useChunkedVastTTS() {
   const messageIdRef = useRef<string | null>(null);
   const playbackTokenRef = useRef(0);
   const currentChunkIndexRef = useRef(0);
+  const playbackLookaheadBaseIndexRef = useRef(0);
   const activeVoiceReferenceIdRef = useRef<string | null>(null);
   const inflightAudioRef = useRef(new Map<string, Promise<string>>());
   const textRef = useRef<string>("");
@@ -332,6 +333,7 @@ export function useChunkedVastTTS() {
     chunksRef.current = [];
     messageIdRef.current = null;
     currentChunkIndexRef.current = 0;
+    playbackLookaheadBaseIndexRef.current = 0;
     activeVoiceReferenceIdRef.current = null;
     textRef.current = "";
     textChunksRef.current = [];
@@ -454,6 +456,12 @@ export function useChunkedVastTTS() {
     }
   }, [releaseLookaheadWaiters, saveProgress]);
 
+  const markChunkStarted = useCallback((chunkIndex: number) => {
+    playbackLookaheadBaseIndexRef.current = chunkIndex;
+    void prefetchUpcomingChunks(chunkIndex);
+    syncChunkState(chunkIndex);
+  }, [prefetchUpcomingChunks, syncChunkState]);
+
   const scheduleChunkStart = useCallback((chunkIndex: number, startAt: number, token: number) => {
     const audioContext = audioContextRef.current;
     if (!audioContext) return;
@@ -461,12 +469,12 @@ export function useChunkedVastTTS() {
     const delayMs = Math.max(0, (startAt - audioContext.currentTime) * 1000);
     const timerId = window.setTimeout(() => {
       if (token !== playbackTokenRef.current) return;
-      syncChunkState(chunkIndex);
+      markChunkStarted(chunkIndex);
       scheduledChunkTimersRef.current.delete(chunkIndex);
     }, delayMs);
 
     scheduledChunkTimersRef.current.set(chunkIndex, timerId);
-  }, [syncChunkState]);
+  }, [markChunkStarted]);
 
   const schedulePlaybackCompletion = useCallback((token: number) => {
     const audioContext = audioContextRef.current;
@@ -530,7 +538,7 @@ export function useChunkedVastTTS() {
     for (let i = startIndex; i < chunksRef.current.length; i++) {
       if (token !== playbackTokenRef.current) return;
 
-      while (i - currentChunkIndexRef.current > MAX_PREFETCH_AHEAD) {
+      while (i - playbackLookaheadBaseIndexRef.current > MAX_PREFETCH_AHEAD) {
         if (token !== playbackTokenRef.current) return;
         await new Promise<void>((resolve) => {
           lookaheadWaitersRef.current.push(resolve);
@@ -619,7 +627,7 @@ export function useChunkedVastTTS() {
         const nextIndex = i + 1;
         if (nextIndex < chunksRef.current.length) {
           if (scheduledSourcesRef.current.has(nextIndex) && currentChunkIndexRef.current < nextIndex) {
-            syncChunkState(nextIndex);
+            markChunkStarted(nextIndex);
           } else {
             setState((prev) => ({
               ...prev,
@@ -661,16 +669,17 @@ export function useChunkedVastTTS() {
 
       const shouldSyncImmediately = startAt - audioContext.currentTime <= PLAYBACK_START_DELAY_SECONDS * 2;
       if (i === startIndex || (shouldSyncImmediately && currentChunkIndexRef.current !== i)) {
-        syncChunkState(i);
+        markChunkStarted(i);
       }
     }
-  }, [decodeAudioBuffer, getAudioContext, scheduleChunkStart, schedulePlaybackCompletion, startPlaybackMonitor, stopAudio, syncChunkState, generateChunkAudio]);
+  }, [decodeAudioBuffer, getAudioContext, markChunkStarted, scheduleChunkStart, schedulePlaybackCompletion, startPlaybackMonitor, stopAudio, generateChunkAudio]);
 
   const jumpToChunk = useCallback(async (index: number) => {
     if (index < 0 || index >= chunksRef.current.length) return;
 
     const token = ++playbackTokenRef.current;
     currentChunkIndexRef.current = index;
+    playbackLookaheadBaseIndexRef.current = index;
     chunksRef.current = chunksRef.current.map((c, idx) => ({
       ...c,
       status: idx === index
@@ -757,6 +766,7 @@ export function useChunkedVastTTS() {
     if (requestToken !== playbackTokenRef.current) return;
 
     currentChunkIndexRef.current = startChunkIndex;
+    playbackLookaheadBaseIndexRef.current = startChunkIndex;
     const startChunk = chunksRef.current[startChunkIndex];
     if (!startChunk) return;
 
