@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { api, type TtsVoiceReference, type TtsVoiceListResponse } from "../lib/api";
+import { getNativeTtsPlugin, isNativeTtsAvailable } from "../lib/native-tts";
 
 interface SettingsProps {
   onBack: () => void;
@@ -12,6 +13,8 @@ function formatBytes(sizeBytes: number) {
 }
 
 export default function Settings({ onBack }: SettingsProps) {
+  const nativeTtsAvailable = isNativeTtsAvailable();
+  const nativeTtsPlugin = nativeTtsAvailable ? getNativeTtsPlugin() : null;
   const [loading, setLoading] = useState(true);
   const [credentials, setCredentials] = useState<{
     hasCredentials: boolean;
@@ -38,10 +41,16 @@ export default function Settings({ onBack }: SettingsProps) {
   const [voiceActionId, setVoiceActionId] = useState<string | null>(null);
   const [editingVoiceId, setEditingVoiceId] = useState<string | null>(null);
   const [editingVoiceLabel, setEditingVoiceLabel] = useState("");
+  const [motionAutoStopLoading, setMotionAutoStopLoading] = useState(false);
+  const [motionAutoStopEnabled, setMotionAutoStopEnabled] = useState(false);
+  const [motionAutoStopError, setMotionAutoStopError] = useState("");
 
   useEffect(() => {
     loadCredentials();
     loadTtsVoices();
+    if (nativeTtsAvailable) {
+      void loadMotionAutoStopConfig();
+    }
   }, []);
 
   const applyVoiceResponse = (response: TtsVoiceListResponse) => {
@@ -71,6 +80,39 @@ export default function Settings({ onBack }: SettingsProps) {
       setVoiceError(e instanceof Error ? e.message : "Failed to load TTS voices");
     } finally {
       setVoicesLoading(false);
+    }
+  };
+
+  const loadMotionAutoStopConfig = async () => {
+    if (!nativeTtsPlugin) return;
+
+    setMotionAutoStopLoading(true);
+    setMotionAutoStopError("");
+
+    try {
+      const response = await nativeTtsPlugin.getMotionAutoStopConfig();
+      setMotionAutoStopEnabled(Boolean(response.enabled));
+    } catch (e) {
+      setMotionAutoStopError(e instanceof Error ? e.message : "Failed to load motion auto-stop");
+    } finally {
+      setMotionAutoStopLoading(false);
+    }
+  };
+
+  const handleToggleMotionAutoStop = async () => {
+    if (!nativeTtsPlugin) return;
+
+    const nextEnabled = !motionAutoStopEnabled;
+    setMotionAutoStopLoading(true);
+    setMotionAutoStopError("");
+
+    try {
+      const response = await nativeTtsPlugin.setMotionAutoStopConfig({ enabled: nextEnabled });
+      setMotionAutoStopEnabled(Boolean(response.enabled));
+    } catch (e) {
+      setMotionAutoStopError(e instanceof Error ? e.message : "Failed to update motion auto-stop");
+    } finally {
+      setMotionAutoStopLoading(false);
     }
   };
 
@@ -374,6 +416,48 @@ export default function Settings({ onBack }: SettingsProps) {
               Upload reusable voice reference clips for Chatterbox playback and choose which one should be active by default.
             </p>
           </div>
+
+          {nativeTtsAvailable && (
+            <div className="mb-6 rounded-lg border border-gray-200 bg-gray-50 p-4 dark:border-gray-700 dark:bg-gray-800/50">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h2 className="text-base font-semibold text-gray-900 dark:text-white">Android Motion Auto-Stop</h2>
+                    <span className="rounded-full bg-gray-200 px-2 py-0.5 text-[11px] font-medium uppercase tracking-wide text-gray-700 dark:bg-gray-700 dark:text-gray-200">
+                      Android
+                    </span>
+                  </div>
+                  <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                    When the phone stays still for 10:00, playback fades out over 0:30 and then stops. Any significant movement resets the timer.
+                  </p>
+                </div>
+
+                <button
+                  onClick={() => void handleToggleMotionAutoStop()}
+                  disabled={motionAutoStopLoading}
+                  className={`inline-flex min-w-[6.5rem] items-center justify-center rounded-md px-3 py-1.5 text-sm font-medium transition-colors disabled:opacity-50 ${motionAutoStopEnabled ? "bg-emerald-600 text-white hover:bg-emerald-500" : "border border-gray-300 bg-white text-gray-700 hover:bg-gray-100 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-200 dark:hover:bg-gray-800"}`}
+                >
+                  {motionAutoStopLoading ? "Saving..." : motionAutoStopEnabled ? "Enabled" : "Disabled"}
+                </button>
+              </div>
+
+              <div className="mt-4 grid gap-2 text-xs text-gray-500 dark:text-gray-400 sm:grid-cols-3">
+                <div className="rounded-md border border-gray-200 bg-white px-3 py-2 dark:border-gray-700 dark:bg-gray-900">
+                  Trigger after 10:00 stillness
+                </div>
+                <div className="rounded-md border border-gray-200 bg-white px-3 py-2 dark:border-gray-700 dark:bg-gray-900">
+                  Fade over 0:30
+                </div>
+                <div className="rounded-md border border-gray-200 bg-white px-3 py-2 dark:border-gray-700 dark:bg-gray-900">
+                  Countdown shown in playback bar
+                </div>
+              </div>
+
+              {motionAutoStopError && (
+                <p className="mt-3 text-sm text-red-600 dark:text-red-400">{motionAutoStopError}</p>
+              )}
+            </div>
+          )}
 
           <div className="space-y-4">
             <div className="p-4 border border-gray-200 dark:border-gray-700 rounded-lg bg-gray-50 dark:bg-gray-800/50 space-y-3">

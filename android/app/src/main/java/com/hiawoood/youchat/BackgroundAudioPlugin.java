@@ -13,6 +13,7 @@ import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 
 import org.json.JSONArray;
+import org.json.JSONObject;
 
 import java.util.ArrayList;
 
@@ -106,6 +107,27 @@ public class BackgroundAudioPlugin extends Plugin {
     }
 
     @PluginMethod
+    public void getMotionAutoStopConfig(PluginCall call) {
+        JSObject payload = new JSObject();
+        payload.put("enabled", readMotionAutoStopEnabled());
+        call.resolve(payload);
+    }
+
+    @PluginMethod
+    public void setMotionAutoStopConfig(PluginCall call) {
+        boolean enabled = call.getBoolean("enabled", false);
+        persistMotionAutoStopEnabled(enabled);
+
+        Intent intent = createServiceIntent(BackgroundPlaybackService.ACTION_SET_MOTION_AUTO_STOP);
+        intent.putExtra(BackgroundPlaybackService.EXTRA_MOTION_AUTO_STOP_ENABLED, enabled);
+        dispatchIfRunning(intent);
+
+        JSObject payload = new JSObject();
+        payload.put("enabled", enabled);
+        call.resolve(payload);
+    }
+
+    @PluginMethod
     public void getState(PluginCall call) {
         BackgroundPlaybackService service = BackgroundPlaybackService.getInstance();
         if (service == null) {
@@ -119,6 +141,9 @@ public class BackgroundAudioPlugin extends Plugin {
             empty.put("isPaused", false);
             empty.put("error", null);
             empty.put("preparedChunkIndices", new JSArray());
+            empty.put("motionAutoStopEnabled", readMotionAutoStopEnabled());
+            empty.put("motionIdleRemainingMs", JSONObject.NULL);
+            empty.put("motionFadeActive", false);
             call.resolve(empty);
             return;
         }
@@ -153,5 +178,19 @@ public class BackgroundAudioPlugin extends Plugin {
             result.add(array.optString(i));
         }
         return result;
+    }
+
+    private boolean readMotionAutoStopEnabled() {
+        return getContext()
+            .getSharedPreferences(BackgroundPlaybackService.PREFERENCES_NAME, android.content.Context.MODE_PRIVATE)
+            .getBoolean(BackgroundPlaybackService.PREF_MOTION_AUTO_STOP_ENABLED, false);
+    }
+
+    private void persistMotionAutoStopEnabled(boolean enabled) {
+        getContext()
+            .getSharedPreferences(BackgroundPlaybackService.PREFERENCES_NAME, android.content.Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(BackgroundPlaybackService.PREF_MOTION_AUTO_STOP_ENABLED, enabled)
+            .apply();
     }
 }

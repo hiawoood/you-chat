@@ -10,6 +10,13 @@ export interface NativeTtsStatePayload {
   isPaused: boolean;
   error: string | null;
   preparedChunkIndices: number[];
+  motionAutoStopEnabled: boolean;
+  motionIdleRemainingMs: number | null;
+  motionFadeActive: boolean;
+}
+
+export interface NativeMotionAutoStopConfig {
+  enabled: boolean;
 }
 
 interface NativeTtsPlugin {
@@ -29,6 +36,8 @@ interface NativeTtsPlugin {
   seekToChunk(options: { chunkIndex: number }): Promise<void>;
   setPlaybackSpeed(options: { playbackSpeed: number }): Promise<void>;
   getState(): Promise<NativeTtsStatePayload>;
+  getMotionAutoStopConfig(): Promise<NativeMotionAutoStopConfig>;
+  setMotionAutoStopConfig(options: NativeMotionAutoStopConfig): Promise<NativeMotionAutoStopConfig>;
   addListener(eventName: "stateChange", listenerFunc: (state: NativeTtsStatePayload) => void): Promise<{ remove: () => Promise<void> }>;
 }
 

@@ -6,9 +6,14 @@ import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.media.AudioAttributes;
 import android.media.MediaPlayer;
 import android.media.PlaybackParams;
+import android.hardware.Sensor;
+import android.hardware.SensorEvent;
+import android.hardware.SensorEventListener;
+import android.hardware.SensorManager;
 import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
@@ -61,6 +66,7 @@ public class BackgroundPlaybackService extends Service {
     public static final String ACTION_PREV = "com.hiawoood.youchat.action.PREV";
     public static final String ACTION_SEEK = "com.hiawoood.youchat.action.SEEK";
     public static final String ACTION_SET_SPEED = "com.hiawoood.youchat.action.SET_SPEED";
+    public static final String ACTION_SET_MOTION_AUTO_STOP = "com.hiawoood.youchat.action.SET_MOTION_AUTO_STOP";
 
     public static final String EXTRA_MESSAGE_ID = "messageId";
     public static final String EXTRA_CHUNKS = "chunks";
@@ -69,9 +75,20 @@ public class BackgroundPlaybackService extends Service {
     public static final String EXTRA_PLAYBACK_SPEED = "playbackSpeed";
     public static final String EXTRA_BASE_URL = "baseUrl";
     public static final String EXTRA_CHUNK_INDEX = "chunkIndex";
+    public static final String EXTRA_MOTION_AUTO_STOP_ENABLED = "motionAutoStopEnabled";
 
     private static final String CHANNEL_ID = "you-chat-tts-playback";
     private static final int NOTIFICATION_ID = 4207;
+    public static final String PREFERENCES_NAME = "background-audio-preferences";
+    public static final String PREF_MOTION_AUTO_STOP_ENABLED = "motionAutoStopEnabled";
+    private static final long MOTION_IDLE_TIMEOUT_MS = 10L * 60L * 1000L;
+    private static final long MOTION_FADE_DURATION_MS = 30L * 1000L;
+    private static final long MOTION_STATUS_UPDATE_INTERVAL_MS = 1000L;
+    private static final long MOTION_FADE_UPDATE_INTERVAL_MS = 250L;
+    private static final long MOTION_RESET_MIN_INTERVAL_MS = 1500L;
+    private static final float LINEAR_ACCELERATION_THRESHOLD = 1.35f;
+    private static final float ACCELEROMETER_THRESHOLD = 1.8f;
+    private static final float ACCELEROMETER_GRAVITY_ALPHA = 0.8f;
 
     private static volatile BackgroundPlaybackService instance;
 
@@ -86,6 +103,9 @@ public class BackgroundPlaybackService extends Service {
     private MediaPlayer mediaPlayer;
     private MediaSessionCompat mediaSession;
     private PowerManager.WakeLock wakeLock;
+    private SensorManager sensorManager;
+    private Sensor motionSensor;
+    private SensorEventListener motionSensorListener;
 
     private String activeMessageId;
     private ArrayList<String> chunkTexts = new ArrayList<>();
@@ -99,6 +119,20 @@ public class BackgroundPlaybackService extends Service {
     private boolean isPlaying = false;
     private boolean isPaused = false;
     private String errorMessage = null;
+    private boolean motionAutoStopEnabled = false;
+    private boolean motionFadeActive = false;
+    private boolean motionSensorRegistered = false;
+    private long motionLastDetectedAt = 0L;
+    private long motionFadeStartedAt = 0L;
+    private long motionLastPublishedRemainingSeconds = Long.MIN_VALUE;
+    private float playbackVolume = 1f;
+    private final float[] gravityVector = new float[]{0f, 0f, 0f};
+    private final Runnable motionAutoStopRunnable = new Runnable() {
+        @Override
+        public void run() {
+            handleMotionAutoStopTick();
+        }
+    };
 
     public static BackgroundPlaybackService getInstance() {
         return instance;
@@ -111,6 +145,7 @@ public class BackgroundPlaybackService extends Service {
         createNotificationChannel();
         acquireWakeLock();
         createMediaSession();
+        initializeMotionAutoStop();
         startForeground(NOTIFICATION_ID, buildNotification());
         publishState();
     }
@@ -130,6 +165,7 @@ public class BackgroundPlaybackService extends Service {
             case ACTION_PREV -> skipToChunk(currentChunkIndex - 1);
             case ACTION_SEEK -> skipToChunk(intent.getIntExtra(EXTRA_CHUNK_INDEX, currentChunkIndex));
             case ACTION_SET_SPEED -> setPlaybackSpeedInternal(intent.getFloatExtra(EXTRA_PLAYBACK_SPEED, playbackSpeed));
+            case ACTION_SET_MOTION_AUTO_STOP -> setMotionAutoStopEnabledInternal(intent.getBooleanExtra(EXTRA_MOTION_AUTO_STOP_ENABLED, motionAutoStopEnabled));
             default -> {
             }
         }
@@ -144,6 +180,7 @@ public class BackgroundPlaybackService extends Service {
           mediaSession.release();
           mediaSession = null;
         }
+        stopMotionAutoStopMonitoring();
         releaseWakeLock();
         fetchExecutor.shutdownNow();
         metadataExecutor.shutdownNow();
@@ -168,6 +205,10 @@ public class BackgroundPlaybackService extends Service {
         payload.put("isPlaying", isPlaying);
         payload.put("isPaused", isPaused);
         payload.put("error", errorMessage == null ? JSONObject.NULL : errorMessage);
+        payload.put("motionAutoStopEnabled", motionAutoStopEnabled);
+        Long motionRemainingMs = computeMotionAutoStopRemainingMs(System.currentTimeMillis());
+        payload.put("motionIdleRemainingMs", motionRemainingMs == null ? JSONObject.NULL : motionRemainingMs);
+        payload.put("motionFadeActive", motionFadeActive);
 
         JSArray prepared = new JSArray();
         preparedChunkIndices.stream().sorted().forEach(prepared::put);
@@ -190,11 +231,15 @@ public class BackgroundPlaybackService extends Service {
         isPlaying = false;
         isPaused = false;
         errorMessage = null;
+        playbackVolume = 1f;
 
         chunkTexts = intent.getStringArrayListExtra(EXTRA_CHUNKS);
         if (chunkTexts == null) {
             chunkTexts = new ArrayList<>();
         }
+
+        resetMotionAutoStopWindow(false);
+        updateMotionMonitoringState();
 
         publishState();
         playChunk(currentChunkIndex, generation);
@@ -213,6 +258,7 @@ public class BackgroundPlaybackService extends Service {
         isPlaying = false;
         isPaused = false;
         errorMessage = null;
+        updateMotionMonitoringState();
         publishState();
 
         ensurePrefetch(chunkIndex, generation);
@@ -261,6 +307,7 @@ public class BackgroundPlaybackService extends Service {
                 isPlaying = false;
                 isPaused = true;
                 loadingChunkIndex = -1;
+                updateMotionMonitoringState();
                 publishState();
             }
         });
@@ -295,6 +342,7 @@ public class BackgroundPlaybackService extends Service {
                     player.setPlaybackParams(params);
                 }
 
+                player.setVolume(playbackVolume, playbackVolume);
                 player.start();
                 currentChunkIndex = chunkIndex;
                 loadingChunkIndex = -1;
@@ -304,6 +352,7 @@ public class BackgroundPlaybackService extends Service {
                 errorMessage = null;
                 ensurePrefetch(chunkIndex + 1, generation);
                 saveProgress(chunkIndex);
+                updateMotionMonitoringState();
                 publishState();
             });
             mediaPlayer.setOnCompletionListener(player -> handleChunkCompleted(chunkIndex, generation));
@@ -313,6 +362,7 @@ public class BackgroundPlaybackService extends Service {
                 isPlaying = false;
                 isPaused = true;
                 loadingChunkIndex = -1;
+                updateMotionMonitoringState();
                 publishState();
                 return true;
             });
@@ -323,6 +373,7 @@ public class BackgroundPlaybackService extends Service {
             isPlaying = false;
             isPaused = true;
             loadingChunkIndex = -1;
+            updateMotionMonitoringState();
             publishState();
         }
     }
@@ -346,6 +397,7 @@ public class BackgroundPlaybackService extends Service {
 
         isPlaying = false;
         isPaused = true;
+        updateMotionMonitoringState();
         publishState();
     }
 
@@ -354,10 +406,14 @@ public class BackgroundPlaybackService extends Service {
             mediaPlayer.start();
             isPlaying = true;
             isPaused = false;
+            resetMotionAutoStopWindow(false);
+            updateMotionMonitoringState();
             publishState();
             return;
         }
 
+        resetMotionAutoStopWindow(false);
+        updateMotionMonitoringState();
         playChunk(currentChunkIndex, sessionGeneration.get());
     }
 
@@ -395,6 +451,7 @@ public class BackgroundPlaybackService extends Service {
         isPlaying = false;
         isPaused = false;
         errorMessage = null;
+        stopMotionAutoStopMonitoring();
         publishState();
 
         if (stopService) {
@@ -656,6 +713,249 @@ public class BackgroundPlaybackService extends Service {
         return "Playing chunk " + (currentChunkIndex + 1) + " of " + chunkTexts.size();
     }
 
+    private void initializeMotionAutoStop() {
+        sensorManager = (SensorManager) getSystemService(SENSOR_SERVICE);
+        if (sensorManager != null) {
+            motionSensor = sensorManager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION);
+            if (motionSensor == null) {
+                motionSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
+            }
+        }
+
+        motionAutoStopEnabled = readMotionAutoStopEnabled();
+        motionSensorListener = new SensorEventListener() {
+            @Override
+            public void onSensorChanged(SensorEvent event) {
+                handleMotionSensorChanged(event);
+            }
+
+            @Override
+            public void onAccuracyChanged(Sensor sensor, int accuracy) {
+            }
+        };
+    }
+
+    private void handleMotionSensorChanged(SensorEvent event) {
+        if (!shouldMonitorMotionAutoStop()) {
+            return;
+        }
+
+        float x = event.values.length > 0 ? event.values[0] : 0f;
+        float y = event.values.length > 1 ? event.values[1] : 0f;
+        float z = event.values.length > 2 ? event.values[2] : 0f;
+
+        float motionMagnitude;
+        if (event.sensor.getType() == Sensor.TYPE_LINEAR_ACCELERATION) {
+            motionMagnitude = (float) Math.sqrt((x * x) + (y * y) + (z * z));
+            if (motionMagnitude < LINEAR_ACCELERATION_THRESHOLD) {
+                return;
+            }
+        } else {
+            gravityVector[0] = (ACCELEROMETER_GRAVITY_ALPHA * gravityVector[0]) + ((1f - ACCELEROMETER_GRAVITY_ALPHA) * x);
+            gravityVector[1] = (ACCELEROMETER_GRAVITY_ALPHA * gravityVector[1]) + ((1f - ACCELEROMETER_GRAVITY_ALPHA) * y);
+            gravityVector[2] = (ACCELEROMETER_GRAVITY_ALPHA * gravityVector[2]) + ((1f - ACCELEROMETER_GRAVITY_ALPHA) * z);
+
+            float linearX = x - gravityVector[0];
+            float linearY = y - gravityVector[1];
+            float linearZ = z - gravityVector[2];
+            motionMagnitude = (float) Math.sqrt((linearX * linearX) + (linearY * linearY) + (linearZ * linearZ));
+            if (motionMagnitude < ACCELEROMETER_THRESHOLD) {
+                return;
+            }
+        }
+
+        long now = System.currentTimeMillis();
+        if (!motionFadeActive && motionLastDetectedAt > 0 && now - motionLastDetectedAt < MOTION_RESET_MIN_INTERVAL_MS) {
+            return;
+        }
+
+        motionLastDetectedAt = now;
+        if (motionFadeActive) {
+            motionFadeActive = false;
+            motionFadeStartedAt = 0L;
+        }
+        setPlaybackVolume(1f);
+        motionLastPublishedRemainingSeconds = Long.MIN_VALUE;
+        scheduleMotionAutoStopTick(0L);
+        publishState(false);
+    }
+
+    private void setMotionAutoStopEnabledInternal(boolean enabled) {
+        motionAutoStopEnabled = enabled;
+        persistMotionAutoStopEnabled(enabled);
+
+        if (enabled && shouldMonitorMotionAutoStop()) {
+            resetMotionAutoStopWindow(false);
+        } else {
+            clearMotionAutoStopRuntimeState();
+        }
+
+        updateMotionMonitoringState();
+        publishState();
+    }
+
+    private void updateMotionMonitoringState() {
+        if (shouldMonitorMotionAutoStop()) {
+            registerMotionSensorIfNeeded();
+            if (motionLastDetectedAt <= 0L) {
+                resetMotionAutoStopWindow(false);
+            } else {
+                scheduleMotionAutoStopTick(0L);
+            }
+            return;
+        }
+
+        stopMotionAutoStopMonitoring();
+    }
+
+    private boolean shouldMonitorMotionAutoStop() {
+        return motionAutoStopEnabled
+            && motionSensor != null
+            && activeMessageId != null
+            && !chunkTexts.isEmpty()
+            && !isPaused
+            && (isLoading || isPlaying);
+    }
+
+    private void registerMotionSensorIfNeeded() {
+        if (sensorManager == null || motionSensor == null || motionSensorListener == null || motionSensorRegistered) {
+            return;
+        }
+
+        motionSensorRegistered = sensorManager.registerListener(
+            motionSensorListener,
+            motionSensor,
+            SensorManager.SENSOR_DELAY_NORMAL,
+            mainHandler
+        );
+    }
+
+    private void unregisterMotionSensorIfNeeded() {
+        if (sensorManager == null || motionSensorListener == null || !motionSensorRegistered) {
+            return;
+        }
+
+        sensorManager.unregisterListener(motionSensorListener);
+        motionSensorRegistered = false;
+    }
+
+    private void stopMotionAutoStopMonitoring() {
+        unregisterMotionSensorIfNeeded();
+        mainHandler.removeCallbacks(motionAutoStopRunnable);
+        clearMotionAutoStopRuntimeState();
+    }
+
+    private void resetMotionAutoStopWindow(boolean publishUpdate) {
+        if (!motionAutoStopEnabled) {
+            clearMotionAutoStopRuntimeState();
+            return;
+        }
+
+        motionLastDetectedAt = System.currentTimeMillis();
+        motionFadeActive = false;
+        motionFadeStartedAt = 0L;
+        motionLastPublishedRemainingSeconds = Long.MIN_VALUE;
+        setPlaybackVolume(1f);
+
+        if (shouldMonitorMotionAutoStop()) {
+            scheduleMotionAutoStopTick(0L);
+        }
+
+        if (publishUpdate) {
+            publishState(false);
+        }
+    }
+
+    private void scheduleMotionAutoStopTick(long delayMs) {
+        mainHandler.removeCallbacks(motionAutoStopRunnable);
+        if (!shouldMonitorMotionAutoStop()) {
+            return;
+        }
+        mainHandler.postDelayed(motionAutoStopRunnable, Math.max(0L, delayMs));
+    }
+
+    private void handleMotionAutoStopTick() {
+        if (!shouldMonitorMotionAutoStop()) {
+            return;
+        }
+
+        long now = System.currentTimeMillis();
+        Long remainingMs = computeMotionAutoStopRemainingMs(now);
+        if (remainingMs == null) {
+            return;
+        }
+
+        boolean refreshNotification = false;
+        if (!motionFadeActive && remainingMs <= 0L) {
+            motionFadeActive = true;
+            motionFadeStartedAt = now;
+            remainingMs = MOTION_FADE_DURATION_MS;
+            refreshNotification = true;
+        }
+
+        if (motionFadeActive) {
+            long fadeRemainingMs = Math.max(0L, MOTION_FADE_DURATION_MS - (now - motionFadeStartedAt));
+            float nextVolume = Math.max(0f, Math.min(1f, fadeRemainingMs / (float) MOTION_FADE_DURATION_MS));
+            setPlaybackVolume(nextVolume);
+            remainingMs = fadeRemainingMs;
+
+            if (fadeRemainingMs <= 0L) {
+                stopPlayback(true);
+                return;
+            }
+        }
+
+        long remainingSeconds = (remainingMs + 999L) / 1000L;
+        if (remainingSeconds != motionLastPublishedRemainingSeconds || refreshNotification) {
+            motionLastPublishedRemainingSeconds = remainingSeconds;
+            publishState(refreshNotification);
+        }
+
+        scheduleMotionAutoStopTick(motionFadeActive ? MOTION_FADE_UPDATE_INTERVAL_MS : MOTION_STATUS_UPDATE_INTERVAL_MS);
+    }
+
+    private Long computeMotionAutoStopRemainingMs(long now) {
+        if (!shouldMonitorMotionAutoStop() || motionLastDetectedAt <= 0L) {
+            return null;
+        }
+
+        if (motionFadeActive) {
+            return Math.max(0L, MOTION_FADE_DURATION_MS - (now - motionFadeStartedAt));
+        }
+
+        return Math.max(0L, MOTION_IDLE_TIMEOUT_MS - (now - motionLastDetectedAt));
+    }
+
+    private void clearMotionAutoStopRuntimeState() {
+        motionFadeActive = false;
+        motionLastDetectedAt = 0L;
+        motionFadeStartedAt = 0L;
+        motionLastPublishedRemainingSeconds = Long.MIN_VALUE;
+        setPlaybackVolume(1f);
+    }
+
+    private void setPlaybackVolume(float volume) {
+        playbackVolume = Math.max(0f, Math.min(1f, volume));
+        if (mediaPlayer != null) {
+            try {
+                mediaPlayer.setVolume(playbackVolume, playbackVolume);
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    private boolean readMotionAutoStopEnabled() {
+        return getPlaybackPreferences().getBoolean(PREF_MOTION_AUTO_STOP_ENABLED, false);
+    }
+
+    private void persistMotionAutoStopEnabled(boolean enabled) {
+        getPlaybackPreferences().edit().putBoolean(PREF_MOTION_AUTO_STOP_ENABLED, enabled).apply();
+    }
+
+    private SharedPreferences getPlaybackPreferences() {
+        return getSharedPreferences(PREFERENCES_NAME, MODE_PRIVATE);
+    }
+
     private void updateMediaSession() {
         if (mediaSession == null) return;
 
@@ -686,10 +986,16 @@ public class BackgroundPlaybackService extends Service {
     }
 
     private void publishState() {
-        updateMediaSession();
-        NotificationManager notificationManager = getSystemService(NotificationManager.class);
-        if (notificationManager != null) {
-            notificationManager.notify(NOTIFICATION_ID, buildNotification());
+        publishState(true);
+    }
+
+    private void publishState(boolean refreshNotification) {
+        if (refreshNotification) {
+            updateMediaSession();
+            NotificationManager notificationManager = getSystemService(NotificationManager.class);
+            if (notificationManager != null) {
+                notificationManager.notify(NOTIFICATION_ID, buildNotification());
+            }
         }
         BackgroundAudioPlugin.emitState(getStatePayload());
     }

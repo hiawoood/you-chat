@@ -99,6 +99,9 @@ export default function ChatView({
     error: ttsError,
     activeMessageId: ttsActiveMessageId,
     chunks: ttsChunks,
+    motionAutoStopEnabled: ttsMotionAutoStopEnabled,
+    motionIdleRemainingMs: ttsMotionIdleRemainingMs,
+    motionFadeActive: ttsMotionFadeActive,
     playbackSpeed: ttsPlaybackSpeed,
     setPlaybackSpeed: ttsSetPlaybackSpeed,
     startPlayback,
@@ -125,6 +128,13 @@ export default function ChatView({
     const words = content.trim().split(/\s+/).filter(Boolean);
     if (words.length <= count) return words.join(" ");
     return words.slice(-count).join(" ");
+  };
+
+  const formatCountdown = (remainingMs: number) => {
+    const totalSeconds = Math.max(0, Math.ceil(remainingMs / 1000));
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
   };
 
   useEffect(() => {
@@ -181,6 +191,9 @@ export default function ChatView({
       showTtsStatusPanel ? TTS_STATUS_PANEL_EXTRA_SPACER_PX : 0,
     )
     : 0;
+  const motionAutoStopLabel = ttsMotionAutoStopEnabled && ttsMotionIdleRemainingMs !== null
+    ? `${ttsMotionFadeActive ? "Fading" : "Stop in"} ${formatCountdown(ttsMotionIdleRemainingMs)}`
+    : null;
 
   useEffect(() => {
     if (!hasTtsOverlay || ttsTotalChunks === 0) {
@@ -1065,6 +1078,15 @@ export default function ChatView({
                       </svg>
                     )}
                   </div>
+
+                  {motionAutoStopLabel && (
+                    <div
+                      className={`rounded-full px-2 py-1 text-[10px] font-medium tabular-nums sm:text-[11px] ${ttsMotionFadeActive ? "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300" : "bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300"}`}
+                      title="Countdown until playback fades out and stops if the phone stays still"
+                    >
+                      {motionAutoStopLabel}
+                    </div>
+                  )}
 
                   {(isTtsProvisioning || !!ttsServiceStatus?.instance || !!ttsServiceStatusError) && (
                     <button

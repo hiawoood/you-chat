@@ -22,6 +22,9 @@ export interface TTSState {
   error: string | null;
   activeMessageId: string | null;
   chunks: TTSChunk[];
+  motionAutoStopEnabled: boolean;
+  motionIdleRemainingMs: number | null;
+  motionFadeActive: boolean;
 }
 
 const MAX_PREFETCH_AHEAD = 2;
@@ -241,6 +244,9 @@ export function useChunkedVastTTS() {
     error: null,
     activeMessageId: null,
     chunks: [],
+    motionAutoStopEnabled: false,
+    motionIdleRemainingMs: null,
+    motionFadeActive: false,
   });
 
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -309,6 +315,9 @@ export function useChunkedVastTTS() {
       error: payload.error,
       activeMessageId: payload.activeMessageId,
       chunks: [...chunksRef.current],
+      motionAutoStopEnabled: payload.motionAutoStopEnabled,
+      motionIdleRemainingMs: payload.motionIdleRemainingMs,
+      motionFadeActive: payload.motionFadeActive,
     }));
   }, []);
 
@@ -409,8 +418,11 @@ export function useChunkedVastTTS() {
       error: null,
       activeMessageId: null,
       chunks: [],
+      motionAutoStopEnabled: nativeTtsEnabled ? state.motionAutoStopEnabled : false,
+      motionIdleRemainingMs: null,
+      motionFadeActive: false,
     });
-  }, [stopAudio]);
+  }, [nativeTtsEnabled, state.motionAutoStopEnabled, stopAudio]);
 
   const generateChunkAudio = useCallback(async (text: string, hash: string, voiceReferenceId: string | null): Promise<string> => {
     const cached = await getCachedAudio(hash);
@@ -814,6 +826,8 @@ export function useChunkedVastTTS() {
           activeMessageId: messageId,
           totalChunks: 0,
           chunks: [],
+          motionIdleRemainingMs: null,
+          motionFadeActive: false,
         }));
         return;
       }
@@ -849,6 +863,9 @@ export function useChunkedVastTTS() {
         error: null,
         activeMessageId: messageId,
         chunks: [...chunksRef.current],
+        motionAutoStopEnabled: state.motionAutoStopEnabled,
+        motionIdleRemainingMs: null,
+        motionFadeActive: false,
       });
 
       await nativeTtsPlugin.startPlayback({
@@ -882,6 +899,8 @@ export function useChunkedVastTTS() {
       setState((prev) => ({
         ...prev,
         activeMessageId: messageId,
+        motionIdleRemainingMs: null,
+        motionFadeActive: false,
       }));
       return;
     }
@@ -930,13 +949,16 @@ export function useChunkedVastTTS() {
       error: null,
       activeMessageId: messageId,
       chunks: [...chunksRef.current],
+      motionAutoStopEnabled: state.motionAutoStopEnabled,
+      motionIdleRemainingMs: null,
+      motionFadeActive: false,
     });
 
     void prefetchUpcomingChunks(startChunkIndex);
 
     const token = ++playbackTokenRef.current;
     await playFromChunk(startChunkIndex, token);
-  }, [fetchProgress, nativeTtsEnabled, nativeTtsPlugin, playFromChunk, prefetchUpcomingChunks, reset]);
+  }, [fetchProgress, nativeTtsEnabled, nativeTtsPlugin, playFromChunk, prefetchUpcomingChunks, reset, state.motionAutoStopEnabled]);
 
   const pause = useCallback(() => {
     if (nativeTtsEnabled && nativeTtsPlugin) {
