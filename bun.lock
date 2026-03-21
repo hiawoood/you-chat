@@ -10,8 +10,6 @@
         "@capacitor/status-bar": "^8.0.1",
         "@tanstack/react-virtual": "^3.13.18",
         "better-auth": "^1.4.18",
-        "cordova-plugin-background-mode": "^0.7.3",
-        "cordova-plugin-device": "^3.0.0",
         "hono": "^4.11.7",
         "kokoro-js": "^1.2.1",
         "react": "^19.2.4",
@@ -438,10 +436,6 @@
     "commander": ["commander@12.1.0", "", {}, "sha512-Vw8qHK3bZM9y/P10u3Vib8o/DdkvA2OtPtZvD871QKjy74Wj1WSKFILMPRPSdUSx5RFK1arlJzEtA4PkFgnbuA=="],
 
     "convert-source-map": ["convert-source-map@2.0.0", "", {}, "sha512-Kvp459HrV2FEJ1CAsi1Ku+MY3kasH19TFykTz2xWmMeq6bk2NU3XXvfJ+Q61m0xktWwt+1HSYf3JZsTms3aRJg=="],
-
-    "cordova-plugin-background-mode": ["cordova-plugin-background-mode@0.7.3", "", {}, "sha512-LsU1v7EgTUROaks+tcQ8TnMzVUcU/TwjDVwj2O/4e4aI2q2ldLGsiZorqKqfqvwh2HoIssmY73OwJk91hQi62w=="],
-
-    "cordova-plugin-device": ["cordova-plugin-device@3.0.0", "", {}, "sha512-g8fFYOvleeYpklWvHwZ/T8/IzJe/3O0MGVDIUoqBru4v8SNDAbNVD3oOqoOQANBWGFQMg7GIkAAl8errCHZ7zQ=="],
 
     "cross-spawn": ["cross-spawn@7.0.6", "", { "dependencies": { "path-key": "^3.1.0", "shebang-command": "^2.0.0", "which": "^2.0.1" } }, "sha512-uV2QOWP2nWzsy2aMp8aRibhi9dlzF5Hgh5SHaB9OiTGEyDTiJJyx0uy51QXdyWbtAHNua4XJzUKca3OzKUd3vA=="],
 
