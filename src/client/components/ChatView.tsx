@@ -16,6 +16,7 @@ const TTS_VOICE_PANEL_EXTRA_SPACER_PX = 196;
 const TTS_STATUS_PANEL_EXTRA_SPACER_PX = 212;
 const TTS_SWIPE_THRESHOLD_PX = 48;
 const TTS_PLAY_BUTTON_LONG_PRESS_MS = 450;
+const STREAMING_TTS_MESSAGE_ID = "streaming";
 
 interface ChatViewProps {
   session: ChatSession;
@@ -286,15 +287,17 @@ export default function ChatView({
       setStreamingContent(content);
     },
     onDone: (messageId) => {
+      const finalContent = streamingContentRef.current;
       setThinkingStatus(null);
       setSuppressMessageAutoScroll((prev) => prev || !isNearBottom());
       onMessageReceived({
         id: messageId,
         session_id: session.id,
         role: "assistant",
-        content: streamingContentRef.current,
+        content: finalContent,
         created_at: Math.floor(Date.now() / 1000),
       });
+      void syncActiveStreamingTtsToFinalMessage(messageId, finalContent);
       streamingContentRef.current = "";
       setStreamingContent("");
     },
@@ -359,7 +362,28 @@ export default function ChatView({
     return response?.selectedVoiceId ?? null;
   };
 
+  const syncActiveStreamingTtsToFinalMessage = async (messageId: string, content: string) => {
+    if (ttsActiveMessageId !== STREAMING_TTS_MESSAGE_ID || (!ttsIsPlaying && !ttsIsLoading) || !content.trim()) {
+      return;
+    }
+
+    const voiceId = await resolvePlaybackVoiceId();
+    await startPlayback(content, messageId, Math.max(0, ttsCurrentChunk), voiceId);
+  };
+
   const handleToggleTTS = async (messageId: string, content: string) => {
+    if (messageId === STREAMING_TTS_MESSAGE_ID) {
+      const voiceId = await resolvePlaybackVoiceId();
+
+      if (ttsActiveMessageId === messageId && (ttsIsPlaying || ttsIsLoading)) {
+        ttsPause();
+        return;
+      }
+
+      await startPlayback(content, messageId, ttsActiveMessageId === messageId ? Math.max(0, ttsCurrentChunk) : 0, voiceId);
+      return;
+    }
+
     const voiceId = await resolvePlaybackVoiceId();
     await ttsToggle(content, messageId, voiceId);
   };
@@ -429,9 +453,13 @@ export default function ChatView({
       setShowVoiceMenu(false);
 
       if (ttsActiveMessageId && (ttsIsPlaying || ttsIsLoading)) {
-        const activeMessage = messages.find((message) => message.id === ttsActiveMessageId);
-        if (activeMessage) {
-          await startPlayback(activeMessage.content, activeMessage.id, ttsCurrentChunk, voiceId);
+        if (ttsActiveMessageId === STREAMING_TTS_MESSAGE_ID && streamingContentRef.current.trim()) {
+          await startPlayback(streamingContentRef.current, STREAMING_TTS_MESSAGE_ID, ttsCurrentChunk, voiceId);
+        } else {
+          const activeMessage = messages.find((message) => message.id === ttsActiveMessageId);
+          if (activeMessage) {
+            await startPlayback(activeMessage.content, activeMessage.id, ttsCurrentChunk, voiceId);
+          }
         }
       }
     } catch (error) {

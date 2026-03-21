@@ -195,7 +195,7 @@ export default function MessageList({
             onFork={onFork && !isActivelyStreaming ? () => onFork(item.id) : undefined}
             onContinue={onContinue && !isActivelyStreaming && !isUserItem ? () => onContinue(item.content) : undefined}
             onCompact={onCompact && !isActivelyStreaming ? () => onCompact(item.id) : undefined}
-            onToggleTTS={onToggleTTS && !isActivelyStreaming && !isUserItem ? () => onToggleTTS(item.id, item.content) : undefined}
+            onToggleTTS={onToggleTTS && !isUserItem ? () => onToggleTTS(item.id, item.content) : undefined}
             onPlayTTSChunk={onPlayTTSChunk && !isActivelyStreaming && !isUserItem ? (chunkIndex: number) => onPlayTTSChunk(item.id, item.content, chunkIndex) : undefined}
             onWordClick={onWordClick ? (e, wordIndex) => onWordClick(e, wordIndex, item.id, item.content) : undefined}
             forceCollapsed={collapsedIds.has(item.id)}
@@ -433,6 +433,7 @@ function MessageBubble({
   const isCollapsed = collapsed && isLong && !editing;
   const isBusy = isDeleting || isSaving || isForking || actionDisabled;
   const shouldRenderChunkButtons = !isUser && !isStreaming && !!onPlayTTSChunk && (ttsTextChunks?.length ?? 0) > 1;
+  const showInlineTtsButton = !isUser && !editing && !!onToggleTTS;
 
   useEffect(() => {
     if (!ttsAutoScrollEnabled || !isTTSActive || isCollapsed || editing || !shouldRenderChunkButtons) {
@@ -469,13 +470,41 @@ function MessageBubble({
         className={`w-full sm:max-w-[85%] md:max-w-[80%] rounded-lg relative ${
           isUser
             ? "bg-gray-900 text-white dark:bg-gray-700 px-4 py-2"
-            : `bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 border px-4 py-2 ${
+            : `bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 border px-4 ${showInlineTtsButton ? "pr-12 pt-3 pb-2" : "py-2"} ${
                 isTTSActive
                   ? "border-emerald-500 dark:border-emerald-400 ring-2 ring-emerald-500/20 dark:ring-emerald-400/20"
                   : "border-gray-200 dark:border-gray-700"
               }`
         }`}
       >
+        {showInlineTtsButton && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleTTS?.();
+            }}
+            className={`absolute right-2 top-2 inline-flex h-7 w-7 items-center justify-center rounded-full border transition-colors ${isTTSActive ? "border-emerald-300 bg-emerald-50 text-emerald-600 hover:bg-emerald-100 dark:border-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300 dark:hover:bg-emerald-900/40" : "border-gray-200 bg-white/90 text-gray-400 hover:border-gray-300 hover:bg-gray-100 hover:text-gray-600 dark:border-gray-700 dark:bg-gray-800/90 dark:text-gray-400 dark:hover:border-gray-600 dark:hover:bg-gray-700 dark:hover:text-gray-200"}`}
+            title={isTTSPlaying ? "Pause (Space)" : isTTSActive ? "Resume (Space)" : isStreaming ? "Read current stream aloud" : "Read aloud"}
+            aria-label={isTTSPlaying ? "Pause reading aloud" : isTTSActive ? "Resume reading aloud" : isStreaming ? "Read current stream aloud" : "Read message aloud"}
+          >
+            {isTTSLoading ? (
+              <svg className="h-3.5 w-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+              </svg>
+            ) : isTTSPlaying ? (
+              <svg className="h-3.5 w-3.5" fill="currentColor" viewBox="0 0 24 24">
+                <rect x="6" y="4" width="4" height="16" rx="1" />
+                <rect x="14" y="4" width="4" height="16" rx="1" />
+              </svg>
+            ) : (
+              <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
+              </svg>
+            )}
+          </button>
+        )}
+
         {editing ? (
           <div className="space-y-2">
             <textarea
