@@ -110,6 +110,8 @@ tts.post("/speak", async (c) => {
         audio: result.audio,
         duration: result.duration,
         sampleRate: result.sampleRate,
+        audioFormat: result.audioFormat,
+        mimeType: result.mimeType,
         instance: {
           id: instance?.id,
           gpu: instance?.gpuName,

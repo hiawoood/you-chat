@@ -110,7 +110,7 @@ export function TTSPlayer({
           gpu: result.instance?.gpu,
         });
 
-        const mimeType = result.fallback ? "audio/mp3" : "audio/wav";
+        const mimeType = result.mimeType || "audio/mpeg";
         await playAudio(result.audio, mimeType);
       }
     } catch (err) {

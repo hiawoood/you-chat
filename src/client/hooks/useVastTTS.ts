@@ -30,6 +30,9 @@ export interface SpeakResult {
   audio?: string; // base64
   duration?: number;
   sampleRate?: number;
+  audioFormat?: "mp3";
+  mimeType?: string;
+  fallback?: boolean;
   error?: string;
   instance?: {
     id: string;
@@ -137,6 +140,8 @@ export function useVastTTS() {
           audio: response.audio,
           duration: response.duration,
           sampleRate: response.sampleRate,
+          audioFormat: response.audioFormat,
+          mimeType: response.mimeType,
           instance: response.instance,
         };
       }
@@ -157,7 +162,7 @@ export function useVastTTS() {
   /**
    * Play audio from base64 string
    */
-  const playAudio = useCallback((base64Audio: string, mimeType: string = "audio/wav"): Promise<void> => {
+  const playAudio = useCallback((base64Audio: string, mimeType: string = "audio/mpeg"): Promise<void> => {
     return new Promise((resolve, reject) => {
       // Stop any existing audio
       if (audioRef.current) {

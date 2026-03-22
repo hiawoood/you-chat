@@ -31,7 +31,9 @@ export interface TTSSpeechRequest {
 
 export interface TTSSpeechResponse {
   audio: string; // base64 encoded audio
-  duration: number;
+  audioFormat: "mp3";
+  mimeType: "audio/mpeg";
+  duration?: number;
   sampleRate: number;
 }
 
@@ -1118,7 +1120,7 @@ async function continueProvisioningInstance(instance: VastInstance, generation: 
 
 /**
  * Generate speech using the Chatterbox TTS Server
- * Returns raw WAV audio data (binary)
+ * Returns MP3 audio data encoded as base64
  */
 export async function generateSpeech(
   request: TTSSpeechRequest,
@@ -1130,7 +1132,7 @@ export async function generateSpeech(
   instance.lastActivity = new Date();
   resetInactivityTimer();
 
-  const audioBuffer = await runExclusiveTtsServiceRequest("tts", async () => {
+  const { audioBuffer, mimeType } = await runExclusiveTtsServiceRequest("tts", async () => {
     let response: Response | null = null;
     let lastError: string | null = null;
     let lastStatusCode: number | null = null;
@@ -1146,6 +1148,7 @@ export async function generateSpeech(
             },
             body: JSON.stringify({
               text: request.text,
+              audio_format: "mp3",
             }),
             signal: AbortSignal.timeout(180000),
           }
@@ -1153,7 +1156,15 @@ export async function generateSpeech(
 
         if (response.ok) {
           updateKnownServiceHealth(true);
-          return await response.arrayBuffer();
+          const responseMimeType = response.headers.get("content-type")?.split(";")[0]?.trim() || "audio/mpeg";
+          if (responseMimeType !== "audio/mpeg" && responseMimeType !== "audio/mp3") {
+            throw new Error(`Unexpected TTS audio format returned: ${responseMimeType}`);
+          }
+
+          return {
+            audioBuffer: await response.arrayBuffer(),
+            mimeType: "audio/mpeg" as const,
+          };
         }
 
         lastStatusCode = response.status;
@@ -1219,6 +1230,7 @@ export async function generateSpeech(
               },
               body: JSON.stringify({
                 text: request.text,
+                audio_format: "mp3",
               }),
               signal: AbortSignal.timeout(180000),
             }
@@ -1226,7 +1238,15 @@ export async function generateSpeech(
 
           if (response.ok) {
             updateKnownServiceHealth(true);
-            return await response.arrayBuffer();
+            const responseMimeType = response.headers.get("content-type")?.split(";")[0]?.trim() || "audio/mpeg";
+            if (responseMimeType !== "audio/mpeg" && responseMimeType !== "audio/mp3") {
+              throw new Error(`Unexpected TTS audio format returned: ${responseMimeType}`);
+            }
+
+            return {
+              audioBuffer: await response.arrayBuffer(),
+              mimeType: "audio/mpeg" as const,
+            };
           }
 
           lastStatusCode = response.status;
@@ -1242,19 +1262,14 @@ export async function generateSpeech(
     throw new Error(`TTS generation failed: ${lastError || "Unknown error"}`);
   });
 
-  // Get raw audio data and convert to base64
-  const audioBase64 = Buffer.from(audioBuffer).toString('base64');
-  
-  // Estimate duration (rough calculation for 24kHz mono)
-  // WAV header is 44 bytes, rest is PCM data
-  const audioDataSize = audioBuffer.byteLength - 44;
-  const duration = audioDataSize / (24000 * 2); // 24kHz, 16-bit = 2 bytes per sample
+  const audioBase64 = Buffer.from(audioBuffer).toString("base64");
 
   setLifecycleRunning("GPU instance ready.", instance);
 
   return {
     audio: audioBase64,
-    duration: Math.max(0, duration),
+    audioFormat: "mp3",
+    mimeType,
     sampleRate: 24000,
   };
 }

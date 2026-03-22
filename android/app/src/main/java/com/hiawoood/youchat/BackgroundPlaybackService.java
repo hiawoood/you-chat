@@ -158,6 +158,7 @@ public class BackgroundPlaybackService extends Service {
     public void onCreate() {
         super.onCreate();
         instance = this;
+        deleteLegacyWavChunkFiles();
         createNotificationChannel();
         acquireWakeLock();
         createMediaSession();
@@ -721,6 +722,20 @@ public class BackgroundPlaybackService extends Service {
         preparedChunkFiles.clear();
     }
 
+    private void deleteLegacyWavChunkFiles() {
+        File[] files = getCacheDir().listFiles((dir, name) -> name.startsWith("tts-") && name.endsWith(".wav"));
+        if (files == null) {
+            return;
+        }
+
+        for (File file : files) {
+            if (file.exists()) {
+                //noinspection ResultOfMethodCallIgnored
+                file.delete();
+            }
+        }
+    }
+
     private void trimPreparedChunks(int maxChunkCount) {
         preparedChunkIndices.removeIf((index) -> index >= maxChunkCount);
         fetchTasks.entrySet().removeIf((entry) -> {
@@ -761,7 +776,7 @@ public class BackgroundPlaybackService extends Service {
             throw lastException != null ? lastException : new Exception("Failed to generate chunk audio.");
         }
 
-        File outputFile = new File(getCacheDir(), "tts-" + sessionGeneration.get() + "-" + chunkIndex + ".wav");
+        File outputFile = new File(getCacheDir(), "tts-" + sessionGeneration.get() + "-" + chunkIndex + ".mp3");
         try (BufferedOutputStream outputStream = new BufferedOutputStream(new FileOutputStream(outputFile))) {
             outputStream.write(audioBytes);
             outputStream.flush();

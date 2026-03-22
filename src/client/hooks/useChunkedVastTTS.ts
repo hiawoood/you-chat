@@ -40,13 +40,16 @@ const PLAYBACK_SPEED_STORAGE_KEY = "tts-playback-speed";
 
 // ---- Browser audio cache (IndexedDB, keyed by chunk hash) ----
 const CACHE_DB_NAME = "tts-audio-cache";
-const CACHE_DB_VERSION = 1;
+const CACHE_DB_VERSION = 2;
 const CACHE_STORE_NAME = "clips";
+const TTS_AUDIO_FORMAT = "mp3";
+const TTS_AUDIO_MIME_TYPE = "audio/mpeg";
 let cacheDbPromise: Promise<IDBDatabase> | null = null;
 
 interface CachedAudioRecord {
   hash: string;
   audio: string;
+  audioFormat: typeof TTS_AUDIO_FORMAT;
   updatedAt: number;
   size: number;
 }
@@ -65,7 +68,7 @@ function buildChunkHash(
   text: string,
   voiceReferenceId: string | null
 ): string {
-  return hashText(`${messageId}::${chunkIndex}::${voiceReferenceId || "builtin"}::${text}`);
+  return hashText(`${TTS_AUDIO_FORMAT}::${messageId}::${chunkIndex}::${voiceReferenceId || "builtin"}::${text}`);
 }
 
 
@@ -80,11 +83,13 @@ function openCacheDb(): Promise<IDBDatabase> {
 
       request.onupgradeneeded = () => {
         const db = request.result;
-        const store = db.objectStoreNames.contains(CACHE_STORE_NAME)
-          ? request.transaction?.objectStore(CACHE_STORE_NAME)
-          : db.createObjectStore(CACHE_STORE_NAME, { keyPath: "hash" });
+        if (db.objectStoreNames.contains(CACHE_STORE_NAME)) {
+          db.deleteObjectStore(CACHE_STORE_NAME);
+        }
 
-        if (store && !store.indexNames.contains("updatedAt")) {
+        const store = db.createObjectStore(CACHE_STORE_NAME, { keyPath: "hash" });
+
+        if (!store.indexNames.contains("updatedAt")) {
           store.createIndex("updatedAt", "updatedAt", { unique: false });
         }
       };
@@ -150,6 +155,7 @@ async function getCachedAudio(hash: string): Promise<string | null> {
 
       const updatedRecord: CachedAudioRecord = {
         ...existing,
+        audioFormat: existing.audioFormat || TTS_AUDIO_FORMAT,
         updatedAt: Date.now(),
       };
       await runIdbRequest(store.put(updatedRecord));
@@ -166,6 +172,7 @@ async function setCachedAudio(hash: string, audio: string): Promise<void> {
   const record: CachedAudioRecord = {
     hash,
     audio,
+    audioFormat: TTS_AUDIO_FORMAT,
     updatedAt: Date.now(),
     size: audio.length,
   };
@@ -492,6 +499,12 @@ export function useChunkedVastTTS() {
       const response = await api.post("/tts/speak", { text, voiceReferenceId });
       if (!response.success || !response.audio) {
         throw new Error(response.error || "Failed to generate audio");
+      }
+      if (response.audioFormat && response.audioFormat !== TTS_AUDIO_FORMAT) {
+        throw new Error(`Unexpected TTS audio format: ${response.audioFormat}`);
+      }
+      if (response.mimeType && response.mimeType !== TTS_AUDIO_MIME_TYPE) {
+        throw new Error(`Unexpected TTS MIME type: ${response.mimeType}`);
       }
       await setCachedAudio(hash, response.audio);
       return response.audio;
