@@ -22,7 +22,7 @@ function protectTtsStageDirections(text: string): { text: string; cues: Protecte
   let index = 0;
 
   const protectedText = text.replace(TTS_STAGE_DIRECTION_PATTERN, (match) => {
-    const token = `TTS_STAGE_DIRECTION_${index++}__`;
+    const token = `TTSCUEPLACEHOLDER${index++}ZZZ`;
     cues.push({ token, value: match });
     return token;
   });

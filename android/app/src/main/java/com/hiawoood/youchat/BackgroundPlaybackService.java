@@ -674,7 +674,7 @@ public class BackgroundPlaybackService extends Service {
         int cueIndex = 0;
 
         while (cueMatcher.find()) {
-            String token = "TTS_STAGE_DIRECTION_" + cueIndex++ + "__";
+            String token = "TTSCUEPLACEHOLDER" + cueIndex++ + "ZZZ";
             protectedCues.put(token, cueMatcher.group());
             cueMatcher.appendReplacement(protectedBuffer, token);
         }
