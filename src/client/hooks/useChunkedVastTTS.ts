@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { api } from "../lib/api";
 import { getNativeTtsPlugin, isNativeTtsAvailable, type NativeTtsStatePayload } from "../lib/native-tts";
+import { formatTextForTts } from "../lib/tts-text";
 
 export interface TTSChunk {
   id: number;
@@ -204,7 +205,7 @@ export function splitTextIntoTtsChunks(
   targetWordsPerChunk: number = 60,
   options: { completeSentencesOnly?: boolean } = {}
 ): string[] {
-  const trimmedText = text.trim();
+  const trimmedText = formatTextForTts(text).trim();
   if (!trimmedText) return [];
 
   let sentences = trimmedText.match(/[^.!?]+(?:[.!?]+["')\]]*|$)/g)?.map((sentence) => sentence.trim()).filter(Boolean) || [trimmedText];

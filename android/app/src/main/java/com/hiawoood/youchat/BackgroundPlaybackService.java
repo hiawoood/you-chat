@@ -96,6 +96,7 @@ public class BackgroundPlaybackService extends Service {
     private static final float ACCELEROMETER_GRAVITY_ALPHA = 0.8f;
     private static final int TTS_TARGET_WORDS_PER_CHUNK = 60;
     private static final Pattern STREAMING_SENTENCE_PATTERN = Pattern.compile("[^.!?]+(?:[.!?]+[\\\"')\\]]*|$)");
+    private static final Pattern TTS_STAGE_DIRECTION_PATTERN = Pattern.compile("\\[(clear throat|sigh|shush|cough|groan|sniff|gasp|chuckle|laugh)\\]", Pattern.CASE_INSENSITIVE);
 
     private static volatile BackgroundPlaybackService instance;
 
@@ -626,11 +627,12 @@ public class BackgroundPlaybackService extends Service {
 
     private ArrayList<String> buildStreamingChunks(String text) {
         ArrayList<String> chunks = new ArrayList<>();
-        if (text == null || text.trim().isEmpty()) {
+        String formattedText = formatTextForTts(text);
+        if (formattedText.isEmpty()) {
             return chunks;
         }
 
-        Matcher matcher = STREAMING_SENTENCE_PATTERN.matcher(text.trim());
+        Matcher matcher = STREAMING_SENTENCE_PATTERN.matcher(formattedText);
         StringBuilder currentChunk = new StringBuilder();
         int currentWordCount = 0;
 
@@ -659,6 +661,46 @@ public class BackgroundPlaybackService extends Service {
         }
 
         return chunks;
+    }
+
+    private String formatTextForTts(String text) {
+        if (text == null || text.trim().isEmpty()) {
+            return "";
+        }
+
+        Map<String, String> protectedCues = new HashMap<>();
+        Matcher cueMatcher = TTS_STAGE_DIRECTION_PATTERN.matcher(text);
+        StringBuffer protectedBuffer = new StringBuffer();
+        int cueIndex = 0;
+
+        while (cueMatcher.find()) {
+            String token = "TTS_STAGE_DIRECTION_" + cueIndex++ + "__";
+            protectedCues.put(token, cueMatcher.group());
+            cueMatcher.appendReplacement(protectedBuffer, token);
+        }
+        cueMatcher.appendTail(protectedBuffer);
+
+        String formatted = protectedBuffer.toString()
+            .replaceAll("(?m)^#{1,6}\\s+", "")
+            .replaceAll("(\\*{1,2}|_{1,2})(.+?)\\1", "$2")
+            .replaceAll("~~(.+?)~~", "$1")
+            .replaceAll("!\\[([^\\]]*)\\]\\([^)]+\\)", "$1")
+            .replaceAll("\\[([^\\]]+)\\]\\([^)]+\\)", "$1")
+            .replaceAll("```[\\s\\S]*?```", "")
+            .replaceAll("`([^`]+)`", "$1")
+            .replaceAll("(?m)^\\s*>+\\s*", "")
+            .replaceAll("(?m)^\\s*[-*+]\\s+", "")
+            .replaceAll("(?m)^\\s*\\d+\\.\\s+", "")
+            .replaceAll("(?m)^\\s*[-*_]{3,}\\s*$", "")
+            .replaceAll("<[^>]+>", "")
+            .replaceAll("\\n{3,}", "\n\n")
+            .trim();
+
+        for (Map.Entry<String, String> entry : protectedCues.entrySet()) {
+            formatted = formatted.replace(entry.getKey(), entry.getValue());
+        }
+
+        return formatted;
     }
 
     private int countWords(String text) {

@@ -1,4 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from "react";
+import { formatTextForTts } from "../lib/tts-text";
 
 interface TTSChunk {
   id: number;
@@ -23,27 +24,6 @@ interface TTSState {
 const CHUNK_SIZE = 500;
 const FIRST_CHUNK_SIZE = 200; // Smaller first chunk for faster start
 const SAMPLE_RATE = 24000;
-
-// Strip markdown formatting for TTS
-function stripMarkdown(text: string): string {
-  return (
-    text
-      .replace(/^#{1,6}\s+/gm, "")
-      .replace(/(\*{1,2}|_{1,2})(.+?)\1/g, "$2")
-      .replace(/~~(.+?)~~/g, "$1")
-      .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
-      .replace(/!\[([^\]]*)\]\([^)]+\)/g, "$1")
-      .replace(/```[\s\S]*?```/g, "")
-      .replace(/`([^`]+)`/g, "$1")
-      .replace(/^\s*>>\s*/gm, "")
-      .replace(/^\s*[-*+]\s+/gm, "")
-      .replace(/^\s*\d+\.\s+/gm, "")
-      .replace(/^\s*[-*_]{3,}\s*$/gm, "")
-      .replace(/<[^\u003e]+>/g, "")
-      .replace(/\n{3,}/g, "\n\n")
-      .trim()
-  );
-}
 
 // Split text into chunks - first chunk is smaller for faster initial playback
 function createChunks(text: string): TTSChunk[] {
@@ -295,7 +275,7 @@ export function useTTS() {
       }));
 
       const worker = getWorker();
-      const plainText = stripMarkdown(text);
+      const plainText = formatTextForTts(text);
       const chunks = createChunks(plainText);
       chunksRef.current = chunks;
 

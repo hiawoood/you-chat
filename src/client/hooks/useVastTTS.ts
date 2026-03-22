@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { api } from "../lib/api";
+import { formatTextForTts } from "../lib/tts-text";
 
 export interface TTSOptions {
   voice?: string;
@@ -127,8 +128,9 @@ export function useVastTTS() {
     setError(null);
 
     try {
+      const formattedText = formatTextForTts(text);
       const response = await api.post("/tts/speak", {
-        text,
+        text: formattedText,
         voice: options.voice,
         speed: options.speed,
         language: options.language,
