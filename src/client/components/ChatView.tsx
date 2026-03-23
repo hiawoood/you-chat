@@ -17,6 +17,8 @@ const TTS_STATUS_PANEL_EXTRA_SPACER_PX = 212;
 const TTS_SWIPE_THRESHOLD_PX = 48;
 const TTS_PLAY_BUTTON_LONG_PRESS_MS = 450;
 const STREAMING_TTS_PLACEHOLDER_ID = "streaming";
+const PULL_TO_REFRESH_TRIGGER_PX = 72;
+const MAX_PULL_TO_REFRESH_PX = 96;
 
 interface ChatViewProps {
   session: ChatSession;
@@ -33,7 +35,9 @@ interface ChatViewProps {
   onFork?: (messageId: string) => void;
   onStopGeneration?: () => void;
   onBeforeRegenerate?: (action: () => Promise<void>) => Promise<void>;
+  onRefreshMessages?: () => Promise<void>;
   hasInFlightStream?: boolean;
+  messagesRefreshing?: boolean;
   actionLoading?: string | null;
 }
 
@@ -52,7 +56,9 @@ export default function ChatView({
   onFork,
   onStopGeneration,
   onBeforeRegenerate,
+  onRefreshMessages,
   hasInFlightStream = false,
+  messagesRefreshing = false,
   actionLoading,
 }: ChatViewProps) {
   const [streamingContent, setStreamingContent] = useState("");
@@ -90,6 +96,9 @@ export default function ChatView({
   const playButtonLongPressTimerRef = useRef<number | null>(null);
   const suppressPlayButtonClickRef = useRef(false);
   const pendingCollapseSessionIdRef = useRef<string | null>(session.id);
+  const pullRefreshStartYRef = useRef<number | null>(null);
+  const pullRefreshTrackingRef = useRef(false);
+  const [pullRefreshDistance, setPullRefreshDistance] = useState(0);
 
   // Initialize chunked TTS hook
   const {
@@ -198,6 +207,8 @@ export default function ChatView({
   const motionAutoStopLabel = ttsMotionAutoStopEnabled && ttsMotionIdleRemainingMs !== null
     ? `${ttsMotionFadeActive ? "Fade" : "Stop"} ${formatCountdown(ttsMotionIdleRemainingMs)}`
     : null;
+  const showPullRefreshIndicator = pullRefreshDistance > 0 || messagesRefreshing;
+  const pullRefreshProgress = Math.min(1, pullRefreshDistance / PULL_TO_REFRESH_TRIGGER_PX);
 
   useEffect(() => {
     if (!hasTtsOverlay || ttsTotalChunks === 0) {
@@ -207,6 +218,12 @@ export default function ChatView({
       setShowTtsSpeedModal(false);
     }
   }, [hasTtsOverlay, ttsTotalChunks]);
+
+  useEffect(() => {
+    if (!messagesRefreshing) {
+      setPullRefreshDistance(0);
+    }
+  }, [messagesRefreshing]);
 
   const handleAgentChange = (newAgent: string) => {
     onUpdateSession(session.id, { agent: newAgent });
@@ -616,6 +633,61 @@ export default function ChatView({
     }
   };
 
+  const handleMessageListTouchStart = (event: ReactTouchEvent<HTMLDivElement>) => {
+    if (messagesLoading) return;
+
+    const el = scrollContainerRef.current;
+    const touch = event.touches[0];
+    if (!el || !touch) return;
+
+    if (el.scrollTop > 0) {
+      pullRefreshTrackingRef.current = false;
+      pullRefreshStartYRef.current = null;
+      return;
+    }
+
+    pullRefreshTrackingRef.current = true;
+    pullRefreshStartYRef.current = touch.clientY;
+  };
+
+  const handleMessageListTouchMove = (event: ReactTouchEvent<HTMLDivElement>) => {
+    if (!pullRefreshTrackingRef.current || messagesLoading || messagesRefreshing) return;
+
+    const el = scrollContainerRef.current;
+    const touch = event.touches[0];
+    const startY = pullRefreshStartYRef.current;
+    if (!el || !touch || startY === null) return;
+
+    if (el.scrollTop > 0) {
+      pullRefreshTrackingRef.current = false;
+      pullRefreshStartYRef.current = null;
+      setPullRefreshDistance(0);
+      return;
+    }
+
+    const deltaY = touch.clientY - startY;
+    if (deltaY <= 0) {
+      setPullRefreshDistance(0);
+      return;
+    }
+
+    setPullRefreshDistance(Math.min(MAX_PULL_TO_REFRESH_PX, deltaY * 0.5));
+  };
+
+  const handleMessageListTouchEnd = () => {
+    const shouldRefresh = pullRefreshDistance >= PULL_TO_REFRESH_TRIGGER_PX && !messagesRefreshing;
+    pullRefreshTrackingRef.current = false;
+    pullRefreshStartYRef.current = null;
+
+    if (shouldRefresh) {
+      setPullRefreshDistance(PULL_TO_REFRESH_TRIGGER_PX);
+      void onRefreshMessages?.();
+      return;
+    }
+
+    setPullRefreshDistance(0);
+  };
+
   const hasMessages = messages.length > 0;
   const hasActiveStream = isStreaming || isCompacting || hasInFlightStream;
 
@@ -731,6 +803,10 @@ export default function ChatView({
       <div
         ref={scrollContainerRef}
         data-chat-scroll-container
+        onTouchStart={handleMessageListTouchStart}
+        onTouchMove={handleMessageListTouchMove}
+        onTouchEnd={handleMessageListTouchEnd}
+        onTouchCancel={handleMessageListTouchEnd}
         className="flex-1 overflow-y-auto bg-gray-50 dark:bg-gray-950"
       >
         {messagesLoading ? (
@@ -745,6 +821,22 @@ export default function ChatView({
           </div>
         ) : (
           <div className="max-w-3xl mx-auto p-4">
+            {showPullRefreshIndicator && (
+              <div className="flex justify-center pb-3">
+                <div className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-medium shadow-sm transition-colors ${messagesRefreshing ? "border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-800 dark:bg-sky-950/70 dark:text-sky-300" : "border-gray-200 bg-white text-gray-600 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300"}`}>
+                  <svg
+                    className={`h-3.5 w-3.5 ${messagesRefreshing ? "animate-spin" : ""}`}
+                    style={messagesRefreshing ? undefined : { transform: `rotate(${pullRefreshProgress * 180}deg)` }}
+                    fill="none"
+                    viewBox="0 0 24 24"
+                  >
+                    <path className="opacity-25" d="M12 2a10 10 0 1010 10" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+                    <path d="M12 2a10 10 0 00-7.07 2.93" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+                  </svg>
+                  <span>{messagesRefreshing ? "Refreshing messages..." : pullRefreshDistance >= PULL_TO_REFRESH_TRIGGER_PX ? "Release to refresh" : "Pull to refresh"}</span>
+                </div>
+              </div>
+            )}
             <MessageList
               messages={messages}
               streamingContent={streamingContent}

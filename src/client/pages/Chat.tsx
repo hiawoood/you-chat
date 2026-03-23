@@ -19,6 +19,7 @@ export default function Chat() {
   const [sidebarOpen, setSidebarOpen] = useState(window.innerWidth >= 1024);
   const [loading, setLoading] = useState(true);
   const [messagesLoading, setMessagesLoading] = useState(false);
+  const [messagesRefreshing, setMessagesRefreshing] = useState(false);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
 
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -81,6 +82,20 @@ export default function Chat() {
       setMessagesLoading(false);
     }
   }, []);
+
+  const refreshMessages = useCallback(async () => {
+    if (!activeSessionId || messagesRefreshing) return;
+
+    setMessagesRefreshing(true);
+    try {
+      const data = await api.getMessages(activeSessionId);
+      setMessages(data);
+    } catch (error) {
+      console.error("Failed to refresh messages:", error);
+    } finally {
+      setMessagesRefreshing(false);
+    }
+  }, [activeSessionId, messagesRefreshing]);
 
   useEffect(() => {
     loadSessions();
@@ -251,7 +266,14 @@ export default function Chat() {
   };
 
   const handleMessageReceived = (assistantMessage: Message) => {
-    setMessages((prev) => [...prev, assistantMessage]);
+    setMessages((prev) => {
+      const existingIndex = prev.findIndex((message) => message.id === assistantMessage.id);
+      if (existingIndex >= 0) {
+        return prev.map((message, index) => index === existingIndex ? { ...message, ...assistantMessage } : message);
+      }
+
+      return [...prev, assistantMessage];
+    });
     loadSessions();
   };
 
@@ -390,7 +412,9 @@ export default function Chat() {
             onFork={handleFork}
             onBeforeRegenerate={stopThenRun}
             onStopGeneration={stopActiveSessionGeneration}
+            onRefreshMessages={refreshMessages}
             hasInFlightStream={hasInFlightStream}
+            messagesRefreshing={messagesRefreshing}
             actionLoading={actionLoading}
           />
         ) : (

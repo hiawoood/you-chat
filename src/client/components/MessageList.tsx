@@ -86,11 +86,14 @@ export default function MessageList({
   ttsAutoScrollEnabled = false,
   bottomSpacerHeight = 0,
 }: MessageListProps) {
+  const dedupedMessages = streamingContent && streamingMessageId
+    ? messages.filter((message) => message.id !== streamingMessageId)
+    : messages;
   const bottomRef = useRef<HTMLDivElement>(null);
-  const prevMessageLengthRef = useRef(messages.length);
+  const prevMessageLengthRef = useRef(dedupedMessages.length);
 
   const items: (Message & { isStreaming?: boolean })[] = [
-    ...messages,
+    ...dedupedMessages,
     ...(streamingContent
       ? [{
           id: streamingMessageId || "streaming",
@@ -128,7 +131,7 @@ export default function MessageList({
     }
 
     prevMessageLengthRef.current = nextLength;
-  }, [messages.length, suppressAutoScrollOnNextAppend, disableAutoScroll, isNearBottom, onAutoScrollSuppressed]);
+  }, [dedupedMessages.length, disableAutoScroll, isNearBottom, onAutoScrollSuppressed, suppressAutoScrollOnNextAppend]);
 
   if (items.length === 0) {
     return (
