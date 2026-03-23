@@ -49,6 +49,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -97,6 +98,7 @@ public class BackgroundPlaybackService extends Service {
     private static final int TTS_TARGET_WORDS_PER_CHUNK = 60;
     private static final Pattern STREAMING_SENTENCE_PATTERN = Pattern.compile("[^.!?]+(?:[.!?]+[\\\"')\\]]*|$)");
     private static final Pattern TTS_STAGE_DIRECTION_PATTERN = Pattern.compile("\\[(clear throat|sigh|shush|cough|groan|sniff|gasp|chuckle|laugh)\\]", Pattern.CASE_INSENSITIVE);
+    private static final Pattern ALL_CAPS_WORD_PATTERN = Pattern.compile("\\b[A-Z]{2,}(?:['-][A-Z]+)*\\b");
 
     private static volatile BackgroundPlaybackService instance;
 
@@ -696,11 +698,25 @@ public class BackgroundPlaybackService extends Service {
             .replaceAll("\\n{3,}", "\n\n")
             .trim();
 
+        formatted = normalizeAllCapsWords(formatted);
+
         for (Map.Entry<String, String> entry : protectedCues.entrySet()) {
             formatted = formatted.replace(entry.getKey(), entry.getValue());
         }
 
         return formatted;
+    }
+
+    private String normalizeAllCapsWords(String text) {
+        Matcher matcher = ALL_CAPS_WORD_PATTERN.matcher(text);
+        StringBuffer normalized = new StringBuffer();
+
+        while (matcher.find()) {
+            matcher.appendReplacement(normalized, matcher.group().toLowerCase(Locale.US));
+        }
+        matcher.appendTail(normalized);
+
+        return normalized.toString();
     }
 
     private int countWords(String text) {

@@ -11,6 +11,7 @@ const TTS_STAGE_DIRECTIONS = [
 ] as const;
 
 const TTS_STAGE_DIRECTION_PATTERN = new RegExp(`\\[(${TTS_STAGE_DIRECTIONS.join("|")})\\]`, "gi");
+const ALL_CAPS_WORD_PATTERN = /\b[A-Z]{2,}(?:['-][A-Z]+)*\b/g;
 
 interface ProtectedCue {
   token: string;
@@ -38,6 +39,10 @@ function restoreTtsStageDirections(text: string, cues: ProtectedCue[]): string {
   return restoredText;
 }
 
+function normalizeAllCapsWords(text: string): string {
+  return text.replace(ALL_CAPS_WORD_PATTERN, (word) => word.toLowerCase());
+}
+
 export function formatTextForTts(text: string): string {
   const { text: protectedText, cues } = protectTtsStageDirections(text);
 
@@ -57,7 +62,7 @@ export function formatTextForTts(text: string): string {
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 
-  return restoreTtsStageDirections(strippedText, cues);
+  return restoreTtsStageDirections(normalizeAllCapsWords(strippedText), cues);
 }
 
 export { TTS_STAGE_DIRECTIONS };
