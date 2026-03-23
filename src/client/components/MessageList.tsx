@@ -436,7 +436,7 @@ function MessageBubble({
 
   const isCollapsed = collapsed && isLong && !editing;
   const isBusy = isDeleting || isSaving || isForking || actionDisabled;
-  const shouldRenderChunkButtons = !isUser && !!onPlayTTSChunk && (ttsTextChunks?.length ?? 0) > 1 && (!isStreaming || isTTSActive);
+  const shouldRenderChunkButtons = !isUser && isTTSActive && !!onPlayTTSChunk && (ttsTextChunks?.length ?? 0) > 1;
   const showInlineTtsButton = !isUser && !editing && !!onToggleTTS;
 
   useEffect(() => {
