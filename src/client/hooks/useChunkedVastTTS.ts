@@ -212,18 +212,10 @@ function splitTextIntoChunkPairs(
   options: { completeSentencesOnly?: boolean } = {}
 ): TtsChunkPair[] {
   const trimmedText = text.trim();
-  const formattedText = formatTextForTts(text).trim();
-  if (!trimmedText || !formattedText) return [];
+  if (!trimmedText) return [];
 
-  let displaySentences = trimmedText.match(/[^.!?]+(?:[.!?]+["')\]]*|$)/g)?.map((sentence) => sentence.trim()).filter(Boolean) || [trimmedText];
-  let ttsSentences = formattedText.match(/[^.!?]+(?:[.!?]+["')\]]*|$)/g)?.map((sentence) => sentence.trim()).filter(Boolean) || [formattedText];
-
-  if (options.completeSentencesOnly) {
-    displaySentences = displaySentences.filter((sentence) => /[.!?]+["')\]]*$/.test(sentence));
-    ttsSentences = ttsSentences.filter((sentence) => /[.!?]+["')\]]*$/.test(sentence));
-  }
-
-  if (ttsSentences.length === 0) {
+  const displaySentences = trimmedText.match(/[^.!?]+(?:[.!?]+["')\]]*|$)/g)?.map((sentence) => sentence.trim()).filter(Boolean) || [trimmedText];
+  if (displaySentences.length === 0) {
     return [];
   }
 
@@ -232,18 +224,22 @@ function splitTextIntoChunkPairs(
   let currentDisplayChunk = "";
   let currentWordCount = 0;
 
-  for (let index = 0; index < ttsSentences.length; index++) {
-    const sentence = ttsSentences[index];
-    if (!sentence) continue;
-    const displaySentence = displaySentences[index] || sentence;
-    const wordCount = sentence.trim().split(/\s+/).length;
+  for (const displaySentence of displaySentences) {
+    const ttsSentence = formatTextForTts(displaySentence).trim();
+    if (!ttsSentence) continue;
+
+    if (options.completeSentencesOnly && !/[.!?]+["')\]]*$/.test(ttsSentence)) {
+      continue;
+    }
+
+    const wordCount = ttsSentence.split(/\s+/).length;
     if (currentWordCount + wordCount > targetWordsPerChunk && currentChunk.length > 0) {
       chunks.push({ text: currentChunk.trim(), displayText: currentDisplayChunk.trim() });
-      currentChunk = sentence;
+      currentChunk = ttsSentence;
       currentDisplayChunk = displaySentence;
       currentWordCount = wordCount;
     } else {
-      currentChunk += " " + sentence;
+      currentChunk += " " + ttsSentence;
       currentDisplayChunk += " " + displaySentence;
       currentWordCount += wordCount;
     }
