@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Message } from "../lib/api";
-import { splitTextIntoTtsChunks, type TTSChunk } from "../hooks/useChunkedVastTTS";
+import { splitStreamingTextIntoDisplayChunks, splitTextIntoDisplayChunks, type TTSChunk } from "../hooks/useChunkedVastTTS";
 
 const COLLAPSE_HEIGHT = 72;
 const COLLAPSE_LINE_COUNT = 3;
@@ -152,8 +152,10 @@ export default function MessageList({
 
         const isTTSActive = ttsActiveMessageId === item.id;
         const messageTtsChunks = isTTSActive && ttsChunks && ttsChunks.length > 0
-          ? ttsChunks.map((chunk) => chunk.text)
-          : splitTextIntoTtsChunks(item.content);
+          ? ttsChunks.map((chunk) => chunk.displayText)
+          : isActivelyStreaming
+            ? splitStreamingTextIntoDisplayChunks(item.content)
+            : splitTextIntoDisplayChunks(item.content);
         
         // Calculate which chunk words are in for highlighting
         const getWordChunkInfo = (wordIndex: number) => {

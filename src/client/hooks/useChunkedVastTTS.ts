@@ -6,11 +6,17 @@ import { formatTextForTts } from "../lib/tts-text";
 export interface TTSChunk {
   id: number;
   text: string;
+  displayText: string;
   hash: string;
   startWord: number;
   endWord: number;
   audio: string | null;
   status: "pending" | "generating" | "ready" | "error" | "playing";
+}
+
+interface TtsChunkPair {
+  text: string;
+  displayText: string;
 }
 
 export interface TTSState {
@@ -200,46 +206,77 @@ async function setCachedAudio(hash: string, audio: string): Promise<void> {
 }
 
 // ---- Chunking ----
+function splitTextIntoChunkPairs(
+  text: string,
+  targetWordsPerChunk: number = 60,
+  options: { completeSentencesOnly?: boolean } = {}
+): TtsChunkPair[] {
+  const trimmedText = text.trim();
+  const formattedText = formatTextForTts(text).trim();
+  if (!trimmedText || !formattedText) return [];
+
+  let displaySentences = trimmedText.match(/[^.!?]+(?:[.!?]+["')\]]*|$)/g)?.map((sentence) => sentence.trim()).filter(Boolean) || [trimmedText];
+  let ttsSentences = formattedText.match(/[^.!?]+(?:[.!?]+["')\]]*|$)/g)?.map((sentence) => sentence.trim()).filter(Boolean) || [formattedText];
+
+  if (options.completeSentencesOnly) {
+    displaySentences = displaySentences.filter((sentence) => /[.!?]+["')\]]*$/.test(sentence));
+    ttsSentences = ttsSentences.filter((sentence) => /[.!?]+["')\]]*$/.test(sentence));
+  }
+
+  if (ttsSentences.length === 0) {
+    return [];
+  }
+
+  const chunks: TtsChunkPair[] = [];
+  let currentChunk = "";
+  let currentDisplayChunk = "";
+  let currentWordCount = 0;
+
+  for (let index = 0; index < ttsSentences.length; index++) {
+    const sentence = ttsSentences[index];
+    if (!sentence) continue;
+    const displaySentence = displaySentences[index] || sentence;
+    const wordCount = sentence.trim().split(/\s+/).length;
+    if (currentWordCount + wordCount > targetWordsPerChunk && currentChunk.length > 0) {
+      chunks.push({ text: currentChunk.trim(), displayText: currentDisplayChunk.trim() });
+      currentChunk = sentence;
+      currentDisplayChunk = displaySentence;
+      currentWordCount = wordCount;
+    } else {
+      currentChunk += " " + sentence;
+      currentDisplayChunk += " " + displaySentence;
+      currentWordCount += wordCount;
+    }
+  }
+
+  if (currentChunk.trim()) {
+    chunks.push({ text: currentChunk.trim(), displayText: currentDisplayChunk.trim() });
+  }
+  return chunks;
+}
+
 export function splitTextIntoTtsChunks(
   text: string,
   targetWordsPerChunk: number = 60,
   options: { completeSentencesOnly?: boolean } = {}
 ): string[] {
-  const trimmedText = formatTextForTts(text).trim();
-  if (!trimmedText) return [];
+  return splitTextIntoChunkPairs(text, targetWordsPerChunk, options).map((chunk) => chunk.text);
+}
 
-  let sentences = trimmedText.match(/[^.!?]+(?:[.!?]+["')\]]*|$)/g)?.map((sentence) => sentence.trim()).filter(Boolean) || [trimmedText];
-
-  if (options.completeSentencesOnly) {
-    sentences = sentences.filter((sentence) => /[.!?]+["')\]]*$/.test(sentence));
-  }
-
-  if (sentences.length === 0) {
-    return [];
-  }
-
-  const chunks: string[] = [];
-  let currentChunk = "";
-  let currentWordCount = 0;
-
-  for (const sentence of sentences) {
-    const wordCount = sentence.trim().split(/\s+/).length;
-    if (currentWordCount + wordCount > targetWordsPerChunk && currentChunk.length > 0) {
-      chunks.push(currentChunk.trim());
-      currentChunk = sentence;
-      currentWordCount = wordCount;
-    } else {
-      currentChunk += " " + sentence;
-      currentWordCount += wordCount;
-    }
-  }
-
-  if (currentChunk.trim()) chunks.push(currentChunk.trim());
-  return chunks;
+export function splitTextIntoDisplayChunks(
+  text: string,
+  targetWordsPerChunk: number = 60,
+  options: { completeSentencesOnly?: boolean } = {}
+): string[] {
+  return splitTextIntoChunkPairs(text, targetWordsPerChunk, options).map((chunk) => chunk.displayText);
 }
 
 export function splitStreamingTextIntoTtsChunks(text: string, targetWordsPerChunk: number = 60): string[] {
   return splitTextIntoTtsChunks(text, targetWordsPerChunk, { completeSentencesOnly: true });
+}
+
+export function splitStreamingTextIntoDisplayChunks(text: string, targetWordsPerChunk: number = 60): string[] {
+  return splitTextIntoDisplayChunks(text, targetWordsPerChunk, { completeSentencesOnly: true });
 }
 
 function findChunkForWordIndex(chunks: string[], targetWordIndex: number): number {
@@ -260,21 +297,22 @@ function chunkTextArraysMatch(a: string[], b: string[]): boolean {
 
 function buildTtsChunks(
   messageId: string,
-  chunkTexts: string[],
+  chunkPairs: TtsChunkPair[],
   voiceReferenceId: string | null,
   previousChunks: TTSChunk[] = []
 ): TTSChunk[] {
   let wordOffset = 0;
 
-  return chunkTexts.map((chunkText, index) => {
-    const words = chunkText.split(/\s+/).filter(Boolean).length;
-    const hash = buildChunkHash(messageId, index, chunkText, voiceReferenceId);
+  return chunkPairs.map((chunk, index) => {
+    const words = chunk.text.split(/\s+/).filter(Boolean).length;
+    const hash = buildChunkHash(messageId, index, chunk.text, voiceReferenceId);
     const previousChunk = previousChunks[index];
     const shouldReusePrevious = previousChunk?.hash === hash;
 
-    const chunk: TTSChunk = {
+    const nextChunk: TTSChunk = {
       id: index,
-      text: chunkText,
+      text: chunk.text,
+      displayText: chunk.displayText,
       hash,
       startWord: wordOffset,
       endWord: wordOffset + words,
@@ -283,7 +321,7 @@ function buildTtsChunks(
     };
 
     wordOffset += words;
-    return chunk;
+    return nextChunk;
   });
 }
 
@@ -880,8 +918,6 @@ export function useChunkedVastTTS() {
     voiceReferenceId: string | null = null,
     options: StartPlaybackOptions = {}
   ) => {
-    const splitChunks = options.streaming ? splitStreamingTextIntoTtsChunks : splitTextIntoTtsChunks;
-
     if (nativeTtsEnabled && nativeTtsPlugin) {
       messageIdRef.current = messageId;
       activeVoiceReferenceIdRef.current = voiceReferenceId;
@@ -891,7 +927,8 @@ export function useChunkedVastTTS() {
         startChunkIndex = options.streaming ? 0 : await fetchProgress(messageId);
       }
 
-      const textChunks = splitChunks(text);
+      const chunkPairs = splitTextIntoChunkPairs(text, 60, options.streaming ? { completeSentencesOnly: true } : {});
+      const textChunks = chunkPairs.map((chunk) => chunk.text);
       textChunksRef.current = textChunks;
 
       if (textChunks.length === 0) {
@@ -907,7 +944,7 @@ export function useChunkedVastTTS() {
       }
 
       startChunkIndex = Math.max(0, Math.min(startChunkIndex, textChunks.length - 1));
-      chunksRef.current = buildTtsChunks(messageId, textChunks, voiceReferenceId).map((chunk, index) => ({
+      chunksRef.current = buildTtsChunks(messageId, chunkPairs, voiceReferenceId).map((chunk, index) => ({
         ...chunk,
         status: index === startChunkIndex ? "generating" : chunk.status,
       }));
@@ -953,7 +990,8 @@ export function useChunkedVastTTS() {
       if (requestToken !== playbackTokenRef.current) return;
     }
 
-    const textChunks = splitChunks(text);
+    const chunkPairs = splitTextIntoChunkPairs(text, 60, options.streaming ? { completeSentencesOnly: true } : {});
+    const textChunks = chunkPairs.map((chunk) => chunk.text);
     textChunksRef.current = textChunks;
 
     if (requestToken !== playbackTokenRef.current) return;
@@ -971,7 +1009,7 @@ export function useChunkedVastTTS() {
     startChunkIndex = Math.max(0, Math.min(startChunkIndex, textChunks.length - 1));
 
     const builtChunks: TTSChunk[] = [];
-    const initialChunks = buildTtsChunks(messageId, textChunks, activeVoiceReferenceIdRef.current);
+    const initialChunks = buildTtsChunks(messageId, chunkPairs, activeVoiceReferenceIdRef.current);
     for (const chunk of initialChunks) {
       const cachedAudio = await getCachedAudio(chunk.hash);
       builtChunks.push({
@@ -1021,7 +1059,8 @@ export function useChunkedVastTTS() {
     }
 
     const effectiveVoiceReferenceId = voiceReferenceId ?? activeVoiceReferenceIdRef.current;
-    const nextChunkTexts = splitStreamingTextIntoTtsChunks(text);
+    const nextChunkPairs = splitTextIntoChunkPairs(text, 60, { completeSentencesOnly: true });
+    const nextChunkTexts = nextChunkPairs.map((chunk) => chunk.text);
     const previousChunkTexts = textChunksRef.current;
 
     textRef.current = text;
@@ -1042,7 +1081,7 @@ export function useChunkedVastTTS() {
 
     textChunksRef.current = nextChunkTexts;
     const previousChunks = chunksRef.current;
-    chunksRef.current = buildTtsChunks(messageId, nextChunkTexts, effectiveVoiceReferenceId, previousChunks).map((chunk, index) => {
+    chunksRef.current = buildTtsChunks(messageId, nextChunkPairs, effectiveVoiceReferenceId, previousChunks).map((chunk, index) => {
       const previousChunk = previousChunks[index];
       if (!previousChunk || previousChunk.hash !== chunk.hash) {
         return chunk;
