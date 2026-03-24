@@ -26,6 +26,7 @@ try { mkdirSync(dirname(dbPath), { recursive: true }); } catch {}
 
 console.log(`Database path: ${dbPath}`);
 export const db = new Database(dbPath, { create: true });
+const tableColumnCache = new Map<string, Set<string>>();
 
 // Enable foreign keys
 db.run("PRAGMA foreign_keys = ON");
@@ -139,11 +140,7 @@ export function initDb() {
   } catch {
     // Column already exists
   }
-  try {
-    db.run(`ALTER TABLE chat_sessions ADD COLUMN tts_mapping_updated_at INTEGER DEFAULT (unixepoch())`);
-  } catch {
-    // Column already exists
-  }
+  ensureTableColumn("chat_sessions", "tts_mapping_updated_at", `ALTER TABLE chat_sessions ADD COLUMN tts_mapping_updated_at INTEGER DEFAULT (unixepoch())`);
 
   // User credentials for You.com cookies
   db.run(`
@@ -255,6 +252,36 @@ export function initDb() {
   db.run(`CREATE INDEX IF NOT EXISTS idx_session_tts_speaker_mappings_session ON session_tts_speaker_mappings(session_id)`);
 
   console.log("Database initialized");
+}
+
+function readTableColumns(tableName: string): Set<string> {
+  const rows = db.query(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>;
+  const columns = new Set(rows.map((row) => row.name));
+  tableColumnCache.set(tableName, columns);
+  return columns;
+}
+
+function hasTableColumn(tableName: string, columnName: string): boolean {
+  const cachedColumns = tableColumnCache.get(tableName);
+  if (cachedColumns?.has(columnName)) {
+    return true;
+  }
+
+  return readTableColumns(tableName).has(columnName);
+}
+
+function ensureTableColumn(tableName: string, columnName: string, alterSql: string): boolean {
+  if (hasTableColumn(tableName, columnName)) {
+    return true;
+  }
+
+  try {
+    db.run(alterSql);
+  } catch {
+    // Column may already exist or migration may fail on older state
+  }
+
+  return hasTableColumn(tableName, columnName);
 }
 
 // Helper functions
@@ -827,7 +854,18 @@ export function deleteTtsMessageSpeakerState(messageId: string) {
 }
 
 function touchSessionTtsMapping(sessionId: string, now: number = Math.floor(Date.now() / 1000)) {
-  db.run(`UPDATE chat_sessions SET tts_mapping_updated_at = ? WHERE id = ?`, [now, sessionId]);
+  const hasMappingColumn = ensureTableColumn(
+    "chat_sessions",
+    "tts_mapping_updated_at",
+    `ALTER TABLE chat_sessions ADD COLUMN tts_mapping_updated_at INTEGER DEFAULT (unixepoch())`
+  );
+
+  if (hasMappingColumn) {
+    db.run(`UPDATE chat_sessions SET tts_mapping_updated_at = ?, updated_at = ? WHERE id = ?`, [now, now, sessionId]);
+    return;
+  }
+
+  db.run(`UPDATE chat_sessions SET updated_at = ? WHERE id = ?`, [now, sessionId]);
 }
 
 const SPEAKER_TAG_PATTERN = /^\s*\[([^\]\n]+)\]\s*/;
