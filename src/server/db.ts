@@ -868,7 +868,7 @@ function touchSessionTtsMapping(sessionId: string, now: number = Math.floor(Date
   db.run(`UPDATE chat_sessions SET updated_at = ? WHERE id = ?`, [now, sessionId]);
 }
 
-const SPEAKER_TAG_PATTERN = /^\s*\[([^\]\n]+)\]\s*/;
+const SPEAKER_TAG_PATTERN = /^\s*["“]\[([^\]\n]+)\]\s*/;
 
 export function normalizeSpeakerKey(label: string): string {
   const trimmed = label.trim();

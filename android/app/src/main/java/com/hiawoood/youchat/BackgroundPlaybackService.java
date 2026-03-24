@@ -756,7 +756,7 @@ public class BackgroundPlaybackService extends Service {
 
             while (matcher.find()) {
                 String displaySentence = matcher.group().trim();
-                String ttsSentence = formatTextForTts(displaySentence);
+                String ttsSentence = ((sentenceIndex == 0 ? speakerLine.ttsLead : "") + formatTextForTts(displaySentence)).trim();
                 if (ttsSentence.isEmpty() || !COMPLETE_SENTENCE_PATTERN.matcher(ttsSentence).find()) {
                     continue;
                 }
@@ -809,30 +809,33 @@ public class BackgroundPlaybackService extends Service {
         final String speakerKey;
         final String speakerLabel;
         final String prefix;
+        final String ttsLead;
         final String body;
         final String voiceReferenceId;
 
-        SpeakerLine(String speakerKey, String speakerLabel, String prefix, String body, String voiceReferenceId) {
+        SpeakerLine(String speakerKey, String speakerLabel, String prefix, String ttsLead, String body, String voiceReferenceId) {
             this.speakerKey = speakerKey;
             this.speakerLabel = speakerLabel;
             this.prefix = prefix;
+            this.ttsLead = ttsLead;
             this.body = body;
             this.voiceReferenceId = voiceReferenceId;
         }
     }
 
     private SpeakerLine parseSpeakerLine(String rawLine) {
-        Matcher matcher = Pattern.compile("^\\s*\\[([^\\]\\n]+)\\]\\s*").matcher(rawLine);
+        Matcher matcher = Pattern.compile("^\\s*([\"“])\\[([^\\]\\n]+)\\]\\s*").matcher(rawLine);
         if (!matcher.find()) {
-            return new SpeakerLine("narrator", "Narrator", "", rawLine, defaultVoiceReferenceId);
+            return new SpeakerLine("narrator", "Narrator", "", "", rawLine, defaultVoiceReferenceId);
         }
 
-        String speakerLabel = matcher.group(1) == null ? "Narrator" : matcher.group(1).trim();
+        String speakerLabel = matcher.group(2) == null ? "Narrator" : matcher.group(2).trim();
         String speakerKey = speakerLabel.toLowerCase(Locale.US).replaceAll("\\s+", " ");
         return new SpeakerLine(
             speakerKey,
             speakerLabel,
             matcher.group(),
+            matcher.group(1) == null ? "" : matcher.group(1),
             rawLine.substring(matcher.end()),
             speakerVoiceReferenceIds.containsKey(speakerKey) ? speakerVoiceReferenceIds.get(speakerKey) : defaultVoiceReferenceId
         );

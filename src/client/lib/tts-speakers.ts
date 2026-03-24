@@ -21,7 +21,7 @@ export interface TtsChunkPlan {
 }
 
 const SENTENCE_PATTERN = /[^.!?]+(?:[.!?]+["')\]”’]*|$)/g;
-const SPEAKER_TAG_PATTERN = /^\s*\[([^\]\n]+)\]\s*/;
+const SPEAKER_TAG_PATTERN = /^\s*(["“])\[([^\]\n]+)\]\s*/;
 const COMPLETE_SENTENCE_PATTERN = /[.!?]+["')\]”’]*$/;
 
 export function normalizeSpeakerKey(label: string) {
@@ -41,15 +41,17 @@ function parseSpeakerLine(line: string) {
       speakerKey: "narrator",
       speakerLabel: "Narrator",
       prefix: "",
+      ttsLead: "",
       body: line,
     };
   }
 
-  const speakerLabel = match[1]?.trim() || "Narrator";
+  const speakerLabel = match[2]?.trim() || "Narrator";
   return {
     speakerKey: normalizeSpeakerKey(speakerLabel),
     speakerLabel,
     prefix: match[0],
+    ttsLead: match[1] || "",
     body: line.slice(match[0].length),
   };
 }
@@ -73,7 +75,7 @@ export function buildSpeakerChunkPlans(
       const displaySentence = displaySentences[index];
       if (!displaySentence) continue;
 
-      const ttsSentence = formatTextForTts(displaySentence).trim();
+      const ttsSentence = `${index === 0 ? parsedLine.ttsLead : ""}${formatTextForTts(displaySentence).trim()}`.trim();
       if (!ttsSentence) continue;
       if (options.completeSentencesOnly && !COMPLETE_SENTENCE_PATTERN.test(ttsSentence)) {
         continue;
