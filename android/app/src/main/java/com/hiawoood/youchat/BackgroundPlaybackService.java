@@ -182,6 +182,18 @@ public class BackgroundPlaybackService extends Service {
         }
     }
 
+    private static class PlaybackSentenceUnit {
+        final PlaybackChunkPart part;
+        final String displayText;
+        final int wordCount;
+
+        PlaybackSentenceUnit(PlaybackChunkPart part, String displayText, int wordCount) {
+            this.part = part;
+            this.displayText = displayText;
+            this.wordCount = wordCount;
+        }
+    }
+
     public static BackgroundPlaybackService getInstance() {
         return instance;
     }
@@ -750,6 +762,7 @@ public class BackgroundPlaybackService extends Service {
         for (SpeakerLine speakerLine : splitSpeakerSegments(text)) {
             Matcher matcher = STREAMING_SENTENCE_PATTERN.matcher(speakerLine.body);
             int sentenceIndex = 0;
+            ArrayList<PlaybackSentenceUnit> segmentUnits = new ArrayList<>();
 
             while (matcher.find()) {
                 String displaySentence = matcher.group().trim();
@@ -758,40 +771,88 @@ public class BackgroundPlaybackService extends Service {
                     continue;
                 }
 
-                int sentenceWordCount = countWords(ttsSentence);
-                if (currentWordCount + sentenceWordCount > TTS_TARGET_WORDS_PER_CHUNK && !currentParts.isEmpty()) {
+                String displayText = (sentenceIndex == 0 ? speakerLine.prefix : "") + displaySentence;
+                segmentUnits.add(new PlaybackSentenceUnit(
+                    new PlaybackChunkPart(
+                        ttsSentence,
+                        speakerLine.speakerKey,
+                        speakerLine.speakerLabel,
+                        speakerLine.voiceReferenceId
+                    ),
+                    displayText,
+                    countWords(ttsSentence)
+                ));
+                sentenceIndex += 1;
+            }
+
+            if (segmentUnits.isEmpty()) {
+                continue;
+            }
+
+            if (speakerLine.isDialog) {
+                int segmentWordCount = 0;
+                for (PlaybackSentenceUnit unit : segmentUnits) {
+                    segmentWordCount += unit.wordCount;
+                }
+
+                if (currentWordCount + segmentWordCount > TTS_TARGET_WORDS_PER_CHUNK && !currentParts.isEmpty()) {
                     chunks.add(new PlaybackChunk(currentDisplayChunk.toString().trim(), new ArrayList<>(currentParts)));
                     currentParts.clear();
                     currentDisplayChunk.setLength(0);
                     currentWordCount = 0;
                 }
 
-                String displayText = (sentenceIndex == 0 ? speakerLine.prefix : "") + displaySentence;
+                for (PlaybackSentenceUnit unit : segmentUnits) {
+                    PlaybackChunkPart previousPart = currentParts.isEmpty() ? null : currentParts.get(currentParts.size() - 1);
+                    if (previousPart != null
+                        && previousPart.speakerKey.equals(unit.part.speakerKey)
+                        && java.util.Objects.equals(previousPart.voiceReferenceId, unit.part.voiceReferenceId)) {
+                        currentParts.set(currentParts.size() - 1, new PlaybackChunkPart(
+                            (previousPart.text + " " + unit.part.text).trim(),
+                            previousPart.speakerKey,
+                            previousPart.speakerLabel,
+                            previousPart.voiceReferenceId
+                        ));
+                    } else {
+                        currentParts.add(unit.part);
+                    }
+
+                    if (currentDisplayChunk.length() > 0) {
+                        currentDisplayChunk.append('\n');
+                    }
+                    currentDisplayChunk.append(unit.displayText);
+                    currentWordCount += unit.wordCount;
+                }
+                continue;
+            }
+
+            for (PlaybackSentenceUnit unit : segmentUnits) {
+                if (currentWordCount + unit.wordCount > TTS_TARGET_WORDS_PER_CHUNK && !currentParts.isEmpty()) {
+                    chunks.add(new PlaybackChunk(currentDisplayChunk.toString().trim(), new ArrayList<>(currentParts)));
+                    currentParts.clear();
+                    currentDisplayChunk.setLength(0);
+                    currentWordCount = 0;
+                }
+
                 PlaybackChunkPart previousPart = currentParts.isEmpty() ? null : currentParts.get(currentParts.size() - 1);
                 if (previousPart != null
-                    && previousPart.speakerKey.equals(speakerLine.speakerKey)
-                    && java.util.Objects.equals(previousPart.voiceReferenceId, speakerLine.voiceReferenceId)) {
+                    && previousPart.speakerKey.equals(unit.part.speakerKey)
+                    && java.util.Objects.equals(previousPart.voiceReferenceId, unit.part.voiceReferenceId)) {
                     currentParts.set(currentParts.size() - 1, new PlaybackChunkPart(
-                        (previousPart.text + " " + ttsSentence).trim(),
+                        (previousPart.text + " " + unit.part.text).trim(),
                         previousPart.speakerKey,
                         previousPart.speakerLabel,
                         previousPart.voiceReferenceId
                     ));
                 } else {
-                    currentParts.add(new PlaybackChunkPart(
-                        ttsSentence,
-                        speakerLine.speakerKey,
-                        speakerLine.speakerLabel,
-                        speakerLine.voiceReferenceId
-                    ));
+                    currentParts.add(unit.part);
                 }
 
                 if (currentDisplayChunk.length() > 0) {
                     currentDisplayChunk.append('\n');
                 }
-                currentDisplayChunk.append(displayText);
-                currentWordCount += sentenceWordCount;
-                sentenceIndex += 1;
+                currentDisplayChunk.append(unit.displayText);
+                currentWordCount += unit.wordCount;
             }
         }
 
@@ -813,7 +874,7 @@ public class BackgroundPlaybackService extends Service {
             if (matchStart > cursor) {
                 String narratorText = text.substring(cursor, matchStart);
                 if (!narratorText.trim().isEmpty()) {
-                    segments.add(new SpeakerLine("narrator", "Narrator", "", "", narratorText, defaultVoiceReferenceId));
+                    segments.add(new SpeakerLine("narrator", "Narrator", "", "", narratorText, defaultVoiceReferenceId, false));
                 }
             }
 
@@ -829,7 +890,8 @@ public class BackgroundPlaybackService extends Service {
                 matcher.group(),
                 matcher.group(1) == null ? "" : matcher.group(1),
                 text.substring(dialogStart, dialogEnd),
-                speakerVoiceReferenceIds.containsKey(speakerKey) ? speakerVoiceReferenceIds.get(speakerKey) : defaultVoiceReferenceId
+                speakerVoiceReferenceIds.containsKey(speakerKey) ? speakerVoiceReferenceIds.get(speakerKey) : defaultVoiceReferenceId,
+                true
             ));
 
             cursor = dialogEnd;
@@ -839,12 +901,12 @@ public class BackgroundPlaybackService extends Service {
         if (cursor < text.length()) {
             String narratorText = text.substring(cursor);
             if (!narratorText.trim().isEmpty()) {
-                segments.add(new SpeakerLine("narrator", "Narrator", "", "", narratorText, defaultVoiceReferenceId));
+                segments.add(new SpeakerLine("narrator", "Narrator", "", "", narratorText, defaultVoiceReferenceId, false));
             }
         }
 
         if (segments.isEmpty() && !text.trim().isEmpty()) {
-            segments.add(new SpeakerLine("narrator", "Narrator", "", "", text, defaultVoiceReferenceId));
+            segments.add(new SpeakerLine("narrator", "Narrator", "", "", text, defaultVoiceReferenceId, false));
         }
 
         return segments;
@@ -857,14 +919,16 @@ public class BackgroundPlaybackService extends Service {
         final String ttsLead;
         final String body;
         final String voiceReferenceId;
+        final boolean isDialog;
 
-        SpeakerLine(String speakerKey, String speakerLabel, String prefix, String ttsLead, String body, String voiceReferenceId) {
+        SpeakerLine(String speakerKey, String speakerLabel, String prefix, String ttsLead, String body, String voiceReferenceId, boolean isDialog) {
             this.speakerKey = speakerKey;
             this.speakerLabel = speakerLabel;
             this.prefix = prefix;
             this.ttsLead = ttsLead;
             this.body = body;
             this.voiceReferenceId = voiceReferenceId;
+            this.isDialog = isDialog;
         }
     }
 

@@ -41,6 +41,7 @@ interface SpeakerSegment {
   prefix: string;
   ttsLead: string;
   body: string;
+  isDialog: boolean;
 }
 
 function splitSpeakerSegments(text: string): SpeakerSegment[] {
@@ -60,6 +61,7 @@ function splitSpeakerSegments(text: string): SpeakerSegment[] {
           prefix: "",
           ttsLead: "",
           body: narratorText,
+          isDialog: false,
         });
       }
     }
@@ -79,6 +81,7 @@ function splitSpeakerSegments(text: string): SpeakerSegment[] {
       prefix: match[0],
       ttsLead: match[1] || "",
       body: dialogBody,
+      isDialog: true,
     });
 
     cursor = dialogEnd;
@@ -94,6 +97,7 @@ function splitSpeakerSegments(text: string): SpeakerSegment[] {
         prefix: "",
         ttsLead: "",
         body: narratorText,
+        isDialog: false,
       });
     }
   }
@@ -105,6 +109,7 @@ function splitSpeakerSegments(text: string): SpeakerSegment[] {
       prefix: "",
       ttsLead: "",
       body: text,
+      isDialog: false,
     });
   }
 
@@ -119,31 +124,6 @@ export function buildSpeakerChunkPlans(
 ): TtsChunkPlan[] {
   const targetWordsPerChunk = options.targetWordsPerChunk ?? 60;
   const voiceBySpeakerKey = new Map(speakerMappings.map((mapping) => [mapping.speakerKey, mapping.voiceReferenceId]));
-  const sentenceUnits: TtsChunkPartPlan[] = [];
-
-  for (const segment of splitSpeakerSegments(text)) {
-    const displaySentences = splitSentences(segment.body);
-
-    for (let index = 0; index < displaySentences.length; index++) {
-      const displaySentence = displaySentences[index];
-      if (!displaySentence) continue;
-
-      const ttsSentence = `${index === 0 ? segment.ttsLead : ""}${formatTextForTts(displaySentence).trim()}`.trim();
-      if (!ttsSentence) continue;
-      if (options.completeSentencesOnly && !COMPLETE_SENTENCE_PATTERN.test(ttsSentence)) {
-        continue;
-      }
-
-      sentenceUnits.push({
-        speakerKey: segment.speakerKey,
-        speakerLabel: segment.speakerLabel,
-        voiceReferenceId: voiceBySpeakerKey.get(segment.speakerKey) ?? defaultVoiceReferenceId,
-        text: ttsSentence,
-        displayText: `${index === 0 ? segment.prefix : ""}${displaySentence}`,
-      });
-    }
-  }
-
   const chunks: TtsChunkPlan[] = [];
   let currentParts: TtsChunkPartPlan[] = [];
   let currentWordCount = 0;
@@ -159,12 +139,7 @@ export function buildSpeakerChunkPlans(
     currentWordCount = 0;
   };
 
-  for (const unit of sentenceUnits) {
-    const wordCount = unit.text.split(/\s+/).filter(Boolean).length;
-    if (currentWordCount + wordCount > targetWordsPerChunk && currentParts.length > 0) {
-      flushChunk();
-    }
-
+  const appendUnit = (unit: TtsChunkPartPlan, wordCount: number) => {
     const previousPart = currentParts[currentParts.length - 1];
     if (
       previousPart &&
@@ -177,6 +152,56 @@ export function buildSpeakerChunkPlans(
       currentParts.push({ ...unit });
     }
     currentWordCount += wordCount;
+  };
+
+  for (const segment of splitSpeakerSegments(text)) {
+    const displaySentences = splitSentences(segment.body);
+    const segmentUnits: Array<{ unit: TtsChunkPartPlan; wordCount: number }> = [];
+
+    for (let index = 0; index < displaySentences.length; index++) {
+      const displaySentence = displaySentences[index];
+      if (!displaySentence) continue;
+
+      const ttsSentence = `${index === 0 ? segment.ttsLead : ""}${formatTextForTts(displaySentence).trim()}`.trim();
+      if (!ttsSentence) continue;
+      if (options.completeSentencesOnly && !COMPLETE_SENTENCE_PATTERN.test(ttsSentence)) {
+        continue;
+      }
+
+      segmentUnits.push({
+        unit: {
+          speakerKey: segment.speakerKey,
+          speakerLabel: segment.speakerLabel,
+          voiceReferenceId: voiceBySpeakerKey.get(segment.speakerKey) ?? defaultVoiceReferenceId,
+          text: ttsSentence,
+          displayText: `${index === 0 ? segment.prefix : ""}${displaySentence}`,
+        },
+        wordCount: ttsSentence.split(/\s+/).filter(Boolean).length,
+      });
+    }
+
+    if (segmentUnits.length === 0) {
+      continue;
+    }
+
+    if (segment.isDialog) {
+      const segmentWordCount = segmentUnits.reduce((sum, entry) => sum + entry.wordCount, 0);
+      if (currentWordCount + segmentWordCount > targetWordsPerChunk && currentParts.length > 0) {
+        flushChunk();
+      }
+
+      for (const entry of segmentUnits) {
+        appendUnit(entry.unit, entry.wordCount);
+      }
+      continue;
+    }
+
+    for (const entry of segmentUnits) {
+      if (currentWordCount + entry.wordCount > targetWordsPerChunk && currentParts.length > 0) {
+        flushChunk();
+      }
+      appendUnit(entry.unit, entry.wordCount);
+    }
   }
 
   flushChunk();

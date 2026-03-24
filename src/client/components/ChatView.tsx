@@ -528,9 +528,12 @@ export default function ChatView({
   };
 
   const restartCurrentTtsPlayback = useCallback(async (speakerMappingsOverride?: SessionTtsSpeakerMapping[], defaultVoiceOverride?: string | null) => {
-    if (!ttsActiveMessageId || (!ttsIsPlaying && !ttsIsLoading)) {
+    if (!ttsActiveMessageId) {
       return;
     }
+
+    const shouldRestartImmediately = ttsIsPlaying || ttsIsLoading;
+    const restartChunkIndex = ttsCurrentChunk;
 
     if (speakerMappingsOverride) {
       setSpeakerContext({
@@ -539,11 +542,17 @@ export default function ChatView({
       });
     }
 
+    if (!shouldRestartImmediately) {
+      return;
+    }
+
+    await ttsStop();
+
     if (ttsActiveMessageId === activeStreamingTtsMessageId && streamingContentRef.current.trim()) {
       await startPlayback(
         streamingContentRef.current,
         activeStreamingTtsMessageId,
-        ttsCurrentChunk,
+        restartChunkIndex,
         defaultVoiceOverride ?? selectedTtsVoiceId,
         { streaming: true },
       );
@@ -555,11 +564,11 @@ export default function ChatView({
       await startPlayback(
         activeMessage.content,
         activeMessage.id,
-        ttsCurrentChunk,
+        restartChunkIndex,
         defaultVoiceOverride ?? selectedTtsVoiceId,
       );
     }
-  }, [activeStreamingTtsMessageId, messages, selectedTtsVoiceId, setSpeakerContext, startPlayback, ttsActiveMessageId, ttsCurrentChunk, ttsIsLoading, ttsIsPlaying]);
+  }, [activeStreamingTtsMessageId, messages, selectedTtsVoiceId, setSpeakerContext, startPlayback, ttsActiveMessageId, ttsCurrentChunk, ttsIsLoading, ttsIsPlaying, ttsStop]);
 
   const handleAssignSpeakerVoice = async (speakerKey: string, voiceId: string | null) => {
     setSessionTtsSpeakerActionKey(speakerKey);
