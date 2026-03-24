@@ -139,6 +139,11 @@ export function initDb() {
   } catch {
     // Column already exists
   }
+  try {
+    db.run(`ALTER TABLE chat_sessions ADD COLUMN tts_mapping_updated_at INTEGER DEFAULT (unixepoch())`);
+  } catch {
+    // Column already exists
+  }
 
   // User credentials for You.com cookies
   db.run(`
@@ -182,9 +187,43 @@ export function initDb() {
       storage_path TEXT NOT NULL,
       mime_type TEXT NOT NULL,
       size_bytes INTEGER NOT NULL,
+      remote_voice_id TEXT,
+      remote_voice_name TEXT,
+      sync_status TEXT DEFAULT 'pending',
+      last_synced_at INTEGER,
+      last_sync_error TEXT,
       created_at INTEGER DEFAULT (unixepoch()),
       updated_at INTEGER DEFAULT (unixepoch()),
       FOREIGN KEY (user_id) REFERENCES user(id) ON DELETE CASCADE
+    )
+  `);
+  try { db.run(`ALTER TABLE tts_voice_references ADD COLUMN remote_voice_id TEXT`); } catch { /* exists */ }
+  try { db.run(`ALTER TABLE tts_voice_references ADD COLUMN remote_voice_name TEXT`); } catch { /* exists */ }
+  try { db.run(`ALTER TABLE tts_voice_references ADD COLUMN sync_status TEXT DEFAULT 'pending'`); } catch { /* exists */ }
+  try { db.run(`ALTER TABLE tts_voice_references ADD COLUMN last_synced_at INTEGER`); } catch { /* exists */ }
+  try { db.run(`ALTER TABLE tts_voice_references ADD COLUMN last_sync_error TEXT`); } catch { /* exists */ }
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS session_tts_speaker_mappings (
+      session_id TEXT NOT NULL,
+      speaker_key TEXT NOT NULL,
+      speaker_label TEXT NOT NULL,
+      voice_reference_id TEXT DEFAULT NULL,
+      created_at INTEGER DEFAULT (unixepoch()),
+      updated_at INTEGER DEFAULT (unixepoch()),
+      PRIMARY KEY (session_id, speaker_key),
+      FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE,
+      FOREIGN KEY (voice_reference_id) REFERENCES tts_voice_references(id) ON DELETE SET NULL
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS tts_message_speaker_state (
+      message_id TEXT PRIMARY KEY,
+      processed_length INTEGER NOT NULL DEFAULT 0,
+      pending_line TEXT NOT NULL DEFAULT '',
+      updated_at INTEGER DEFAULT (unixepoch()),
+      FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE
     )
   `);
 
@@ -213,6 +252,7 @@ export function initDb() {
   db.run(`CREATE INDEX IF NOT EXISTS idx_chat_sessions_user ON chat_sessions(user_id)`);
   db.run(`CREATE INDEX IF NOT EXISTS idx_user_agents_user ON user_agents(user_id)`);
   db.run(`CREATE INDEX IF NOT EXISTS idx_tts_voice_references_user ON tts_voice_references(user_id)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_session_tts_speaker_mappings_session ON session_tts_speaker_mappings(session_id)`);
 
   console.log("Database initialized");
 }
@@ -244,6 +284,7 @@ export function createChatSession(userId: string, title = "untitled", agent = "e
     `INSERT INTO chat_sessions (id, user_id, title, agent, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
     [id, userId, title, agent, now, now]
   );
+  ensureSessionNarratorSpeaker(id);
   return { id, user_id: userId, title, agent, created_at: now, updated_at: now };
 }
 
@@ -287,6 +328,9 @@ export function createMessage(sessionId: string, role: "user" | "assistant", con
   );
   // Update session's updated_at
   db.run(`UPDATE chat_sessions SET updated_at = ? WHERE id = ?`, [now, sessionId]);
+  if (role === "assistant") {
+    rebuildSessionTtsSpeakerMappings(sessionId);
+  }
   return { id, session_id: sessionId, role, content, created_at: now };
 }
 
@@ -305,24 +349,37 @@ export function createStreamingMessage(sessionId: string, role: "user" | "assist
 // Update streaming message content progressively
 export function updateStreamingContent(messageId: string, content: string) {
   db.run(`UPDATE messages SET content = ? WHERE id = ?`, [content, messageId]);
+  const row = db.query(`SELECT session_id FROM messages WHERE id = ?`).get(messageId) as { session_id: string } | null;
+  if (row?.session_id) {
+    syncStreamingMessageSpeakers(row.session_id, messageId, content, false);
+  }
 }
 
 // Mark a streaming message as complete
 export function completeStreamingMessage(messageId: string, content: string) {
   db.run(`UPDATE messages SET content = ?, status = 'complete' WHERE id = ?`, [content, messageId]);
+  const row = db.query(`SELECT session_id FROM messages WHERE id = ?`).get(messageId) as { session_id: string } | null;
+  if (row?.session_id) {
+    syncStreamingMessageSpeakers(row.session_id, messageId, content, true);
+  }
 }
 
 export function updateMessage(messageId: string, sessionId: string, content: string) {
   db.run(`UPDATE messages SET content = ? WHERE id = ? AND session_id = ?`, [content, messageId, sessionId]);
+  rebuildSessionTtsSpeakerMappings(sessionId);
   return db.query(`SELECT * FROM messages WHERE id = ? AND session_id = ?`).get(messageId, sessionId);
 }
 
 export function deleteMessage(messageId: string, sessionId: string) {
   db.run(`DELETE FROM messages WHERE id = ? AND session_id = ?`, [messageId, sessionId]);
+  deleteTtsMessageSpeakerState(messageId);
+  rebuildSessionTtsSpeakerMappings(sessionId);
 }
 
 export function deleteStreamingMessages(sessionId: string) {
   const result = db.run(`DELETE FROM messages WHERE session_id = ? AND status = 'streaming'`, [sessionId]);
+  db.run(`DELETE FROM tts_message_speaker_state WHERE message_id NOT IN (SELECT id FROM messages)`);
+  rebuildSessionTtsSpeakerMappings(sessionId);
   return result.changes;
 }
 
@@ -335,6 +392,8 @@ export function deleteMessagesAfter(messageId: string, sessionId: string) {
     `DELETE FROM messages WHERE session_id = ? AND (created_at > ? OR (created_at = ? AND id != ?))`,
     [sessionId, msg.created_at, msg.created_at, messageId]
   );
+  db.run(`DELETE FROM tts_message_speaker_state WHERE message_id NOT IN (SELECT id FROM messages)`);
+  rebuildSessionTtsSpeakerMappings(sessionId);
   return result.changes;
 }
 
@@ -376,6 +435,8 @@ export function forkSession(
       [id, newSession.id, msg.role, msg.content, msg.created_at]
     );
   }
+
+  rebuildSessionTtsSpeakerMappings(newSession.id);
 
   return { session: getChatSession(newSession.id, userId), messageCount: messagesToCopy.length };
 }
@@ -451,7 +512,28 @@ export interface TtsVoiceReference {
   storage_path: string;
   mime_type: string;
   size_bytes: number;
+  remote_voice_id: string | null;
+  remote_voice_name: string | null;
+  sync_status: string | null;
+  last_synced_at: number | null;
+  last_sync_error: string | null;
   created_at: number;
+  updated_at: number;
+}
+
+export interface SessionTtsSpeakerMapping {
+  session_id: string;
+  speaker_key: string;
+  speaker_label: string;
+  voice_reference_id: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+interface TtsMessageSpeakerState {
+  message_id: string;
+  processed_length: number;
+  pending_line: string;
   updated_at: number;
 }
 
@@ -524,6 +606,13 @@ export function listTtsVoiceReferences(userId: string): TtsVoiceReference[] {
   `).all(userId) as TtsVoiceReference[];
 }
 
+export function listAllTtsVoiceReferences(): TtsVoiceReference[] {
+  return db.query(`
+    SELECT * FROM tts_voice_references
+    ORDER BY user_id ASC, created_at ASC, label COLLATE NOCASE ASC
+  `).all() as TtsVoiceReference[];
+}
+
 export function getTtsVoiceReference(userId: string, voiceId: string): TtsVoiceReference | null {
   return db.query(`
     SELECT * FROM tts_voice_references
@@ -537,21 +626,50 @@ export function createTtsVoiceReference(
   originalFilename: string,
   storagePath: string,
   mimeType: string,
-  sizeBytes: number
+  sizeBytes: number,
+  remoteVoice?: { id: string; name: string } | null,
+  syncStatus: string = remoteVoice ? "synced" : "pending",
+  lastSyncError: string | null = null
 ): TtsVoiceReference {
   const id = generateId();
   const now = Math.floor(Date.now() / 1000);
   db.run(
-    `INSERT INTO tts_voice_references (id, user_id, label, original_filename, storage_path, mime_type, size_bytes, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [id, userId, label, originalFilename, storagePath, mimeType, sizeBytes, now, now]
+    `INSERT INTO tts_voice_references (id, user_id, label, original_filename, storage_path, mime_type, size_bytes, remote_voice_id, remote_voice_name, sync_status, last_synced_at, last_sync_error, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      id,
+      userId,
+      label,
+      originalFilename,
+      storagePath,
+      mimeType,
+      sizeBytes,
+      remoteVoice?.id ?? null,
+      remoteVoice?.name ?? null,
+      syncStatus,
+      remoteVoice ? now : null,
+      lastSyncError,
+      now,
+      now,
+    ]
   );
   return getTtsVoiceReference(userId, id)!;
 }
 
-export function updateTtsVoiceReference(userId: string, voiceId: string, updates: { label?: string; storage_path?: string; mime_type?: string; size_bytes?: number; original_filename?: string }) {
+export function updateTtsVoiceReference(userId: string, voiceId: string, updates: {
+  label?: string;
+  storage_path?: string;
+  mime_type?: string;
+  size_bytes?: number;
+  original_filename?: string;
+  remote_voice_id?: string | null;
+  remote_voice_name?: string | null;
+  sync_status?: string | null;
+  last_synced_at?: number | null;
+  last_sync_error?: string | null;
+}) {
   const sets: string[] = ["updated_at = ?"];
-  const values: Array<string | number> = [Math.floor(Date.now() / 1000)];
+  const values: Array<string | number | null> = [Math.floor(Date.now() / 1000)];
 
   if (updates.label !== undefined) {
     sets.push("label = ?");
@@ -572,6 +690,26 @@ export function updateTtsVoiceReference(userId: string, voiceId: string, updates
   if (updates.original_filename !== undefined) {
     sets.push("original_filename = ?");
     values.push(updates.original_filename);
+  }
+  if (updates.remote_voice_id !== undefined) {
+    sets.push("remote_voice_id = ?");
+    values.push(updates.remote_voice_id);
+  }
+  if (updates.remote_voice_name !== undefined) {
+    sets.push("remote_voice_name = ?");
+    values.push(updates.remote_voice_name);
+  }
+  if (updates.sync_status !== undefined) {
+    sets.push("sync_status = ?");
+    values.push(updates.sync_status);
+  }
+  if (updates.last_synced_at !== undefined) {
+    sets.push("last_synced_at = ?");
+    values.push(updates.last_synced_at);
+  }
+  if (updates.last_sync_error !== undefined) {
+    sets.push("last_sync_error = ?");
+    values.push(updates.last_sync_error);
   }
 
   values.push(userId, voiceId);
@@ -604,4 +742,175 @@ export function setSelectedTtsVoiceReference(userId: string, voiceId: string | n
      ON CONFLICT(user_id) DO UPDATE SET selected_voice_id = excluded.selected_voice_id, updated_at = excluded.updated_at`,
     [userId, voiceId, now]
   );
+}
+
+export function listSessionTtsSpeakerMappings(sessionId: string): SessionTtsSpeakerMapping[] {
+  return db.query(`
+    SELECT * FROM session_tts_speaker_mappings
+    WHERE session_id = ?
+    ORDER BY CASE WHEN speaker_key = 'narrator' THEN 0 ELSE 1 END, speaker_label COLLATE NOCASE ASC
+  `).all(sessionId) as SessionTtsSpeakerMapping[];
+}
+
+export function getSessionTtsSpeakerMapping(sessionId: string, speakerKey: string): SessionTtsSpeakerMapping | null {
+  return db.query(`
+    SELECT * FROM session_tts_speaker_mappings
+    WHERE session_id = ? AND speaker_key = ?
+  `).get(sessionId, speakerKey) as SessionTtsSpeakerMapping | null;
+}
+
+export function upsertSessionTtsSpeakerMapping(sessionId: string, speakerKey: string, speakerLabel: string, voiceReferenceId: string | null = null) {
+  const now = Math.floor(Date.now() / 1000);
+  db.run(
+    `INSERT INTO session_tts_speaker_mappings (session_id, speaker_key, speaker_label, voice_reference_id, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(session_id, speaker_key) DO UPDATE SET
+       speaker_label = excluded.speaker_label,
+       voice_reference_id = COALESCE(session_tts_speaker_mappings.voice_reference_id, excluded.voice_reference_id),
+       updated_at = excluded.updated_at`,
+    [sessionId, speakerKey, speakerLabel, voiceReferenceId, now, now]
+  );
+
+  touchSessionTtsMapping(sessionId, now);
+  return getSessionTtsSpeakerMapping(sessionId, speakerKey);
+}
+
+export function updateSessionTtsSpeakerVoice(sessionId: string, speakerKey: string, voiceReferenceId: string | null) {
+  const now = Math.floor(Date.now() / 1000);
+  db.run(
+    `UPDATE session_tts_speaker_mappings SET voice_reference_id = ?, updated_at = ? WHERE session_id = ? AND speaker_key = ?`,
+    [voiceReferenceId, now, sessionId, speakerKey]
+  );
+  touchSessionTtsMapping(sessionId, now);
+  return getSessionTtsSpeakerMapping(sessionId, speakerKey);
+}
+
+export function replaceSessionTtsSpeakerMappings(sessionId: string, nextMappings: Array<{ speakerKey: string; speakerLabel: string }>) {
+  const now = Math.floor(Date.now() / 1000);
+  const existing = listSessionTtsSpeakerMappings(sessionId);
+  const existingVoiceByKey = new Map(existing.map((mapping) => [mapping.speaker_key, mapping.voice_reference_id]));
+  const nextKeySet = new Set(nextMappings.map((mapping) => mapping.speakerKey));
+
+  db.run(`DELETE FROM session_tts_speaker_mappings WHERE session_id = ? AND speaker_key NOT IN (${nextMappings.map(() => "?").join(", ") || "'__none__'"})`, [sessionId, ...nextKeySet]);
+
+  for (const mapping of nextMappings) {
+    db.run(
+      `INSERT INTO session_tts_speaker_mappings (session_id, speaker_key, speaker_label, voice_reference_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(session_id, speaker_key) DO UPDATE SET
+         speaker_label = excluded.speaker_label,
+         voice_reference_id = COALESCE(session_tts_speaker_mappings.voice_reference_id, excluded.voice_reference_id),
+         updated_at = excluded.updated_at`,
+      [sessionId, mapping.speakerKey, mapping.speakerLabel, existingVoiceByKey.get(mapping.speakerKey) ?? null, now, now]
+    );
+  }
+
+  touchSessionTtsMapping(sessionId, now);
+}
+
+function getTtsMessageSpeakerState(messageId: string): TtsMessageSpeakerState | null {
+  return db.query(`SELECT * FROM tts_message_speaker_state WHERE message_id = ?`).get(messageId) as TtsMessageSpeakerState | null;
+}
+
+export function setTtsMessageSpeakerState(messageId: string, processedLength: number, pendingLine: string) {
+  const now = Math.floor(Date.now() / 1000);
+  db.run(
+    `INSERT INTO tts_message_speaker_state (message_id, processed_length, pending_line, updated_at)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(message_id) DO UPDATE SET processed_length = excluded.processed_length, pending_line = excluded.pending_line, updated_at = excluded.updated_at`,
+    [messageId, processedLength, pendingLine, now]
+  );
+}
+
+export function deleteTtsMessageSpeakerState(messageId: string) {
+  db.run(`DELETE FROM tts_message_speaker_state WHERE message_id = ?`, [messageId]);
+}
+
+function touchSessionTtsMapping(sessionId: string, now: number = Math.floor(Date.now() / 1000)) {
+  db.run(`UPDATE chat_sessions SET tts_mapping_updated_at = ? WHERE id = ?`, [now, sessionId]);
+}
+
+const SPEAKER_TAG_PATTERN = /^\s*\[([^\]\n]+)\]\s*/;
+
+export function normalizeSpeakerKey(label: string): string {
+  const trimmed = label.trim();
+  if (!trimmed) return "narrator";
+  return trimmed.toLowerCase().replace(/\s+/g, " ");
+}
+
+function extractSpeakerFromLine(line: string) {
+  const match = line.match(SPEAKER_TAG_PATTERN);
+  if (!match) {
+    return null;
+  }
+
+  const speakerLabel = match[1]?.trim() || "Narrator";
+  if (!speakerLabel) {
+    return null;
+  }
+
+  return {
+    speakerKey: normalizeSpeakerKey(speakerLabel),
+    speakerLabel,
+  };
+}
+
+export function ensureSessionNarratorSpeaker(sessionId: string) {
+  return upsertSessionTtsSpeakerMapping(sessionId, "narrator", "Narrator", null);
+}
+
+export function syncStreamingMessageSpeakers(sessionId: string, messageId: string, content: string, finalize: boolean = false) {
+  ensureSessionNarratorSpeaker(sessionId);
+
+  const previousState = getTtsMessageSpeakerState(messageId) || {
+    message_id: messageId,
+    processed_length: 0,
+    pending_line: "",
+    updated_at: Math.floor(Date.now() / 1000),
+  };
+
+  const appendedContent = content.slice(previousState.processed_length);
+  const workingText = `${previousState.pending_line}${appendedContent}`;
+  const newlineTerminated = workingText.endsWith("\n") || workingText.endsWith("\r");
+  const rawLines = workingText.split(/\r?\n/);
+  const nextPendingLine = !finalize && !newlineTerminated ? rawLines.pop() || "" : "";
+
+  for (const rawLine of rawLines) {
+    const speaker = extractSpeakerFromLine(rawLine);
+    if (speaker) {
+      upsertSessionTtsSpeakerMapping(sessionId, speaker.speakerKey, speaker.speakerLabel, null);
+    }
+  }
+
+  if (finalize && nextPendingLine) {
+    const speaker = extractSpeakerFromLine(nextPendingLine);
+    if (speaker) {
+      upsertSessionTtsSpeakerMapping(sessionId, speaker.speakerKey, speaker.speakerLabel, null);
+    }
+  }
+
+  if (finalize) {
+    deleteTtsMessageSpeakerState(messageId);
+    return;
+  }
+
+  setTtsMessageSpeakerState(messageId, content.length - nextPendingLine.length, nextPendingLine);
+}
+
+export function rebuildSessionTtsSpeakerMappings(sessionId: string) {
+  const messages = getMessages(sessionId) as Array<{ id: string; content: string }>;
+  const nextMappings = [{ speakerKey: "narrator", speakerLabel: "Narrator" }];
+  const seenKeys = new Set(["narrator"]);
+
+  for (const message of messages) {
+    const lines = message.content.split(/\r?\n/);
+    for (const rawLine of lines) {
+      const speaker = extractSpeakerFromLine(rawLine);
+      if (!speaker || seenKeys.has(speaker.speakerKey)) continue;
+      seenKeys.add(speaker.speakerKey);
+      nextMappings.push({ speakerKey: speaker.speakerKey, speakerLabel: speaker.speakerLabel });
+    }
+  }
+
+  replaceSessionTtsSpeakerMappings(sessionId, nextMappings);
 }

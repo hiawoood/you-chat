@@ -1,22 +1,21 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { api } from "../lib/api";
-import { getNativeTtsPlugin, isNativeTtsAvailable, type NativeTtsStatePayload } from "../lib/native-tts";
-import { formatTextForTts } from "../lib/tts-text";
+import { getNativeTtsPlugin, isNativeTtsAvailable, type NativeTtsChunkDescriptor, type NativeTtsStatePayload } from "../lib/native-tts";
+import { buildSpeakerChunkPlans, normalizeSpeakerKey, type SpeakerVoiceMapping, type TtsChunkPlan, type TtsChunkPartPlan } from "../lib/tts-speakers";
 
 export interface TTSChunk {
   id: number;
   text: string;
   displayText: string;
-  hash: string;
+  parts: Array<TtsChunkPartPlan & { hash: string; audio: string | null }>;
   startWord: number;
   endWord: number;
-  audio: string | null;
   status: "pending" | "generating" | "ready" | "error" | "playing";
 }
 
-interface TtsChunkPair {
-  text: string;
-  displayText: string;
+export interface SpeakerPlaybackContext {
+  defaultVoiceReferenceId: string | null;
+  speakerMappings: SpeakerVoiceMapping[];
 }
 
 export interface TTSState {
@@ -69,13 +68,15 @@ function hashText(text: string): string {
   return "h" + (h >>> 0).toString(36);
 }
 
-function buildChunkHash(
+function buildChunkPartHash(
   messageId: string,
   chunkIndex: number,
+  partIndex: number,
   text: string,
+  speakerKey: string,
   voiceReferenceId: string | null
 ): string {
-  return hashText(`${TTS_AUDIO_FORMAT}::${messageId}::${chunkIndex}::${voiceReferenceId || "builtin"}::${text}`);
+  return hashText(`${TTS_AUDIO_FORMAT}::${messageId}::${chunkIndex}::${partIndex}::${speakerKey}::${voiceReferenceId || "builtin"}::${text}`);
 }
 
 
@@ -206,49 +207,11 @@ async function setCachedAudio(hash: string, audio: string): Promise<void> {
 }
 
 // ---- Chunking ----
-function splitTextIntoChunkPairs(
-  text: string,
-  targetWordsPerChunk: number = 60,
-  options: { completeSentencesOnly?: boolean } = {}
-): TtsChunkPair[] {
-  const trimmedText = text.trim();
-  if (!trimmedText) return [];
-
-  const displaySentences = trimmedText.match(/[^.!?]+(?:[.!?]+["')\]]*|$)/g)?.map((sentence) => sentence.trim()).filter(Boolean) || [trimmedText];
-  if (displaySentences.length === 0) {
-    return [];
-  }
-
-  const chunks: TtsChunkPair[] = [];
-  let currentChunk = "";
-  let currentDisplayChunk = "";
-  let currentWordCount = 0;
-
-  for (const displaySentence of displaySentences) {
-    const ttsSentence = formatTextForTts(displaySentence).trim();
-    if (!ttsSentence) continue;
-
-    if (options.completeSentencesOnly && !/[.!?]+["')\]]*$/.test(ttsSentence)) {
-      continue;
-    }
-
-    const wordCount = ttsSentence.split(/\s+/).length;
-    if (currentWordCount + wordCount > targetWordsPerChunk && currentChunk.length > 0) {
-      chunks.push({ text: currentChunk.trim(), displayText: currentDisplayChunk.trim() });
-      currentChunk = ttsSentence;
-      currentDisplayChunk = displaySentence;
-      currentWordCount = wordCount;
-    } else {
-      currentChunk += " " + ttsSentence;
-      currentDisplayChunk += " " + displaySentence;
-      currentWordCount += wordCount;
-    }
-  }
-
-  if (currentChunk.trim()) {
-    chunks.push({ text: currentChunk.trim(), displayText: currentDisplayChunk.trim() });
-  }
-  return chunks;
+function buildChunkPlans(text: string, context: SpeakerPlaybackContext, options: { completeSentencesOnly?: boolean } = {}) {
+  return buildSpeakerChunkPlans(text, context.speakerMappings, context.defaultVoiceReferenceId, {
+    targetWordsPerChunk: 60,
+    completeSentencesOnly: options.completeSentencesOnly,
+  });
 }
 
 export function splitTextIntoTtsChunks(
@@ -256,7 +219,7 @@ export function splitTextIntoTtsChunks(
   targetWordsPerChunk: number = 60,
   options: { completeSentencesOnly?: boolean } = {}
 ): string[] {
-  return splitTextIntoChunkPairs(text, targetWordsPerChunk, options).map((chunk) => chunk.text);
+  return buildSpeakerChunkPlans(text, [], null, { targetWordsPerChunk, completeSentencesOnly: options.completeSentencesOnly }).map((chunk) => chunk.text);
 }
 
 export function splitTextIntoDisplayChunks(
@@ -264,7 +227,7 @@ export function splitTextIntoDisplayChunks(
   targetWordsPerChunk: number = 60,
   options: { completeSentencesOnly?: boolean } = {}
 ): string[] {
-  return splitTextIntoChunkPairs(text, targetWordsPerChunk, options).map((chunk) => chunk.displayText);
+  return buildSpeakerChunkPlans(text, [], null, { targetWordsPerChunk, completeSentencesOnly: options.completeSentencesOnly }).map((chunk) => chunk.displayText);
 }
 
 export function splitStreamingTextIntoTtsChunks(text: string, targetWordsPerChunk: number = 60): string[] {
@@ -293,27 +256,40 @@ function chunkTextArraysMatch(a: string[], b: string[]): boolean {
 
 function buildTtsChunks(
   messageId: string,
-  chunkPairs: TtsChunkPair[],
-  voiceReferenceId: string | null,
+  chunkPlans: TtsChunkPlan[],
   previousChunks: TTSChunk[] = []
 ): TTSChunk[] {
   let wordOffset = 0;
 
-  return chunkPairs.map((chunk, index) => {
+  return chunkPlans.map((chunk, index) => {
     const words = chunk.text.split(/\s+/).filter(Boolean).length;
-    const hash = buildChunkHash(messageId, index, chunk.text, voiceReferenceId);
     const previousChunk = previousChunks[index];
-    const shouldReusePrevious = previousChunk?.hash === hash;
+    const nextParts = chunk.parts.map((part, partIndex) => {
+      const hash = buildChunkPartHash(messageId, index, partIndex, part.text, part.speakerKey, part.voiceReferenceId);
+      const previousPart = previousChunk?.parts[partIndex];
+      const shouldReusePrevious = previousPart?.hash === hash;
+
+      return {
+        ...part,
+        hash,
+        audio: shouldReusePrevious ? previousPart.audio : null,
+      };
+    });
+
+    const everyPartReady = nextParts.every((part) => part.audio);
 
     const nextChunk: TTSChunk = {
       id: index,
       text: chunk.text,
       displayText: chunk.displayText,
-      hash,
+      parts: nextParts,
       startWord: wordOffset,
       endWord: wordOffset + words,
-      audio: shouldReusePrevious ? previousChunk.audio : null,
-      status: shouldReusePrevious && previousChunk.status !== "playing" ? previousChunk.status : "pending",
+      status: everyPartReady
+        ? "ready"
+        : previousChunk?.status === "playing"
+          ? "playing"
+          : "pending",
     };
 
     wordOffset += words;
@@ -362,8 +338,8 @@ export function useChunkedVastTTS() {
   const playbackTokenRef = useRef(0);
   const currentChunkIndexRef = useRef(0);
   const playbackLookaheadBaseIndexRef = useRef(0);
-  const activeVoiceReferenceIdRef = useRef<string | null>(null);
-  const inflightAudioRef = useRef(new Map<string, Promise<string>>());
+  const speakerContextRef = useRef<SpeakerPlaybackContext>({ defaultVoiceReferenceId: null, speakerMappings: [] });
+  const inflightAudioRef = useRef(new Map<string, Promise<string[]>>());
   const textRef = useRef<string>("");
   const textChunksRef = useRef<string[]>([]);
   const playbackSpeedRef = useRef(playbackSpeed);
@@ -376,6 +352,10 @@ export function useChunkedVastTTS() {
       window.localStorage.setItem(PLAYBACK_SPEED_STORAGE_KEY, String(playbackSpeed));
     }
   }, [playbackSpeed]);
+
+  const setSpeakerContext = useCallback((nextContext: SpeakerPlaybackContext) => {
+    speakerContextRef.current = nextContext;
+  }, []);
 
   const applyNativeState = useCallback((payload: NativeTtsStatePayload) => {
     const preparedChunkIndices = new Set(payload.preparedChunkIndices || []);
@@ -502,7 +482,6 @@ export function useChunkedVastTTS() {
     messageIdRef.current = null;
     currentChunkIndexRef.current = 0;
     playbackLookaheadBaseIndexRef.current = 0;
-    activeVoiceReferenceIdRef.current = null;
     textRef.current = "";
     textChunksRef.current = [];
     pendingResumeChunkIndexRef.current = null;
@@ -523,40 +502,73 @@ export function useChunkedVastTTS() {
     });
   }, [nativeTtsEnabled, state.motionAutoStopEnabled, stopAudio]);
 
-  const generateChunkAudio = useCallback(async (text: string, hash: string, voiceReferenceId: string | null): Promise<string> => {
-    const cached = await getCachedAudio(hash);
-    if (cached) return cached;
+  const generateChunkAudioParts = useCallback(async (chunk: TTSChunk): Promise<string[]> => {
+    const requestKey = chunk.parts.map((part) => part.hash).join("::");
+    const cachedAudios = await Promise.all(chunk.parts.map(async (part) => part.audio || await getCachedAudio(part.hash)));
+    if (cachedAudios.every(Boolean)) {
+      return cachedAudios as string[];
+    }
 
-    const inFlight = inflightAudioRef.current.get(hash);
+    const inFlight = inflightAudioRef.current.get(requestKey);
     if (inFlight) return inFlight;
 
     const request = (async () => {
-      const response = await api.post("/tts/speak", { text, voiceReferenceId });
-      if (!response.success || !response.audio) {
-        throw new Error(response.error || "Failed to generate audio");
+      const missingParts = chunk.parts.filter((_, index) => !cachedAudios[index]);
+      const response = await api.post("/tts/speak", {
+        parts: missingParts.map((part) => ({
+          text: part.text,
+          voiceReferenceId: part.voiceReferenceId,
+        })),
+      });
+
+      const audioParts = response.audioParts as Array<{ audio?: string; audioFormat?: string; mimeType?: string }> | undefined;
+      if (!response.success || !audioParts || audioParts.length !== missingParts.length) {
+        throw new Error(response.error || "Failed to generate audio parts");
       }
-      if (response.audioFormat && response.audioFormat !== TTS_AUDIO_FORMAT) {
-        throw new Error(`Unexpected TTS audio format: ${response.audioFormat}`);
+
+      const nextAudios = [...cachedAudios];
+      for (let index = 0; index < missingParts.length; index++) {
+        const responsePart = audioParts[index];
+        const targetPart = missingParts[index];
+        if (!targetPart) {
+          throw new Error("Missing chunk part metadata");
+        }
+        if (!responsePart?.audio) {
+          throw new Error("Missing TTS audio part");
+        }
+        if (responsePart.audioFormat && responsePart.audioFormat !== TTS_AUDIO_FORMAT) {
+          throw new Error(`Unexpected TTS audio format: ${responsePart.audioFormat}`);
+        }
+        if (responsePart.mimeType && responsePart.mimeType !== TTS_AUDIO_MIME_TYPE) {
+          throw new Error(`Unexpected TTS MIME type: ${responsePart.mimeType}`);
+        }
+
+        await setCachedAudio(targetPart.hash, responsePart.audio);
+        const targetIndex = chunk.parts.findIndex((part) => part.hash === targetPart.hash);
+        if (targetIndex >= 0) {
+          nextAudios[targetIndex] = responsePart.audio;
+        }
       }
-      if (response.mimeType && response.mimeType !== TTS_AUDIO_MIME_TYPE) {
-        throw new Error(`Unexpected TTS MIME type: ${response.mimeType}`);
+
+      if (!nextAudios.every(Boolean)) {
+        throw new Error("TTS audio parts were incomplete");
       }
-      await setCachedAudio(hash, response.audio);
-      return response.audio;
+
+      return nextAudios as string[];
     })();
 
-    inflightAudioRef.current.set(hash, request);
+    inflightAudioRef.current.set(requestKey, request);
 
     try {
       return await request;
     } finally {
-      inflightAudioRef.current.delete(hash);
+      inflightAudioRef.current.delete(requestKey);
     }
   }, []);
 
   const prefetchChunk = useCallback(async (index: number) => {
     const chunk = chunksRef.current[index];
-    if (!chunk || chunk.audio || chunk.status === "generating") return;
+    if (!chunk || chunk.parts.every((part) => part.audio) || chunk.status === "generating") return;
 
     chunksRef.current = chunksRef.current.map((c, i) =>
       i === index ? { ...c, status: "generating" } : c
@@ -564,9 +576,13 @@ export function useChunkedVastTTS() {
     setState((prev) => ({ ...prev, chunks: [...chunksRef.current] }));
 
     try {
-      const audio = await generateChunkAudio(chunk.text, chunk.hash, activeVoiceReferenceIdRef.current);
+      const audioParts = await generateChunkAudioParts(chunk);
       chunksRef.current = chunksRef.current.map((c, i) =>
-        i === index ? { ...c, audio, status: "ready" } : c
+        i === index ? {
+          ...c,
+          parts: c.parts.map((part, partIndex) => ({ ...part, audio: audioParts[partIndex] || null })),
+          status: "ready",
+        } : c
       );
       setState((prev) => ({ ...prev, chunks: [...chunksRef.current] }));
     } catch {
@@ -575,7 +591,7 @@ export function useChunkedVastTTS() {
       );
       setState((prev) => ({ ...prev, chunks: [...chunksRef.current] }));
     }
-  }, [generateChunkAudio]);
+  }, [generateChunkAudioParts]);
 
   const prefetchUpcomingChunks = useCallback(async (currentIndex: number) => {
     for (let step = 1; step <= MAX_PREFETCH_AHEAD; step++) {
@@ -584,6 +600,8 @@ export function useChunkedVastTTS() {
       await prefetchChunk(nextIndex);
     }
   }, [prefetchChunk]);
+
+  const chunkHasAudio = useCallback((chunk: TTSChunk) => chunk.parts.every((part) => Boolean(part.audio)), []);
 
   const getAudioContext = useCallback(() => {
     if (!audioContextRef.current || audioContextRef.current.state === "closed") {
@@ -739,7 +757,7 @@ export function useChunkedVastTTS() {
       let chunk = chunksRef.current[i];
       if (!chunk) return;
 
-      if (!chunk.audio) {
+      if (!chunkHasAudio(chunk)) {
         chunksRef.current = chunksRef.current.map((c, idx) =>
           idx === i ? { ...c, status: "generating" } : c.status === "playing" ? { ...c, status: "ready" } : c
         );
@@ -754,11 +772,15 @@ export function useChunkedVastTTS() {
         }));
 
         try {
-          const audio = await generateChunkAudio(chunk.text, chunk.hash, activeVoiceReferenceIdRef.current);
+          const audioParts = await generateChunkAudioParts(chunk);
           if (token !== playbackTokenRef.current) return;
 
           chunksRef.current = chunksRef.current.map((c, idx) =>
-            idx === i ? { ...c, audio, status: "ready" } : c
+            idx === i ? {
+              ...c,
+              parts: c.parts.map((part, partIndex) => ({ ...part, audio: audioParts[partIndex] || null })),
+              status: "ready",
+            } : c
           );
           chunk = chunksRef.current[i];
           if (!chunk) return;
@@ -800,65 +822,84 @@ export function useChunkedVastTTS() {
         }
       }
 
-      if (token !== playbackTokenRef.current || !chunk.audio) return;
-      const decodedBuffer = await decodeAudioBuffer(chunk.hash, chunk.audio);
-      if (token !== playbackTokenRef.current) return;
+      if (token !== playbackTokenRef.current || !chunkHasAudio(chunk)) return;
 
-      const source = audioContext.createBufferSource();
-      source.buffer = decodedBuffer;
-      source.connect(audioContext.destination);
-      source.playbackRate.value = playbackSpeedRef.current;
-      source.onended = () => {
-        scheduledSourcesRef.current.delete(i);
-        scheduledChunkWindowsRef.current.delete(i);
-        source.disconnect();
-
+      const decodedParts = [] as AudioBuffer[];
+      for (const part of chunk.parts) {
+        if (!part.audio) return;
+        const decodedBuffer = await decodeAudioBuffer(part.hash, part.audio);
         if (token !== playbackTokenRef.current) return;
-
-        const nextIndex = i + 1;
-        if (nextIndex < chunksRef.current.length) {
-          chunksRef.current = chunksRef.current.map((chunk, idx) => ({
-            ...chunk,
-            status: idx === i && chunk.status === "playing" ? "ready" : chunk.status,
-          }));
-
-          if (scheduledSourcesRef.current.has(nextIndex) && currentChunkIndexRef.current < nextIndex) {
-            markChunkStarted(nextIndex);
-          } else {
-            setState((prev) => ({
-              ...prev,
-              isLoading: true,
-              isPlaying: false,
-              isPaused: true,
-              currentChunkIndex: nextIndex,
-              loadingChunkIndex: nextIndex,
-              error: null,
-              chunks: [...chunksRef.current],
-            }));
-          }
-          return;
-        }
-
-        chunksRef.current = chunksRef.current.map((chunk) => ({
-          ...chunk,
-          status: chunk.status === "playing" ? "ready" : chunk.status,
-        }));
-        setState((prev) => ({
-          ...prev,
-          isLoading: false,
-          isPlaying: false,
-          isPaused: false,
-          loadingChunkIndex: null,
-          chunks: [...chunksRef.current],
-        }));
-      };
+        decodedParts.push(decodedBuffer);
+      }
 
       const startAt = Math.max(audioContext.currentTime + PLAYBACK_START_DELAY_SECONDS, scheduledEndTimeRef.current);
-      const endAt = startAt + (decodedBuffer.duration / playbackSpeedRef.current);
-      scheduledChunkWindowsRef.current.set(i, { startAt, endAt });
-      source.start(startAt);
+      let nextPartStartAt = startAt;
+      let lastSource: AudioBufferSourceNode | null = null;
 
-      scheduledSourcesRef.current.set(i, source);
+      decodedParts.forEach((decodedBuffer, partIndex) => {
+        const source = audioContext.createBufferSource();
+        source.buffer = decodedBuffer;
+        source.connect(audioContext.destination);
+        source.playbackRate.value = playbackSpeedRef.current;
+
+        if (partIndex === decodedParts.length - 1) {
+          source.onended = () => {
+            scheduledSourcesRef.current.delete(i);
+            scheduledChunkWindowsRef.current.delete(i);
+            source.disconnect();
+
+            if (token !== playbackTokenRef.current) return;
+
+            const nextIndex = i + 1;
+            if (nextIndex < chunksRef.current.length) {
+              chunksRef.current = chunksRef.current.map((chunk, idx) => ({
+                ...chunk,
+                status: idx === i && chunk.status === "playing" ? "ready" : chunk.status,
+              }));
+
+              if (scheduledSourcesRef.current.has(nextIndex) && currentChunkIndexRef.current < nextIndex) {
+                markChunkStarted(nextIndex);
+              } else {
+                setState((prev) => ({
+                  ...prev,
+                  isLoading: true,
+                  isPlaying: false,
+                  isPaused: true,
+                  currentChunkIndex: nextIndex,
+                  loadingChunkIndex: nextIndex,
+                  error: null,
+                  chunks: [...chunksRef.current],
+                }));
+              }
+              return;
+            }
+
+            chunksRef.current = chunksRef.current.map((chunk) => ({
+              ...chunk,
+              status: chunk.status === "playing" ? "ready" : chunk.status,
+            }));
+            setState((prev) => ({
+              ...prev,
+              isLoading: false,
+              isPlaying: false,
+              isPaused: false,
+              loadingChunkIndex: null,
+              chunks: [...chunksRef.current],
+            }));
+          };
+        }
+
+        source.start(nextPartStartAt);
+        nextPartStartAt += decodedBuffer.duration / playbackSpeedRef.current;
+        lastSource = source;
+      });
+
+      const endAt = nextPartStartAt;
+      scheduledChunkWindowsRef.current.set(i, { startAt, endAt });
+
+      if (lastSource) {
+        scheduledSourcesRef.current.set(i, lastSource);
+      }
       scheduledEndTimeRef.current = endAt;
       scheduleChunkStart(i, startAt, token);
       schedulePlaybackCompletion(token);
@@ -868,7 +909,7 @@ export function useChunkedVastTTS() {
         markChunkStarted(i);
       }
     }
-  }, [decodeAudioBuffer, getAudioContext, markChunkStarted, scheduleChunkStart, schedulePlaybackCompletion, startPlaybackMonitor, stopAudio, generateChunkAudio]);
+  }, [chunkHasAudio, decodeAudioBuffer, generateChunkAudioParts, getAudioContext, markChunkStarted, scheduleChunkStart, schedulePlaybackCompletion, startPlaybackMonitor, stopAudio]);
 
   const jumpToChunk = useCallback(async (index: number) => {
     if (nativeTtsEnabled && nativeTtsPlugin) {
@@ -884,7 +925,7 @@ export function useChunkedVastTTS() {
     chunksRef.current = chunksRef.current.map((c, idx) => ({
       ...c,
       status: idx === index
-        ? (c.audio ? "ready" : c.status)
+        ? (chunkHasAudio(c) ? "ready" : c.status)
         : c.status === "playing"
           ? "ready"
           : c.status,
@@ -894,18 +935,18 @@ export function useChunkedVastTTS() {
     if (!targetChunk) return;
     setState((prev) => ({
       ...prev,
-      isLoading: !targetChunk.audio,
+      isLoading: !chunkHasAudio(targetChunk),
       isPlaying: true,
       isPaused: false,
       currentChunkIndex: index,
-      loadingChunkIndex: targetChunk.audio ? null : index,
+      loadingChunkIndex: chunkHasAudio(targetChunk) ? null : index,
       error: null,
       chunks: [...chunksRef.current],
     }));
 
     stopAudio();
     await playFromChunk(index, token);
-  }, [nativeTtsEnabled, nativeTtsPlugin, playFromChunk, stopAudio]);
+  }, [chunkHasAudio, nativeTtsEnabled, nativeTtsPlugin, playFromChunk, stopAudio]);
 
   const startPlayback = useCallback(async (
     text: string,
@@ -914,17 +955,30 @@ export function useChunkedVastTTS() {
     voiceReferenceId: string | null = null,
     options: StartPlaybackOptions = {}
   ) => {
+    const context = {
+      ...speakerContextRef.current,
+      defaultVoiceReferenceId: voiceReferenceId ?? speakerContextRef.current.defaultVoiceReferenceId,
+    };
+    const chunkPlans = buildChunkPlans(text, context, options.streaming ? { completeSentencesOnly: true } : {});
+    const nativeChunkDescriptors = chunkPlans.map((chunk) => ({
+      displayText: chunk.displayText,
+      parts: chunk.parts.map((part) => ({
+        text: part.text,
+        speakerKey: part.speakerKey,
+        speakerLabel: part.speakerLabel,
+        voiceReferenceId: part.voiceReferenceId,
+      })),
+    }));
+
     if (nativeTtsEnabled && nativeTtsPlugin) {
       messageIdRef.current = messageId;
-      activeVoiceReferenceIdRef.current = voiceReferenceId;
       textRef.current = text;
 
       if (startChunkIndex < 0) {
         startChunkIndex = options.streaming ? 0 : await fetchProgress(messageId);
       }
 
-      const chunkPairs = splitTextIntoChunkPairs(text, 60, options.streaming ? { completeSentencesOnly: true } : {});
-      const textChunks = chunkPairs.map((chunk) => chunk.text);
+      const textChunks = chunkPlans.map((chunk) => chunk.text);
       textChunksRef.current = textChunks;
 
       if (textChunks.length === 0) {
@@ -940,7 +994,7 @@ export function useChunkedVastTTS() {
       }
 
       startChunkIndex = Math.max(0, Math.min(startChunkIndex, textChunks.length - 1));
-      chunksRef.current = buildTtsChunks(messageId, chunkPairs, voiceReferenceId).map((chunk, index) => ({
+      chunksRef.current = buildTtsChunks(messageId, chunkPlans).map((chunk, index) => ({
         ...chunk,
         status: index === startChunkIndex ? "generating" : chunk.status,
       }));
@@ -965,9 +1019,14 @@ export function useChunkedVastTTS() {
 
       await nativeTtsPlugin.startPlayback({
         messageId,
-        chunks: textChunks,
+        chunks: nativeChunkDescriptors,
+        speakerMappings: context.speakerMappings.map((mapping) => ({
+          speakerKey: mapping.speakerKey,
+          speakerLabel: mapping.speakerLabel,
+          voiceReferenceId: mapping.voiceReferenceId,
+        })),
+        defaultVoiceReferenceId: context.defaultVoiceReferenceId,
         startChunkIndex,
-        voiceReferenceId,
         playbackSpeed: playbackSpeedRef.current,
         baseUrl: window.location.origin,
         streaming: Boolean(options.streaming),
@@ -978,7 +1037,6 @@ export function useChunkedVastTTS() {
     reset();
     const requestToken = playbackTokenRef.current;
     messageIdRef.current = messageId;
-    activeVoiceReferenceIdRef.current = voiceReferenceId;
     textRef.current = text;
 
     if (startChunkIndex < 0) {
@@ -986,8 +1044,7 @@ export function useChunkedVastTTS() {
       if (requestToken !== playbackTokenRef.current) return;
     }
 
-    const chunkPairs = splitTextIntoChunkPairs(text, 60, options.streaming ? { completeSentencesOnly: true } : {});
-    const textChunks = chunkPairs.map((chunk) => chunk.text);
+    const textChunks = chunkPlans.map((chunk) => chunk.text);
     textChunksRef.current = textChunks;
 
     if (requestToken !== playbackTokenRef.current) return;
@@ -1005,13 +1062,16 @@ export function useChunkedVastTTS() {
     startChunkIndex = Math.max(0, Math.min(startChunkIndex, textChunks.length - 1));
 
     const builtChunks: TTSChunk[] = [];
-    const initialChunks = buildTtsChunks(messageId, chunkPairs, activeVoiceReferenceIdRef.current);
+    const initialChunks = buildTtsChunks(messageId, chunkPlans);
     for (const chunk of initialChunks) {
-      const cachedAudio = await getCachedAudio(chunk.hash);
+      const partsWithAudio = await Promise.all(chunk.parts.map(async (part) => ({
+        ...part,
+        audio: part.audio || await getCachedAudio(part.hash),
+      })));
       builtChunks.push({
         ...chunk,
-        audio: cachedAudio,
-        status: cachedAudio ? "ready" : chunk.status,
+        parts: partsWithAudio,
+        status: partsWithAudio.every((part) => part.audio) ? "ready" : chunk.status,
       });
     }
 
@@ -1025,11 +1085,11 @@ export function useChunkedVastTTS() {
     if (!startChunk) return;
 
     setState({
-      isLoading: !startChunk.audio,
+      isLoading: !chunkHasAudio(startChunk),
       isPlaying: false,
       isPaused: false,
       currentChunkIndex: startChunkIndex,
-      loadingChunkIndex: startChunk.audio ? null : startChunkIndex,
+      loadingChunkIndex: chunkHasAudio(startChunk) ? null : startChunkIndex,
       totalChunks: textChunks.length,
       error: null,
       activeMessageId: messageId,
@@ -1043,7 +1103,7 @@ export function useChunkedVastTTS() {
 
     const token = ++playbackTokenRef.current;
     await playFromChunk(startChunkIndex, token);
-  }, [fetchProgress, nativeTtsEnabled, nativeTtsPlugin, playFromChunk, prefetchUpcomingChunks, reset, state.motionAutoStopEnabled]);
+  }, [chunkHasAudio, fetchProgress, nativeTtsEnabled, nativeTtsPlugin, playFromChunk, prefetchUpcomingChunks, reset, state.motionAutoStopEnabled]);
 
   const syncStreamingPlayback = useCallback(async (
     text: string,
@@ -1054,20 +1114,21 @@ export function useChunkedVastTTS() {
       return;
     }
 
-    const effectiveVoiceReferenceId = voiceReferenceId ?? activeVoiceReferenceIdRef.current;
-    const nextChunkPairs = splitTextIntoChunkPairs(text, 60, { completeSentencesOnly: true });
-    const nextChunkTexts = nextChunkPairs.map((chunk) => chunk.text);
+    const nextChunkPlans = buildChunkPlans(text, {
+      ...speakerContextRef.current,
+      defaultVoiceReferenceId: voiceReferenceId ?? speakerContextRef.current.defaultVoiceReferenceId,
+    }, { completeSentencesOnly: true });
+    const nextChunkTexts = nextChunkPlans.map((chunk) => chunk.text);
     const previousChunkTexts = textChunksRef.current;
 
     textRef.current = text;
-    activeVoiceReferenceIdRef.current = effectiveVoiceReferenceId;
 
     if (nextChunkTexts.length === 0) {
       return;
     }
 
     if (previousChunkTexts.length === 0 && state.activeMessageId === messageId && chunksRef.current.length === 0) {
-      await startPlayback(text, messageId, 0, effectiveVoiceReferenceId, { streaming: true });
+      await startPlayback(text, messageId, 0, null, { streaming: true });
       return;
     }
 
@@ -1077,15 +1138,20 @@ export function useChunkedVastTTS() {
 
     textChunksRef.current = nextChunkTexts;
     const previousChunks = chunksRef.current;
-    chunksRef.current = buildTtsChunks(messageId, nextChunkPairs, effectiveVoiceReferenceId, previousChunks).map((chunk, index) => {
+    chunksRef.current = buildTtsChunks(messageId, nextChunkPlans, previousChunks).map((chunk, index) => {
       const previousChunk = previousChunks[index];
-      if (!previousChunk || previousChunk.hash !== chunk.hash) {
+      if (!previousChunk) {
         return chunk;
       }
 
       return {
         ...chunk,
-        audio: previousChunk.audio,
+        parts: chunk.parts.map((part, partIndex) => {
+          const previousPart = previousChunk.parts[partIndex];
+          return previousPart && previousPart.hash === part.hash
+            ? { ...part, audio: previousPart.audio }
+            : part;
+        }),
         status: index === currentChunkIndexRef.current && previousChunk.status === "playing"
           ? "playing"
           : previousChunk.status,
@@ -1099,7 +1165,24 @@ export function useChunkedVastTTS() {
     }));
 
     if (nativeTtsEnabled && nativeTtsPlugin) {
-      await nativeTtsPlugin.updatePlaybackChunks({ messageId, chunks: nextChunkTexts });
+      await nativeTtsPlugin.updatePlaybackChunks({
+        messageId,
+        chunks: nextChunkPlans.map((chunk) => ({
+          displayText: chunk.displayText,
+          parts: chunk.parts.map((part) => ({
+            text: part.text,
+            speakerKey: part.speakerKey,
+            speakerLabel: part.speakerLabel,
+            voiceReferenceId: part.voiceReferenceId,
+          })),
+        })),
+        speakerMappings: speakerContextRef.current.speakerMappings.map((mapping) => ({
+          speakerKey: mapping.speakerKey,
+          speakerLabel: mapping.speakerLabel,
+          voiceReferenceId: mapping.voiceReferenceId,
+        })),
+        defaultVoiceReferenceId: speakerContextRef.current.defaultVoiceReferenceId,
+      });
       return;
     }
 
@@ -1189,7 +1272,7 @@ export function useChunkedVastTTS() {
     wordIndex: number,
     voiceReferenceId: string | null = null
   ) => {
-    const textChunks = splitTextIntoTtsChunks(text);
+    const textChunks = buildChunkPlans(text, speakerContextRef.current).map((chunk) => chunk.text);
     const chunkIndex = findChunkForWordIndex(textChunks, wordIndex);
     await startPlayback(text, messageId, chunkIndex, voiceReferenceId);
   }, [startPlayback]);
@@ -1233,6 +1316,7 @@ export function useChunkedVastTTS() {
   return {
     ...state,
     playbackSpeed,
+    setSpeakerContext,
     setPlaybackSpeed,
     startPlayback,
     syncStreamingPlayback,

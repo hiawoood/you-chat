@@ -46,16 +46,19 @@ public class BackgroundAudioPlugin extends Plugin {
 
         Intent intent = createServiceIntent(BackgroundPlaybackService.ACTION_START_PLAYBACK);
         intent.putExtra(BackgroundPlaybackService.EXTRA_MESSAGE_ID, messageId);
-        intent.putStringArrayListExtra(BackgroundPlaybackService.EXTRA_CHUNKS, toArrayList(chunksArray));
+        intent.putExtra(BackgroundPlaybackService.EXTRA_CHUNKS_JSON, chunksArray.toString());
+        JSArray speakerMappingsArray = call.getArray("speakerMappings");
+        if (speakerMappingsArray != null) {
+            intent.putExtra(BackgroundPlaybackService.EXTRA_SPEAKER_MAPPINGS_JSON, speakerMappingsArray.toString());
+        }
+        String defaultVoiceReferenceId = call.getString("defaultVoiceReferenceId");
+        if (defaultVoiceReferenceId != null) {
+            intent.putExtra(BackgroundPlaybackService.EXTRA_DEFAULT_VOICE_REFERENCE_ID, defaultVoiceReferenceId);
+        }
         intent.putExtra(BackgroundPlaybackService.EXTRA_START_CHUNK_INDEX, call.getInt("startChunkIndex", 0));
         intent.putExtra(BackgroundPlaybackService.EXTRA_BASE_URL, baseUrl);
         intent.putExtra(BackgroundPlaybackService.EXTRA_PLAYBACK_SPEED, call.getDouble("playbackSpeed", 1d).floatValue());
         intent.putExtra(BackgroundPlaybackService.EXTRA_STREAMING_PLAYBACK, call.getBoolean("streaming", false));
-
-        String voiceReferenceId = call.getString("voiceReferenceId");
-        if (voiceReferenceId != null) {
-            intent.putExtra(BackgroundPlaybackService.EXTRA_VOICE_REFERENCE_ID, voiceReferenceId);
-        }
 
         startService(intent);
         call.resolve();
@@ -119,7 +122,15 @@ public class BackgroundAudioPlugin extends Plugin {
 
         Intent intent = createServiceIntent(BackgroundPlaybackService.ACTION_UPDATE_CHUNKS);
         intent.putExtra(BackgroundPlaybackService.EXTRA_MESSAGE_ID, messageId);
-        intent.putStringArrayListExtra(BackgroundPlaybackService.EXTRA_CHUNKS, toArrayList(chunksArray));
+        intent.putExtra(BackgroundPlaybackService.EXTRA_CHUNKS_JSON, chunksArray.toString());
+        JSArray speakerMappingsArray = call.getArray("speakerMappings");
+        if (speakerMappingsArray != null) {
+            intent.putExtra(BackgroundPlaybackService.EXTRA_SPEAKER_MAPPINGS_JSON, speakerMappingsArray.toString());
+        }
+        String defaultVoiceReferenceId = call.getString("defaultVoiceReferenceId");
+        if (defaultVoiceReferenceId != null) {
+            intent.putExtra(BackgroundPlaybackService.EXTRA_DEFAULT_VOICE_REFERENCE_ID, defaultVoiceReferenceId);
+        }
         dispatchIfRunning(intent);
         call.resolve();
     }
@@ -188,14 +199,6 @@ public class BackgroundAudioPlugin extends Plugin {
             return;
         }
         startService(intent);
-    }
-
-    private ArrayList<String> toArrayList(JSONArray array) {
-        ArrayList<String> result = new ArrayList<>();
-        for (int i = 0; i < array.length(); i++) {
-            result.add(array.optString(i));
-        }
-        return result;
     }
 
     private boolean readMotionAutoStopEnabled() {

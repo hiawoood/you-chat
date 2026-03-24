@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback, type PointerEvent as ReactPointerEvent, type TouchEvent as ReactTouchEvent } from "react";
 import { api } from "../lib/api";
-import type { ChatSession, Message, Agent, TtsVoiceReference, TtsVoiceListResponse, TtsStatusResponse } from "../lib/api";
+import type { ChatSession, Message, Agent, SessionTtsSpeakerMapping, TtsVoiceReference, TtsVoiceListResponse, TtsStatusResponse } from "../lib/api";
 import { useChat } from "../hooks/useChat";
 import { useChunkedVastTTS } from "../hooks/useChunkedVastTTS";
 import { useWordContextMenu } from "../hooks/useWordContextMenu";
@@ -83,6 +83,10 @@ export default function ChatView({
   const [ttsVoicesLoaded, setTtsVoicesLoaded] = useState(false);
   const [ttsVoiceLoading, setTtsVoiceLoading] = useState(false);
   const [ttsVoiceWarning, setTtsVoiceWarning] = useState<string | null>(null);
+  const [sessionTtsSpeakers, setSessionTtsSpeakers] = useState<SessionTtsSpeakerMapping[]>([]);
+  const [sessionTtsSpeakerLoading, setSessionTtsSpeakerLoading] = useState(false);
+  const [sessionTtsSpeakerError, setSessionTtsSpeakerError] = useState<string | null>(null);
+  const [sessionTtsSpeakerActionKey, setSessionTtsSpeakerActionKey] = useState<string | null>(null);
   const [ttsServiceStatus, setTtsServiceStatus] = useState<TtsStatusResponse | null>(null);
   const [ttsServiceStatusError, setTtsServiceStatusError] = useState<string | null>(null);
   const [ttsInstanceActionLoading, setTtsInstanceActionLoading] = useState(false);
@@ -115,6 +119,7 @@ export default function ChatView({
     motionIdleRemainingMs: ttsMotionIdleRemainingMs,
     motionFadeActive: ttsMotionFadeActive,
     playbackSpeed: ttsPlaybackSpeed,
+    setSpeakerContext,
     setPlaybackSpeed: ttsSetPlaybackSpeed,
     startPlayback,
     syncStreamingPlayback,
@@ -184,7 +189,7 @@ export default function ChatView({
 
   const hasTtsOverlay = Boolean(ttsActiveMessageId || ttsIsLoading || ttsIsPlaying || ttsIsPaused || ttsError);
   const activeChunk = ttsChunks[ttsCurrentChunk] ?? null;
-  const activeChunkText = activeChunk?.text ?? "No chunk text available.";
+  const activeChunkText = activeChunk?.displayText ?? "No chunk text available.";
   const currentChunkNumber = ttsTotalChunks > 0 ? ttsCurrentChunk + 1 : 0;
   const isCurrentChunkLoading = ttsLoadingChunkIndex === ttsCurrentChunk;
   const selectedTtsVoice = ttsVoices.find((voice) => voice.id === selectedTtsVoiceId) || null;
@@ -238,6 +243,19 @@ export default function ChatView({
     setTtsVoiceWarning(response.warning || null);
   }, []);
 
+  const loadSessionTtsSpeakers = useCallback(async () => {
+    setSessionTtsSpeakerLoading(true);
+    setSessionTtsSpeakerError(null);
+    try {
+      const response = await api.getSessionTtsSpeakers(session.id);
+      setSessionTtsSpeakers(response.speakers || []);
+    } catch (error) {
+      setSessionTtsSpeakerError(error instanceof Error ? error.message : "Failed to load session speakers");
+    } finally {
+      setSessionTtsSpeakerLoading(false);
+    }
+  }, [session.id]);
+
   const loadTtsVoices = useCallback(async () => {
     try {
       const response = await api.getTtsVoices();
@@ -250,6 +268,13 @@ export default function ChatView({
       return null;
     }
   }, [applyVoiceSelectionResponse]);
+
+  useEffect(() => {
+    setSpeakerContext({
+      defaultVoiceReferenceId: selectedTtsVoiceId,
+      speakerMappings: sessionTtsSpeakers,
+    });
+  }, [selectedTtsVoiceId, sessionTtsSpeakers, setSpeakerContext]);
 
   const loadTtsServiceStatus = useCallback(async () => {
     try {
@@ -490,21 +515,41 @@ export default function ChatView({
       const response = voiceId ? await api.selectTtsVoice(voiceId) : await api.clearSelectedTtsVoice();
       applyVoiceSelectionResponse(response);
       setShowVoiceMenu(false);
-
-      if (ttsActiveMessageId && (ttsIsPlaying || ttsIsLoading)) {
-        if (ttsActiveMessageId === activeStreamingTtsMessageId && streamingContentRef.current.trim()) {
-          await startPlayback(streamingContentRef.current, activeStreamingTtsMessageId, ttsCurrentChunk, voiceId, { streaming: true });
-        } else {
-          const activeMessage = messages.find((message) => message.id === ttsActiveMessageId);
-          if (activeMessage) {
-            await startPlayback(activeMessage.content, activeMessage.id, ttsCurrentChunk, voiceId);
-          }
-        }
-      }
+      await restartCurrentTtsPlayback();
     } catch (error) {
       setTtsVoiceWarning(error instanceof Error ? error.message : "Failed to update TTS voice");
     } finally {
       setTtsVoiceLoading(false);
+    }
+  };
+
+  const restartCurrentTtsPlayback = useCallback(async () => {
+    if (!ttsActiveMessageId || (!ttsIsPlaying && !ttsIsLoading)) {
+      return;
+    }
+
+    if (ttsActiveMessageId === activeStreamingTtsMessageId && streamingContentRef.current.trim()) {
+      await startPlayback(streamingContentRef.current, activeStreamingTtsMessageId, ttsCurrentChunk, null, { streaming: true });
+      return;
+    }
+
+    const activeMessage = messages.find((message) => message.id === ttsActiveMessageId);
+    if (activeMessage) {
+      await startPlayback(activeMessage.content, activeMessage.id, ttsCurrentChunk, null);
+    }
+  }, [activeStreamingTtsMessageId, messages, startPlayback, ttsActiveMessageId, ttsCurrentChunk, ttsIsLoading, ttsIsPlaying]);
+
+  const handleAssignSpeakerVoice = async (speakerKey: string, voiceId: string | null) => {
+    setSessionTtsSpeakerActionKey(speakerKey);
+    setSessionTtsSpeakerError(null);
+    try {
+      await api.updateSessionTtsSpeaker(session.id, speakerKey, voiceId);
+      await loadSessionTtsSpeakers();
+      await restartCurrentTtsPlayback();
+    } catch (error) {
+      setSessionTtsSpeakerError(error instanceof Error ? error.message : "Failed to update speaker voice");
+    } finally {
+      setSessionTtsSpeakerActionKey(null);
     }
   };
 
@@ -690,6 +735,20 @@ export default function ChatView({
 
   const hasMessages = messages.length > 0;
   const hasActiveStream = isStreaming || isCompacting || hasInFlightStream;
+
+  useEffect(() => {
+    void loadSessionTtsSpeakers();
+  }, [loadSessionTtsSpeakers]);
+
+  useEffect(() => {
+    if (!hasActiveStream) return;
+
+    const timer = window.setTimeout(() => {
+      void loadSessionTtsSpeakers();
+    }, 1500);
+
+    return () => window.clearTimeout(timer);
+  }, [hasActiveStream, loadSessionTtsSpeakers, streamingContent]);
 
   return (
     <div className="relative flex flex-col h-full bg-white dark:bg-gray-900">
@@ -1010,7 +1069,7 @@ export default function ChatView({
                         Loading audio
                       </span>
                     ) : (
-                      <span>{activeChunk?.status === "error" ? "Failed" : activeChunk?.audio ? "Cached" : "Queued"}</span>
+                      <span>{activeChunk?.status === "error" ? "Failed" : activeChunk?.parts?.every((part) => part.audio) ? "Cached" : "Queued"}</span>
                     )}
                   </div>
                   <div className="max-h-32 overflow-y-auto text-sm leading-5 text-gray-700 dark:text-gray-200">
@@ -1079,6 +1138,46 @@ export default function ChatView({
                         })}
                       </div>
                     )}
+
+                    <div className="mt-3 border-t border-gray-200 pt-3 dark:border-gray-700">
+                      <div className="mb-2 flex items-center justify-between gap-2 text-[11px] font-medium text-gray-500 dark:text-gray-400">
+                        <span>Session speaker voices</span>
+                        {sessionTtsSpeakerLoading && (
+                          <span className="inline-flex items-center gap-1 text-amber-600 dark:text-amber-400">
+                            <svg className="h-3 w-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                            </svg>
+                            Syncing
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="max-h-44 space-y-2 overflow-y-auto pr-1">
+                        {sessionTtsSpeakers.map((speaker) => (
+                          <label key={speaker.speakerKey} className="block rounded-xl border border-gray-200 px-3 py-2 dark:border-gray-700">
+                            <div className="mb-1 text-xs font-medium text-gray-500 dark:text-gray-400">{speaker.speakerLabel}</div>
+                            <select
+                              value={speaker.voiceReferenceId ?? "default"}
+                              disabled={sessionTtsSpeakerActionKey === speaker.speakerKey}
+                              onChange={(event) => void handleAssignSpeakerVoice(speaker.speakerKey, event.target.value === "default" ? null : event.target.value)}
+                              className="w-full rounded-md border border-gray-200 bg-white px-2 py-1.5 text-sm text-gray-700 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200"
+                            >
+                              <option value="default">Default voice ({selectedTtsVoice?.label || "builtin"})</option>
+                              {ttsVoices.map((voice) => (
+                                <option key={`${speaker.speakerKey}-${voice.id}`} value={voice.id}>{voice.label}</option>
+                              ))}
+                            </select>
+                          </label>
+                        ))}
+                      </div>
+
+                      {sessionTtsSpeakerError && (
+                        <div className="mt-2 text-[11px] text-amber-600 dark:text-amber-400">
+                          {sessionTtsSpeakerError}
+                        </div>
+                      )}
+                    </div>
                   </div>
 
                   {ttsVoiceWarning && (
@@ -1282,6 +1381,7 @@ export default function ChatView({
                     onClick={() => {
                       if (!showVoiceMenu) {
                         void loadTtsVoices();
+                        void loadSessionTtsSpeakers();
                       }
                       setShowChunkTextPanel(false);
                       setShowTtsStatusPanel(false);

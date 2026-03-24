@@ -586,13 +586,21 @@ export default function Settings({ onBack }: SettingsProps) {
                                     Active
                                   </span>
                                 )}
+                                <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${voice.syncStatus === "synced" ? "bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300" : voice.syncStatus === "error" ? "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300" : "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300"}`}>
+                                  {voice.syncStatus === "synced" ? "Synced" : voice.syncStatus === "error" ? "Sync issue" : "Pending sync"}
+                                </span>
                               </div>
                             )}
 
                             <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-500 dark:text-gray-400">
                               <span>{voice.originalFilename}</span>
                               <span>{formatBytes(voice.sizeBytes)}</span>
+                              {voice.remoteVoiceId && <span>Remote id: {voice.remoteVoiceId}</span>}
                             </div>
+
+                            {voice.syncError && (
+                              <div className="mt-2 text-xs text-amber-600 dark:text-amber-400">{voice.syncError}</div>
+                            )}
 
                             <audio
                               controls

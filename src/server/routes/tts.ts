@@ -7,13 +7,15 @@ import {
   startCheapestInstance,
   stopInstance as stopActiveInstance,
   generateSpeech,
+  generateSpeechParts,
   searchBestGPU,
-  applyVoiceReferenceSelection,
-  markVoiceReferenceAsStale,
+  deleteVoiceReferenceFromService,
   getStatusSnapshot,
   getStatusSnapshotWithBalance,
   recreateInstance,
   requestInstanceLogs,
+  syncSavedVoicesWithActiveService,
+  syncVoiceReferenceWithService,
   subscribeStatusUpdates,
 } from "../services/vastai";
 import {
@@ -46,6 +48,11 @@ function formatVoiceReference(c: Context<AppEnv>, voice: TtsVoiceReference, sele
     createdAt: voice.created_at,
     updatedAt: voice.updated_at,
     selected: voice.id === selectedVoiceId,
+    remoteVoiceId: voice.remote_voice_id,
+    remoteVoiceName: voice.remote_voice_name,
+    syncStatus: voice.sync_status || "pending",
+    lastSyncedAt: voice.last_synced_at,
+    syncError: voice.last_sync_error,
     previewUrl: `${new URL(c.req.url).origin}/api/tts/voices/${voice.id}/audio`,
   };
 }
@@ -76,10 +83,12 @@ tts.post("/speak", async (c) => {
 
   try {
     const body = await c.req.json();
-    const { text, voice, voiceReferenceId, speed, language } = body;
+    const { text, voice, voiceReferenceId, speed, language, parts } = body;
 
-    if (!text || typeof text !== "string") {
-      return c.json({ error: "Text is required" }, 400);
+    const hasText = typeof text === "string" && text.trim().length > 0;
+    const hasParts = Array.isArray(parts) && parts.length > 0;
+    if (!hasText && !hasParts) {
+      return c.json({ error: "Text or parts are required" }, 400);
     }
 
     let selectedVoice: TtsVoiceReference | null;
@@ -95,6 +104,38 @@ tts.post("/speak", async (c) => {
     }
 
     try {
+      if (hasParts) {
+        const partRequests = [] as Array<{ text: string; voiceReferenceId?: string | null }>;
+        const partVoiceReferences = new Map<string, TtsVoiceReference>();
+
+        for (const rawPart of parts as Array<{ text?: unknown; voiceReferenceId?: unknown }>) {
+          if (!rawPart || typeof rawPart.text !== "string" || !rawPart.text.trim()) {
+            continue;
+          }
+
+          let partVoiceReferenceId: string | null = null;
+          if (typeof rawPart.voiceReferenceId === "string" && rawPart.voiceReferenceId.trim()) {
+            const voiceReference = getTtsVoiceReference(user.id, rawPart.voiceReferenceId.trim());
+            if (!voiceReference) {
+              return c.json({ error: `Voice reference not found: ${rawPart.voiceReferenceId}` }, 404);
+            }
+            partVoiceReferenceId = voiceReference.id;
+            partVoiceReferences.set(voiceReference.id, voiceReference);
+          }
+
+          partRequests.push({
+            text: rawPart.text,
+            voiceReferenceId: partVoiceReferenceId,
+          });
+        }
+
+        const audioParts = await generateSpeechParts(partRequests, partVoiceReferences);
+        return c.json({
+          success: true,
+          audioParts,
+        });
+      }
+
       const result = await generateSpeech({
         text,
         voice,
@@ -151,6 +192,7 @@ tts.post("/start", async (c) => {
   try {
     // Start/reuse instance - startCheapestInstance handles adoption of existing healthy instances
     const instance = await startCheapestInstance();
+    await syncSavedVoicesWithActiveService();
 
     return c.json({
       success: true,
@@ -186,6 +228,7 @@ tts.post("/start", async (c) => {
 tts.post("/restart", async (c) => {
   try {
     const instance = await recreateInstance();
+    await syncSavedVoicesWithActiveService();
 
     return c.json({
       success: true,
@@ -393,10 +436,18 @@ tts.post("/voices", async (c) => {
       storedFile.sizeBytes
     );
 
+    let warning: string | null = null;
+    try {
+      await syncVoiceReferenceWithService(voice);
+    } catch (error) {
+      warning = error instanceof Error ? error.message : "Voice will sync when the TTS service is ready.";
+    }
+
     const selectedVoiceId = getSelectedTtsVoiceReferenceId(user.id);
     return c.json({
       success: true,
-      voice: formatVoiceReference(c, voice, selectedVoiceId),
+      warning,
+      voice: formatVoiceReference(c, getTtsVoiceReference(user.id, voice.id) || voice, selectedVoiceId),
       ...getVoiceSelectionResponse(c, user.id),
     });
   } catch (error) {
@@ -480,9 +531,16 @@ tts.delete("/voices/:voiceId", async (c) => {
     return c.json({ error: "Voice reference not found" }, 404);
   }
 
+  if (voice.remote_voice_id) {
+    try {
+      await deleteVoiceReferenceFromService(voice.remote_voice_id);
+    } catch (error) {
+      console.warn("[TTS] Failed to delete remote voice:", error);
+    }
+  }
+
   deleteTtsVoiceReference(user.id, voiceId);
   await deleteTtsVoiceFile(voice.storage_path);
-  markVoiceReferenceAsStale(voice.id);
 
   return c.json({
     success: true,
@@ -506,22 +564,8 @@ tts.post("/voices/:voiceId/select", async (c) => {
 
   setSelectedTtsVoiceReference(user.id, voice.id);
 
-  let applied = false;
-  let warning: string | null = null;
-  try {
-    const result = await applyVoiceReferenceSelection(voice);
-    applied = result.applied;
-    if (!result.applied) {
-      warning = "Voice will be applied when the next playback request starts.";
-    }
-  } catch (error) {
-    warning = error instanceof Error ? error.message : "Voice will be applied on next playback";
-  }
-
   return c.json({
     success: true,
-    applied,
-    warning,
     ...getVoiceSelectionResponse(c, user.id),
   });
 });
@@ -536,25 +580,8 @@ tts.post("/voices/select-none", async (c) => {
 
   setSelectedTtsVoiceReference(user.id, null);
 
-  let applied = false;
-  let requiresBuiltinReset = false;
-  let warning: string | null = null;
-  try {
-    const result = await applyVoiceReferenceSelection(null);
-    applied = result.applied;
-    requiresBuiltinReset = result.requiresBuiltinReset;
-    if (!result.applied) {
-      warning = "Builtin voice will be used when the next playback request starts.";
-    }
-  } catch (error) {
-    warning = error instanceof Error ? error.message : "Failed to restore builtin voice";
-  }
-
   return c.json({
     success: true,
-    applied,
-    requiresBuiltinReset,
-    warning,
     ...getVoiceSelectionResponse(c, user.id),
   });
 });

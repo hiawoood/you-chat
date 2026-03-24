@@ -11,7 +11,13 @@ import {
   getMessage,
   forkSession,
   getSessionYouChatId,
+  ensureSessionNarratorSpeaker,
+  getSelectedTtsVoiceReferenceId,
+  getTtsVoiceReference,
   updateSessionYouChatId,
+  listSessionTtsSpeakerMappings,
+  rebuildSessionTtsSpeakerMappings,
+  updateSessionTtsSpeakerVoice,
   getUserCredentials,
 } from "../db";
 import { deleteThread } from "../lib/you-client";
@@ -113,6 +119,63 @@ sessions.get("/:id/messages/:messageId", async (c) => {
   if (!msg) return c.json({ error: "Message not found" }, 404);
 
   return c.json(msg);
+});
+
+sessions.get("/:id/tts-speakers", async (c) => {
+  const user = c.get("user");
+  if (!user) return c.json({ error: "Unauthorized" }, 401);
+
+  const sessionId = c.req.param("id");
+  const session = getChatSession(sessionId, user.id);
+  if (!session) return c.json({ error: "Not found" }, 404);
+
+  ensureSessionNarratorSpeaker(sessionId);
+  rebuildSessionTtsSpeakerMappings(sessionId);
+  const selectedVoiceId = getSelectedTtsVoiceReferenceId(user.id);
+  const selectedVoice = selectedVoiceId ? getTtsVoiceReference(user.id, selectedVoiceId) : null;
+  const speakers = listSessionTtsSpeakerMappings(sessionId).map((speaker) => ({
+    speakerKey: speaker.speaker_key,
+    speakerLabel: speaker.speaker_label,
+    voiceReferenceId: speaker.voice_reference_id,
+  }));
+
+  return c.json({
+    speakers,
+    defaultVoiceReferenceId: selectedVoice?.id ?? null,
+  });
+});
+
+sessions.patch("/:id/tts-speakers/:speakerKey", async (c) => {
+  const user = c.get("user");
+  if (!user) return c.json({ error: "Unauthorized" }, 401);
+
+  const sessionId = c.req.param("id");
+  const speakerKey = c.req.param("speakerKey");
+  const session = getChatSession(sessionId, user.id);
+  if (!session) return c.json({ error: "Not found" }, 404);
+
+  const body = await c.req.json<{ voiceReferenceId?: string | null }>();
+  const voiceReferenceId = body.voiceReferenceId ?? null;
+  if (voiceReferenceId) {
+    const voice = getTtsVoiceReference(user.id, voiceReferenceId);
+    if (!voice) {
+      return c.json({ error: "Voice reference not found" }, 404);
+    }
+  }
+
+  const updated = updateSessionTtsSpeakerVoice(sessionId, speakerKey, voiceReferenceId);
+  if (!updated) {
+    return c.json({ error: "Speaker mapping not found" }, 404);
+  }
+
+  return c.json({
+    success: true,
+    speaker: {
+      speakerKey: updated.speaker_key,
+      speakerLabel: updated.speaker_label,
+      voiceReferenceId: updated.voice_reference_id,
+    },
+  });
 });
 
 // Edit a message

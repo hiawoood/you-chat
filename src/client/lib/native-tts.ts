@@ -19,12 +19,31 @@ export interface NativeMotionAutoStopConfig {
   enabled: boolean;
 }
 
+export interface NativeTtsChunkPartDescriptor {
+  text: string;
+  speakerKey: string;
+  speakerLabel: string;
+  voiceReferenceId: string | null;
+}
+
+export interface NativeTtsSpeakerMappingDescriptor {
+  speakerKey: string;
+  speakerLabel: string;
+  voiceReferenceId: string | null;
+}
+
+export interface NativeTtsChunkDescriptor {
+  displayText: string;
+  parts: NativeTtsChunkPartDescriptor[];
+}
+
 interface NativeTtsPlugin {
   startPlayback(options: {
     messageId: string;
-    chunks: string[];
+    chunks: NativeTtsChunkDescriptor[];
+    speakerMappings: NativeTtsSpeakerMappingDescriptor[];
+    defaultVoiceReferenceId?: string | null;
     startChunkIndex: number;
-    voiceReferenceId?: string | null;
     playbackSpeed: number;
     baseUrl: string;
     streaming?: boolean;
@@ -36,7 +55,7 @@ interface NativeTtsPlugin {
   prevChunk(): Promise<void>;
   seekToChunk(options: { chunkIndex: number }): Promise<void>;
   setPlaybackSpeed(options: { playbackSpeed: number }): Promise<void>;
-  updatePlaybackChunks(options: { messageId: string; chunks: string[] }): Promise<void>;
+  updatePlaybackChunks(options: { messageId: string; chunks: NativeTtsChunkDescriptor[]; speakerMappings?: NativeTtsSpeakerMappingDescriptor[]; defaultVoiceReferenceId?: string | null }): Promise<void>;
   getState(): Promise<NativeTtsStatePayload>;
   getMotionAutoStopConfig(): Promise<NativeMotionAutoStopConfig>;
   setMotionAutoStopConfig(options: NativeMotionAutoStopConfig): Promise<NativeMotionAutoStopConfig>;

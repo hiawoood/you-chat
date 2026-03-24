@@ -2,7 +2,7 @@
 // Uses shukco/chatterbox-turbo-api:latest Docker image
 // API Docs: https://docs.vast.ai/api
 
-import type { TtsVoiceReference } from "../db";
+import { listAllTtsVoiceReferences, updateTtsVoiceReference, type TtsVoiceReference } from "../db";
 
 const VAST_API_KEY = process.env.VAST_API_KEY || "";
 const HF_TOKEN = process.env.HF_TOKEN || "";
@@ -35,6 +35,18 @@ export interface TTSSpeechResponse {
   mimeType: "audio/mpeg";
   duration?: number;
   sampleRate: number;
+}
+
+export interface TTSSpeechPartRequest {
+  text: string;
+  voiceReferenceId?: string | null;
+}
+
+export interface TTSSpeechPartResponse {
+  audio: string;
+  audioFormat: "mp3";
+  mimeType: "audio/mpeg";
+  voiceReferenceId: string | null;
 }
 
 export interface TtsLifecycleState {
@@ -76,7 +88,7 @@ let instanceStartupPromise: Promise<VastInstance> | null = null;
 let instanceStartupGeneration = 0;
 let inactivityTimer: Timer | null = null;
 let ttsServiceRequestQueue: Promise<void> = Promise.resolve();
-let activeTtsServiceRequest: "health" | "tts" | "reference" | null = null;
+let activeTtsServiceRequest: "health" | "tts" | "reference" | "voices" | null = null;
 let lastKnownServiceHealth = false;
 let recentMachineIds: string[] = [];
 let accountBalanceCache: { value: number | null; updatedAt: number } = { value: null, updatedAt: 0 };
@@ -112,6 +124,8 @@ let activeReferenceState: ActiveReferenceState = {
   mode: "unknown",
   voiceId: null,
 };
+
+let syncedVoiceLibraryInstanceId: string | null = null;
 
 function statusInstanceFromActive(instance: VastInstance | null) {
   if (!instance) return undefined;
@@ -342,7 +356,7 @@ function assertCurrentGeneration(generation: number) {
 }
 
 async function runExclusiveTtsServiceRequest<T>(
-  kind: "health" | "tts" | "reference",
+  kind: "health" | "tts" | "reference" | "voices",
   task: () => Promise<T>,
 ): Promise<T> {
   const previous = ttsServiceRequestQueue;
@@ -384,6 +398,119 @@ function getInstanceBaseUrl(instance: VastInstance) {
     throw new Error("No active TTS instance");
   }
   return `http://${instance.ip}:${instance.port}`;
+}
+
+function buildRemoteVoiceName(voiceReference: TtsVoiceReference) {
+  const slug = voiceReference.label
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 40) || "voice";
+
+  return `${slug}-${voiceReference.id.slice(0, 8)}`;
+}
+
+async function listRemoteVoices(instance: VastInstance) {
+  const response = await fetch(`${getInstanceBaseUrl(instance)}/voices`, {
+    method: "GET",
+    signal: AbortSignal.timeout(30000),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to list remote voices: ${await response.text()}`);
+  }
+
+  const body = await response.json() as { voices?: Array<{ voice_id: string; name: string; filename?: string }> };
+  return body.voices || [];
+}
+
+async function uploadVoiceToLibrary(instance: VastInstance, voiceReference: TtsVoiceReference) {
+  const file = Bun.file(voiceReference.storage_path);
+  if (!(await file.exists())) {
+    throw new Error(`Voice reference file not found: ${voiceReference.label}`);
+  }
+
+  const formData = new FormData();
+  formData.append(
+    "files",
+    new Blob([await file.arrayBuffer()], { type: voiceReference.mime_type }),
+    voiceReference.original_filename
+  );
+  formData.append("voice_names", buildRemoteVoiceName(voiceReference));
+  formData.append("norm_loudness", "true");
+
+  const response = await runExclusiveTtsServiceRequest("voices", async () => fetch(`${getInstanceBaseUrl(instance)}/voices`, {
+    method: "POST",
+    body: formData,
+    signal: AbortSignal.timeout(90000),
+  }));
+
+  if (!response.ok) {
+    throw new Error(`Failed to upload voice to remote library: ${await response.text()}`);
+  }
+
+  const body = await response.json() as { voices?: Array<{ voice_id: string; name: string }> };
+  const uploadedVoice = body.voices?.[0];
+  if (!uploadedVoice) {
+    throw new Error("Remote TTS service did not return uploaded voice metadata");
+  }
+
+  return uploadedVoice;
+}
+
+async function deleteRemoteVoice(instance: VastInstance, remoteVoiceId: string) {
+  const response = await runExclusiveTtsServiceRequest("voices", async () => fetch(`${getInstanceBaseUrl(instance)}/voices/${remoteVoiceId}`, {
+    method: "DELETE",
+    signal: AbortSignal.timeout(30000),
+  }));
+
+  if (!response.ok && response.status !== 404) {
+    throw new Error(`Failed to delete remote voice: ${await response.text()}`);
+  }
+}
+
+async function syncVoiceReferenceToInstance(instance: VastInstance, voiceReference: TtsVoiceReference) {
+  try {
+    const uploadedVoice = await uploadVoiceToLibrary(instance, voiceReference);
+    updateTtsVoiceReference(voiceReference.user_id, voiceReference.id, {
+      remote_voice_id: uploadedVoice.voice_id,
+      remote_voice_name: uploadedVoice.name,
+      sync_status: "synced",
+      last_synced_at: Math.floor(Date.now() / 1000),
+      last_sync_error: null,
+    });
+    return uploadedVoice;
+  } catch (error) {
+    updateTtsVoiceReference(voiceReference.user_id, voiceReference.id, {
+      sync_status: "error",
+      last_sync_error: error instanceof Error ? error.message : "Voice sync failed",
+    });
+    throw error;
+  }
+}
+
+async function syncStoredVoicesForInstance(instance: VastInstance) {
+  if (syncedVoiceLibraryInstanceId === instance.id) {
+    return;
+  }
+
+  const remoteVoices = await listRemoteVoices(instance);
+  const remoteVoiceIds = new Set(remoteVoices.map((voice) => voice.voice_id));
+
+  for (const voiceReference of listAllTtsVoiceReferences()) {
+    if (voiceReference.remote_voice_id && remoteVoiceIds.has(voiceReference.remote_voice_id)) {
+      updateTtsVoiceReference(voiceReference.user_id, voiceReference.id, {
+        sync_status: "synced",
+        last_synced_at: Math.floor(Date.now() / 1000),
+        last_sync_error: null,
+      });
+      continue;
+    }
+
+    await syncVoiceReferenceToInstance(instance, voiceReference);
+  }
+
+  syncedVoiceLibraryInstanceId = instance.id;
 }
 
 async function uploadVoiceReferenceToInstance(instance: VastInstance, voiceReference: TtsVoiceReference) {
@@ -1127,6 +1254,16 @@ export async function generateSpeech(
   voiceReference: TtsVoiceReference | null = null
 ): Promise<TTSSpeechResponse> {
   const instance = await ensureVoiceReferenceForInstance(voiceReference);
+  await syncStoredVoicesForInstance(instance);
+  let requestedVoiceIdentifier = request.voice || null;
+  if (!requestedVoiceIdentifier && voiceReference) {
+    if (voiceReference.remote_voice_id) {
+      requestedVoiceIdentifier = voiceReference.remote_voice_id;
+    } else {
+      const syncedVoice = await syncVoiceReferenceToInstance(instance, voiceReference);
+      requestedVoiceIdentifier = syncedVoice.voice_id;
+    }
+  }
 
   // Update last activity
   instance.lastActivity = new Date();
@@ -1149,6 +1286,7 @@ export async function generateSpeech(
             body: JSON.stringify({
               text: request.text,
               audio_format: "mp3",
+              voice: requestedVoiceIdentifier,
             }),
             signal: AbortSignal.timeout(180000),
           }
@@ -1231,6 +1369,7 @@ export async function generateSpeech(
               body: JSON.stringify({
                 text: request.text,
                 audio_format: "mp3",
+                voice: requestedVoiceIdentifier,
               }),
               signal: AbortSignal.timeout(180000),
             }
@@ -1274,6 +1413,73 @@ export async function generateSpeech(
   };
 }
 
+export async function generateSpeechParts(parts: TTSSpeechPartRequest[], voiceReferencesById: Map<string, TtsVoiceReference>): Promise<TTSSpeechPartResponse[]> {
+  if (parts.length === 0) {
+    return [];
+  }
+
+  const instance = await ensureVoiceReferenceForInstance(null);
+  await syncStoredVoicesForInstance(instance);
+
+  const groupedPartIndices = new Map<string, number[]>();
+  for (let index = 0; index < parts.length; index++) {
+    const voiceKey = parts[index]?.voiceReferenceId ?? "builtin";
+    groupedPartIndices.set(voiceKey, [...(groupedPartIndices.get(voiceKey) || []), index]);
+  }
+
+  const results = new Array<TTSSpeechPartResponse>(parts.length);
+
+  for (const [voiceKey, indices] of groupedPartIndices.entries()) {
+    let voiceIdentifier: string | null = null;
+    const voiceReferenceId = voiceKey === "builtin" ? null : voiceKey;
+    const voiceReference = voiceReferenceId ? voiceReferencesById.get(voiceReferenceId) || null : null;
+
+    if (voiceReference) {
+      if (voiceReference.remote_voice_id) {
+        voiceIdentifier = voiceReference.remote_voice_id;
+      } else {
+        const syncedVoice = await syncVoiceReferenceToInstance(instance, voiceReference);
+        voiceIdentifier = syncedVoice.voice_id;
+      }
+    }
+
+    for (const index of indices) {
+      const part = parts[index];
+      if (!part) continue;
+      const response = await generateSpeech({ text: part.text, voice: voiceIdentifier ?? undefined }, null);
+      results[index] = {
+        audio: response.audio,
+        audioFormat: response.audioFormat,
+        mimeType: response.mimeType,
+        voiceReferenceId: part.voiceReferenceId ?? null,
+      };
+    }
+  }
+
+  return results;
+}
+
+export async function syncVoiceReferenceWithService(voiceReference: TtsVoiceReference) {
+  const instance = await startCheapestInstance();
+  const uploadedVoice = await syncVoiceReferenceToInstance(instance, voiceReference);
+  syncedVoiceLibraryInstanceId = instance.id;
+  return uploadedVoice;
+}
+
+export async function deleteVoiceReferenceFromService(remoteVoiceId: string) {
+  if (!activeInstance) return;
+  await deleteRemoteVoice(activeInstance, remoteVoiceId);
+}
+
+export async function syncSavedVoicesWithActiveService() {
+  if (listAllTtsVoiceReferences().length === 0) {
+    return;
+  }
+
+  const instance = activeInstance || await startCheapestInstance();
+  await syncStoredVoicesForInstance(instance);
+}
+
 /**
  * Destroy a Vast.ai instance
  */
@@ -1310,6 +1516,7 @@ export async function destroyInstance(instanceId: string, options?: { preserveLi
     rememberMachineId(currentMachineId);
     activeInstance = null;
     resetReferenceState();
+    syncedVoiceLibraryInstanceId = null;
     clearInactivityTimer();
     emitStatusUpdate();
   }

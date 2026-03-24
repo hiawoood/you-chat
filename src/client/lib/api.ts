@@ -57,7 +57,23 @@ export interface TtsVoiceReference {
   createdAt: number;
   updatedAt: number;
   selected: boolean;
+  remoteVoiceId: string | null;
+  remoteVoiceName: string | null;
+  syncStatus: string;
+  lastSyncedAt: number | null;
+  syncError: string | null;
   previewUrl: string;
+}
+
+export interface SessionTtsSpeakerMapping {
+  speakerKey: string;
+  speakerLabel: string;
+  voiceReferenceId: string | null;
+}
+
+export interface SessionTtsSpeakerResponse {
+  speakers: SessionTtsSpeakerMapping[];
+  defaultVoiceReferenceId: string | null;
 }
 
 export interface TtsVoiceListResponse {
@@ -116,6 +132,10 @@ export const api = {
     fetchAPI(`/sessions/${id}`, { method: "DELETE" }),
   getMessages: (sessionId: string): Promise<Message[]> =>
     fetchAPI(`/sessions/${sessionId}/messages`),
+  getSessionTtsSpeakers: (sessionId: string): Promise<SessionTtsSpeakerResponse> =>
+    fetchAPI(`/sessions/${sessionId}/tts-speakers`),
+  updateSessionTtsSpeaker: (sessionId: string, speakerKey: string, voiceReferenceId: string | null): Promise<{ success: boolean; speaker: SessionTtsSpeakerMapping }> =>
+    fetchAPI(`/sessions/${sessionId}/tts-speakers/${encodeURIComponent(speakerKey)}`, { method: "PATCH", body: JSON.stringify({ voiceReferenceId }) }),
   editMessage: (sessionId: string, messageId: string, content: string): Promise<Message> =>
     fetchAPI(`/sessions/${sessionId}/messages/${messageId}`, { method: "PATCH", body: JSON.stringify({ content }) }),
   getMessage: (sessionId: string, messageId: string): Promise<Message & { status?: string }> =>

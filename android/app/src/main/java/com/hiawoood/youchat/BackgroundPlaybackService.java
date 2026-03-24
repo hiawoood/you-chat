@@ -73,14 +73,15 @@ public class BackgroundPlaybackService extends Service {
     public static final String ACTION_SET_MOTION_AUTO_STOP = "com.hiawoood.youchat.action.SET_MOTION_AUTO_STOP";
 
     public static final String EXTRA_MESSAGE_ID = "messageId";
-    public static final String EXTRA_CHUNKS = "chunks";
+    public static final String EXTRA_CHUNKS_JSON = "chunksJson";
     public static final String EXTRA_START_CHUNK_INDEX = "startChunkIndex";
-    public static final String EXTRA_VOICE_REFERENCE_ID = "voiceReferenceId";
     public static final String EXTRA_PLAYBACK_SPEED = "playbackSpeed";
     public static final String EXTRA_BASE_URL = "baseUrl";
     public static final String EXTRA_CHUNK_INDEX = "chunkIndex";
     public static final String EXTRA_MOTION_AUTO_STOP_ENABLED = "motionAutoStopEnabled";
     public static final String EXTRA_STREAMING_PLAYBACK = "streamingPlayback";
+    public static final String EXTRA_SPEAKER_MAPPINGS_JSON = "speakerMappingsJson";
+    public static final String EXTRA_DEFAULT_VOICE_REFERENCE_ID = "defaultVoiceReferenceId";
 
     private static final String CHANNEL_ID = "you-chat-tts-playback";
     private static final int NOTIFICATION_ID = 4207;
@@ -107,7 +108,7 @@ public class BackgroundPlaybackService extends Service {
     private final ExecutorService metadataExecutor = Executors.newSingleThreadExecutor();
     private final AtomicInteger sessionGeneration = new AtomicInteger(0);
     private final Map<Integer, Future<?>> fetchTasks = new ConcurrentHashMap<>();
-    private final Map<Integer, File> preparedChunkFiles = new ConcurrentHashMap<>();
+    private final Map<Integer, ArrayList<File>> preparedChunkFiles = new ConcurrentHashMap<>();
     private final Set<Integer> preparedChunkIndices = ConcurrentHashMap.newKeySet();
 
     private MediaPlayer mediaPlayer;
@@ -118,9 +119,11 @@ public class BackgroundPlaybackService extends Service {
     private SensorEventListener motionSensorListener;
 
     private String activeMessageId;
+    private String activeChunksJson = "[]";
     private ArrayList<String> chunkTexts = new ArrayList<>();
+    private ArrayList<PlaybackChunk> playbackChunks = new ArrayList<>();
     private String baseUrl;
-    private String voiceReferenceId;
+    private String defaultVoiceReferenceId;
     private float playbackSpeed = 1f;
 
     private int currentChunkIndex = 0;
@@ -140,6 +143,7 @@ public class BackgroundPlaybackService extends Service {
     private long motionLastPublishedRemainingSeconds = Long.MIN_VALUE;
     private float playbackVolume = 1f;
     private final float[] gravityVector = new float[]{0f, 0f, 0f};
+    private final Map<String, String> speakerVoiceReferenceIds = new ConcurrentHashMap<>();
     private final Runnable motionAutoStopRunnable = new Runnable() {
         @Override
         public void run() {
@@ -152,6 +156,30 @@ public class BackgroundPlaybackService extends Service {
             pollStreamingChunkState();
         }
     };
+
+    private static class PlaybackChunkPart {
+        final String text;
+        final String speakerKey;
+        final String speakerLabel;
+        final String voiceReferenceId;
+
+        PlaybackChunkPart(String text, String speakerKey, String speakerLabel, String voiceReferenceId) {
+            this.text = text;
+            this.speakerKey = speakerKey;
+            this.speakerLabel = speakerLabel;
+            this.voiceReferenceId = voiceReferenceId;
+        }
+    }
+
+    private static class PlaybackChunk {
+        final String displayText;
+        final ArrayList<PlaybackChunkPart> parts;
+
+        PlaybackChunk(String displayText, ArrayList<PlaybackChunkPart> parts) {
+            this.displayText = displayText;
+            this.parts = parts;
+        }
+    }
 
     public static BackgroundPlaybackService getInstance() {
         return instance;
@@ -237,6 +265,69 @@ public class BackgroundPlaybackService extends Service {
         return payload;
     }
 
+    private void applySpeakerMappingsJson(@Nullable String speakerMappingsJson, @Nullable String nextDefaultVoiceReferenceId) {
+        speakerVoiceReferenceIds.clear();
+        if (speakerMappingsJson != null && !speakerMappingsJson.isEmpty()) {
+            try {
+                JSONArray mappings = new JSONArray(speakerMappingsJson);
+                for (int i = 0; i < mappings.length(); i++) {
+                    JSONObject mapping = mappings.optJSONObject(i);
+                    if (mapping == null) continue;
+                    String speakerKey = mapping.optString("speakerKey", "").trim();
+                    if (speakerKey.isEmpty()) continue;
+                    String voiceReferenceId = mapping.optString("voiceReferenceId", null);
+                    speakerVoiceReferenceIds.put(speakerKey, voiceReferenceId);
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        defaultVoiceReferenceId = nextDefaultVoiceReferenceId;
+    }
+
+    private void applyChunksJson(@Nullable String chunksJson) {
+        activeChunksJson = chunksJson == null ? "[]" : chunksJson;
+        playbackChunks = parsePlaybackChunks(activeChunksJson);
+        chunkTexts = new ArrayList<>();
+        for (PlaybackChunk chunk : playbackChunks) {
+            chunkTexts.add(chunk.displayText);
+        }
+    }
+
+    private ArrayList<PlaybackChunk> parsePlaybackChunks(String chunksJson) {
+        ArrayList<PlaybackChunk> chunks = new ArrayList<>();
+        if (chunksJson == null || chunksJson.isEmpty()) {
+            return chunks;
+        }
+
+        try {
+            JSONArray array = new JSONArray(chunksJson);
+            for (int i = 0; i < array.length(); i++) {
+                JSONObject chunkObject = array.optJSONObject(i);
+                if (chunkObject == null) continue;
+                JSONArray partsArray = chunkObject.optJSONArray("parts");
+                ArrayList<PlaybackChunkPart> parts = new ArrayList<>();
+                if (partsArray != null) {
+                    for (int partIndex = 0; partIndex < partsArray.length(); partIndex++) {
+                        JSONObject partObject = partsArray.optJSONObject(partIndex);
+                        if (partObject == null) continue;
+                        String text = partObject.optString("text", "").trim();
+                        if (text.isEmpty()) continue;
+                        parts.add(new PlaybackChunkPart(
+                            text,
+                            partObject.optString("speakerKey", "narrator"),
+                            partObject.optString("speakerLabel", "Narrator"),
+                            partObject.isNull("voiceReferenceId") ? null : partObject.optString("voiceReferenceId", null)
+                        ));
+                    }
+                }
+                chunks.add(new PlaybackChunk(chunkObject.optString("displayText", ""), parts));
+            }
+        } catch (Exception ignored) {
+        }
+
+        return chunks;
+    }
+
     private void handleStartPlayback(Intent intent) {
         final int generation = sessionGeneration.incrementAndGet();
         stopCurrentPlayer();
@@ -244,7 +335,6 @@ public class BackgroundPlaybackService extends Service {
 
         activeMessageId = intent.getStringExtra(EXTRA_MESSAGE_ID);
         baseUrl = intent.getStringExtra(EXTRA_BASE_URL);
-        voiceReferenceId = intent.getStringExtra(EXTRA_VOICE_REFERENCE_ID);
         activeMessageStreamingPlayback = intent.getBooleanExtra(EXTRA_STREAMING_PLAYBACK, false);
         waitingForStreamingChunks = false;
         streamingChunkPollInFlight = false;
@@ -256,11 +346,8 @@ public class BackgroundPlaybackService extends Service {
         isPaused = false;
         errorMessage = null;
         playbackVolume = 1f;
-
-        chunkTexts = intent.getStringArrayListExtra(EXTRA_CHUNKS);
-        if (chunkTexts == null) {
-            chunkTexts = new ArrayList<>();
-        }
+        applySpeakerMappingsJson(intent.getStringExtra(EXTRA_SPEAKER_MAPPINGS_JSON), intent.getStringExtra(EXTRA_DEFAULT_VOICE_REFERENCE_ID));
+        applyChunksJson(intent.getStringExtra(EXTRA_CHUNKS_JSON));
 
         resetMotionAutoStopWindow(false);
         updateMotionMonitoringState();
@@ -290,9 +377,9 @@ public class BackgroundPlaybackService extends Service {
 
         ensurePrefetch(chunkIndex, generation);
 
-        File preparedFile = preparedChunkFiles.get(chunkIndex);
-        if (preparedFile != null && preparedFile.exists()) {
-            startPreparedChunk(chunkIndex, preparedFile, generation);
+        ArrayList<File> preparedFiles = preparedChunkFiles.get(chunkIndex);
+        if (preparedFiles != null && !preparedFiles.isEmpty()) {
+            startPreparedChunk(chunkIndex, preparedFiles, generation, 0);
         }
     }
 
@@ -308,22 +395,25 @@ public class BackgroundPlaybackService extends Service {
 
         Future<?> task = fetchExecutor.submit(() -> {
             try {
-                File file = fetchChunkAudioToFile(chunkIndex, chunkTexts.get(chunkIndex));
+                PlaybackChunk chunk = playbackChunks.get(chunkIndex);
+                ArrayList<File> files = fetchChunkAudioToFiles(chunkIndex, chunk);
                 if (generation != sessionGeneration.get()) {
-                    if (file.exists()) {
-                        //noinspection ResultOfMethodCallIgnored
-                        file.delete();
+                    for (File file : files) {
+                        if (file.exists()) {
+                            //noinspection ResultOfMethodCallIgnored
+                            file.delete();
+                        }
                     }
                     return;
                 }
 
-                preparedChunkFiles.put(chunkIndex, file);
+                preparedChunkFiles.put(chunkIndex, files);
                 preparedChunkIndices.add(chunkIndex);
                 fetchTasks.remove(chunkIndex);
                 publishState();
 
                 if (chunkIndex == currentChunkIndex && isLoading) {
-                    mainHandler.post(() -> startPreparedChunk(chunkIndex, file, generation));
+                    mainHandler.post(() -> startPreparedChunk(chunkIndex, files, generation, 0));
                 }
             } catch (Exception error) {
                 fetchTasks.remove(chunkIndex);
@@ -342,9 +432,15 @@ public class BackgroundPlaybackService extends Service {
         fetchTasks.put(chunkIndex, task);
     }
 
-    private void startPreparedChunk(int chunkIndex, File file, int generation) {
+    private void startPreparedChunk(int chunkIndex, ArrayList<File> files, int generation, int partIndex) {
         if (generation != sessionGeneration.get()) return;
-        if (!file.exists()) {
+        if (partIndex < 0 || partIndex >= files.size()) {
+            handleChunkCompleted(chunkIndex, generation);
+            return;
+        }
+
+        File file = files.get(partIndex);
+        if (file == null || !file.exists()) {
             queueChunkFetch(chunkIndex, generation);
             return;
         }
@@ -384,7 +480,13 @@ public class BackgroundPlaybackService extends Service {
                 updateStreamingChunkPollingState();
                 publishState();
             });
-            mediaPlayer.setOnCompletionListener(player -> handleChunkCompleted(chunkIndex, generation));
+            mediaPlayer.setOnCompletionListener(player -> {
+                if (partIndex + 1 < files.size()) {
+                    startPreparedChunk(chunkIndex, files, generation, partIndex + 1);
+                    return;
+                }
+                handleChunkCompleted(chunkIndex, generation);
+            });
             mediaPlayer.setOnErrorListener((player, what, extra) -> {
                 errorMessage = "Native playback failed.";
                 isLoading = false;
@@ -487,14 +589,16 @@ public class BackgroundPlaybackService extends Service {
 
     private void updatePlaybackChunks(Intent intent) {
         String messageId = intent.getStringExtra(EXTRA_MESSAGE_ID);
-        ArrayList<String> updatedChunks = intent.getStringArrayListExtra(EXTRA_CHUNKS);
+        String updatedChunksJson = intent.getStringExtra(EXTRA_CHUNKS_JSON);
 
-        if (messageId == null || updatedChunks == null || activeMessageId == null || !activeMessageId.equals(messageId)) {
+        if (messageId == null || updatedChunksJson == null || activeMessageId == null || !activeMessageId.equals(messageId)) {
             return;
         }
 
+        applySpeakerMappingsJson(intent.getStringExtra(EXTRA_SPEAKER_MAPPINGS_JSON), intent.getStringExtra(EXTRA_DEFAULT_VOICE_REFERENCE_ID));
+
         int previousSize = chunkTexts.size();
-        chunkTexts = new ArrayList<>(updatedChunks);
+        applyChunksJson(updatedChunksJson);
         trimPreparedChunks(chunkTexts.size());
 
         if (chunkTexts.isEmpty()) {
@@ -562,7 +666,7 @@ public class BackgroundPlaybackService extends Service {
                     JSONObject response = new JSONObject(readStream(connection.getInputStream()));
                     String content = response.optString("content", "");
                     boolean stillStreaming = "streaming".equalsIgnoreCase(response.optString("status", ""));
-                    ArrayList<String> updatedChunks = buildStreamingChunks(content);
+                    ArrayList<PlaybackChunk> updatedChunks = buildStreamingChunks(content);
 
                     mainHandler.post(() -> applyPolledStreamingChunks(messageId, updatedChunks, stillStreaming));
                 }
@@ -582,7 +686,7 @@ public class BackgroundPlaybackService extends Service {
         });
     }
 
-    private void applyPolledStreamingChunks(String messageId, ArrayList<String> updatedChunks, boolean stillStreaming) {
+    private void applyPolledStreamingChunks(String messageId, ArrayList<PlaybackChunk> updatedChunks, boolean stillStreaming) {
         if (activeMessageId == null || !activeMessageId.equals(messageId)) {
             return;
         }
@@ -591,9 +695,15 @@ public class BackgroundPlaybackService extends Service {
             activeMessageStreamingPlayback = false;
         }
 
-        if (!updatedChunks.equals(chunkTexts)) {
+        ArrayList<String> updatedDisplayTexts = new ArrayList<>();
+        for (PlaybackChunk chunk : updatedChunks) {
+            updatedDisplayTexts.add(chunk.displayText);
+        }
+
+        if (!updatedDisplayTexts.equals(chunkTexts)) {
             int previousSize = chunkTexts.size();
-            chunkTexts = updatedChunks;
+            playbackChunks = updatedChunks;
+            chunkTexts = updatedDisplayTexts;
             trimPreparedChunks(chunkTexts.size());
 
             if ((isLoading || isPlaying || waitingForStreamingChunks) && chunkTexts.size() > previousSize) {
@@ -627,42 +737,104 @@ public class BackgroundPlaybackService extends Service {
         publishState();
     }
 
-    private ArrayList<String> buildStreamingChunks(String text) {
-        ArrayList<String> chunks = new ArrayList<>();
-        String formattedText = formatTextForTts(text);
-        if (formattedText.isEmpty()) {
+    private ArrayList<PlaybackChunk> buildStreamingChunks(String text) {
+        ArrayList<PlaybackChunk> chunks = new ArrayList<>();
+        if (text == null || text.trim().isEmpty()) {
             return chunks;
         }
 
-        Matcher matcher = STREAMING_SENTENCE_PATTERN.matcher(formattedText);
-        StringBuilder currentChunk = new StringBuilder();
+        ArrayList<PlaybackChunkPart> currentParts = new ArrayList<>();
+        StringBuilder currentDisplayChunk = new StringBuilder();
         int currentWordCount = 0;
+        String[] lines = text.split("\\r?\\n");
 
-        while (matcher.find()) {
-            String sentence = matcher.group().trim();
-            if (sentence.isEmpty() || !sentence.matches(".*[.!?]+[\\\"')\\]]*$")) {
-                continue;
-            }
+        for (String rawLine : lines) {
+            SpeakerLine speakerLine = parseSpeakerLine(rawLine);
+            Matcher matcher = STREAMING_SENTENCE_PATTERN.matcher(speakerLine.body);
+            int sentenceIndex = 0;
 
-            int sentenceWordCount = countWords(sentence);
-            if (currentWordCount + sentenceWordCount > TTS_TARGET_WORDS_PER_CHUNK && currentChunk.length() > 0) {
-                chunks.add(currentChunk.toString().trim());
-                currentChunk.setLength(0);
-                currentWordCount = 0;
-            }
+            while (matcher.find()) {
+                String displaySentence = matcher.group().trim();
+                String ttsSentence = formatTextForTts(displaySentence);
+                if (ttsSentence.isEmpty() || !ttsSentence.matches(".*[.!?]+[\\\"')\\]]*$")) {
+                    continue;
+                }
 
-            if (currentChunk.length() > 0) {
-                currentChunk.append(' ');
+                int sentenceWordCount = countWords(ttsSentence);
+                if (currentWordCount + sentenceWordCount > TTS_TARGET_WORDS_PER_CHUNK && !currentParts.isEmpty()) {
+                    chunks.add(new PlaybackChunk(currentDisplayChunk.toString().trim(), new ArrayList<>(currentParts)));
+                    currentParts.clear();
+                    currentDisplayChunk.setLength(0);
+                    currentWordCount = 0;
+                }
+
+                String displayText = (sentenceIndex == 0 ? speakerLine.prefix : "") + displaySentence;
+                PlaybackChunkPart previousPart = currentParts.isEmpty() ? null : currentParts.get(currentParts.size() - 1);
+                if (previousPart != null
+                    && previousPart.speakerKey.equals(speakerLine.speakerKey)
+                    && java.util.Objects.equals(previousPart.voiceReferenceId, speakerLine.voiceReferenceId)) {
+                    currentParts.set(currentParts.size() - 1, new PlaybackChunkPart(
+                        (previousPart.text + " " + ttsSentence).trim(),
+                        previousPart.speakerKey,
+                        previousPart.speakerLabel,
+                        previousPart.voiceReferenceId
+                    ));
+                } else {
+                    currentParts.add(new PlaybackChunkPart(
+                        ttsSentence,
+                        speakerLine.speakerKey,
+                        speakerLine.speakerLabel,
+                        speakerLine.voiceReferenceId
+                    ));
+                }
+
+                if (currentDisplayChunk.length() > 0) {
+                    currentDisplayChunk.append('\n');
+                }
+                currentDisplayChunk.append(displayText);
+                currentWordCount += sentenceWordCount;
+                sentenceIndex += 1;
             }
-            currentChunk.append(sentence);
-            currentWordCount += sentenceWordCount;
         }
 
-        if (currentChunk.length() > 0) {
-            chunks.add(currentChunk.toString().trim());
+        if (!currentParts.isEmpty()) {
+            chunks.add(new PlaybackChunk(currentDisplayChunk.toString().trim(), new ArrayList<>(currentParts)));
         }
 
         return chunks;
+    }
+
+    private static class SpeakerLine {
+        final String speakerKey;
+        final String speakerLabel;
+        final String prefix;
+        final String body;
+        final String voiceReferenceId;
+
+        SpeakerLine(String speakerKey, String speakerLabel, String prefix, String body, String voiceReferenceId) {
+            this.speakerKey = speakerKey;
+            this.speakerLabel = speakerLabel;
+            this.prefix = prefix;
+            this.body = body;
+            this.voiceReferenceId = voiceReferenceId;
+        }
+    }
+
+    private SpeakerLine parseSpeakerLine(String rawLine) {
+        Matcher matcher = Pattern.compile("^\\s*\\[([^\\]\\n]+)\\]\\s*").matcher(rawLine);
+        if (!matcher.find()) {
+            return new SpeakerLine("narrator", "Narrator", "", rawLine, defaultVoiceReferenceId);
+        }
+
+        String speakerLabel = matcher.group(1) == null ? "Narrator" : matcher.group(1).trim();
+        String speakerKey = speakerLabel.toLowerCase(Locale.US).replaceAll("\\s+", " ");
+        return new SpeakerLine(
+            speakerKey,
+            speakerLabel,
+            matcher.group(),
+            rawLine.substring(matcher.end()),
+            speakerVoiceReferenceIds.containsKey(speakerKey) ? speakerVoiceReferenceIds.get(speakerKey) : defaultVoiceReferenceId
+        );
     }
 
     private String formatTextForTts(String text) {
@@ -736,7 +908,11 @@ public class BackgroundPlaybackService extends Service {
         stopCurrentPlayer();
         clearPreparedChunks();
         activeMessageId = null;
+        activeChunksJson = "[]";
         chunkTexts = new ArrayList<>();
+        playbackChunks = new ArrayList<>();
+        speakerVoiceReferenceIds.clear();
+        defaultVoiceReferenceId = null;
         activeMessageStreamingPlayback = false;
         waitingForStreamingChunks = false;
         streamingChunkPollInFlight = false;
@@ -771,10 +947,12 @@ public class BackgroundPlaybackService extends Service {
         fetchTasks.values().forEach((task) -> task.cancel(true));
         fetchTasks.clear();
         preparedChunkIndices.clear();
-        for (File file : preparedChunkFiles.values()) {
-            if (file.exists()) {
-                //noinspection ResultOfMethodCallIgnored
-                file.delete();
+        for (ArrayList<File> files : preparedChunkFiles.values()) {
+            for (File file : files) {
+                if (file.exists()) {
+                    //noinspection ResultOfMethodCallIgnored
+                    file.delete();
+                }
             }
         }
         preparedChunkFiles.clear();
@@ -805,10 +983,11 @@ public class BackgroundPlaybackService extends Service {
         });
         preparedChunkFiles.entrySet().removeIf((entry) -> {
             if (entry.getKey() >= maxChunkCount) {
-                File file = entry.getValue();
-                if (file.exists()) {
-                    //noinspection ResultOfMethodCallIgnored
-                    file.delete();
+                for (File file : entry.getValue()) {
+                    if (file.exists()) {
+                        //noinspection ResultOfMethodCallIgnored
+                        file.delete();
+                    }
                 }
                 return true;
             }
@@ -816,13 +995,13 @@ public class BackgroundPlaybackService extends Service {
         });
     }
 
-    private File fetchChunkAudioToFile(int chunkIndex, String text) throws Exception {
-        byte[] audioBytes = null;
+    private ArrayList<File> fetchChunkAudioToFiles(int chunkIndex, PlaybackChunk chunk) throws Exception {
+        JSONArray audioParts = null;
         Exception lastException = null;
 
         for (int attempt = 0; attempt < 3; attempt++) {
             try {
-                audioBytes = requestChunkAudio(text);
+                audioParts = requestChunkAudioParts(chunk);
                 break;
             } catch (Exception error) {
                 lastException = error;
@@ -830,19 +1009,35 @@ public class BackgroundPlaybackService extends Service {
             }
         }
 
-        if (audioBytes == null) {
+        if (audioParts == null) {
             throw lastException != null ? lastException : new Exception("Failed to generate chunk audio.");
         }
 
-        File outputFile = new File(getCacheDir(), "tts-" + sessionGeneration.get() + "-" + chunkIndex + ".mp3");
-        try (BufferedOutputStream outputStream = new BufferedOutputStream(new FileOutputStream(outputFile))) {
-            outputStream.write(audioBytes);
-            outputStream.flush();
+        ArrayList<File> outputFiles = new ArrayList<>();
+        for (int partIndex = 0; partIndex < audioParts.length(); partIndex++) {
+            JSONObject audioPart = audioParts.optJSONObject(partIndex);
+            if (audioPart == null) continue;
+            String audioBase64 = audioPart.optString("audio", "");
+            if (audioBase64.isEmpty()) {
+                continue;
+            }
+
+            File outputFile = new File(getCacheDir(), "tts-" + sessionGeneration.get() + "-" + chunkIndex + "-" + partIndex + ".mp3");
+            try (BufferedOutputStream outputStream = new BufferedOutputStream(new FileOutputStream(outputFile))) {
+                outputStream.write(Base64.decode(audioBase64, Base64.DEFAULT));
+                outputStream.flush();
+            }
+            outputFiles.add(outputFile);
         }
-        return outputFile;
+
+        if (outputFiles.isEmpty()) {
+            throw new Exception("No audio files were generated for chunk.");
+        }
+
+        return outputFiles;
     }
 
-    private byte[] requestChunkAudio(String text) throws Exception {
+    private JSONArray requestChunkAudioParts(PlaybackChunk chunk) throws Exception {
         HttpURLConnection connection = null;
         try {
             URL url = new URL(baseUrl + "/api/tts/speak");
@@ -860,10 +1055,16 @@ public class BackgroundPlaybackService extends Service {
             }
 
             JSONObject payload = new JSONObject();
-            payload.put("text", text);
-            if (voiceReferenceId != null) {
-                payload.put("voiceReferenceId", voiceReferenceId);
+            JSONArray parts = new JSONArray();
+            for (PlaybackChunkPart part : chunk.parts) {
+                JSONObject partPayload = new JSONObject();
+                partPayload.put("text", part.text);
+                if (part.voiceReferenceId != null) {
+                    partPayload.put("voiceReferenceId", part.voiceReferenceId);
+                }
+                parts.put(partPayload);
             }
+            payload.put("parts", parts);
 
             try (OutputStream outputStream = connection.getOutputStream()) {
                 outputStream.write(payload.toString().getBytes(StandardCharsets.UTF_8));
@@ -880,12 +1081,16 @@ public class BackgroundPlaybackService extends Service {
             }
 
             JSONObject response = new JSONObject(responseBody);
-            String audioBase64 = response.optString("audio", "");
-            if (audioBase64.isEmpty()) {
+            JSONArray audioParts = response.optJSONArray("audioParts");
+            if ((audioParts == null || audioParts.length() == 0) && response.has("audio")) {
+                audioParts = new JSONArray();
+                audioParts.put(new JSONObject().put("audio", response.optString("audio", "")));
+            }
+            if (audioParts == null || audioParts.length() == 0) {
                 throw new Exception(response.optString("error", "TTS audio payload was empty."));
             }
 
-            return Base64.decode(audioBase64, Base64.DEFAULT);
+            return audioParts;
         } finally {
             if (connection != null) {
                 connection.disconnect();
