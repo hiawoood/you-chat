@@ -1124,7 +1124,7 @@ export default function ChatView({
                 </div>
               )}
               {showVoiceMenu && !ttsError && (
-                <div className="absolute bottom-full left-1/2 z-10 mb-2 w-[min(20rem,calc(100vw-2rem))] -translate-x-1/2 rounded-2xl border border-gray-200 bg-white/95 px-3 py-2 shadow-xl backdrop-blur dark:border-gray-700 dark:bg-gray-900/95">
+                <div className="absolute bottom-full left-1/2 z-10 mb-2 flex h-[min(30rem,calc(100vh-10rem))] w-[min(21rem,calc(100vw-2rem))] -translate-x-1/2 flex-col rounded-2xl border border-gray-200 bg-white/95 px-3 py-2 shadow-xl backdrop-blur dark:border-gray-700 dark:bg-gray-900/95">
                   <div className="mb-2 flex items-center justify-between gap-2 text-[11px] font-medium text-gray-500 dark:text-gray-400">
                     <span>{selectedTtsVoice ? `Voice: ${selectedTtsVoice.label}` : "Voice: No reference"}</span>
                     {ttsVoiceLoading && (
@@ -1138,7 +1138,7 @@ export default function ChatView({
                     )}
                   </div>
 
-                  <div className="space-y-1">
+                  <div className="flex min-h-0 flex-1 flex-col">
                     <button
                       onClick={() => void handleSelectTtsVoice(null)}
                       disabled={ttsVoiceLoading}
@@ -1152,35 +1152,37 @@ export default function ChatView({
                       )}
                     </button>
 
-                    {ttsVoices.length === 0 ? (
-                      <div className="rounded-xl border border-dashed border-gray-200 px-3 py-3 text-xs text-gray-500 dark:border-gray-700 dark:text-gray-400">
-                        No saved voice references yet. Add them in Settings.
-                      </div>
-                    ) : (
-                      <div className="max-h-44 overflow-y-auto space-y-1">
-                        {ttsVoices.map((voice) => {
-                          const isSelected = selectedTtsVoiceId === voice.id;
+                    <div className="mt-2 min-h-0 flex-[3] overflow-hidden rounded-xl border border-gray-200/80 p-2 dark:border-gray-700/80">
+                      {ttsVoices.length === 0 ? (
+                        <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-gray-200 px-3 py-3 text-center text-xs text-gray-500 dark:border-gray-700 dark:text-gray-400">
+                          No saved voice references yet. Add them in Settings.
+                        </div>
+                      ) : (
+                        <div className="h-full overflow-y-auto space-y-1 pr-1">
+                          {ttsVoices.map((voice) => {
+                            const isSelected = selectedTtsVoiceId === voice.id;
 
-                          return (
-                            <button
-                              key={voice.id}
-                              onClick={() => void handleSelectTtsVoice(voice.id)}
-                              disabled={ttsVoiceLoading}
-                              className={`flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-sm transition-colors ${isSelected ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300" : "text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"}`}
-                            >
-                              <span className="truncate">{voice.label}</span>
-                              {isSelected && (
-                                <svg className="h-4 w-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                                </svg>
-                              )}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    )}
+                            return (
+                              <button
+                                key={voice.id}
+                                onClick={() => void handleSelectTtsVoice(voice.id)}
+                                disabled={ttsVoiceLoading}
+                                className={`flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-sm transition-colors ${isSelected ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300" : "text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"}`}
+                              >
+                                <span className="truncate">{voice.label}</span>
+                                {isSelected && (
+                                  <svg className="h-4 w-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                                  </svg>
+                                )}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
 
-                    <div className="mt-3 border-t border-gray-200 pt-3 dark:border-gray-700">
+                    <div className="mt-3 flex min-h-0 flex-[7] flex-col border-t border-gray-200 pt-3 dark:border-gray-700">
                       <div className="mb-2 flex items-center justify-between gap-2 text-[11px] font-medium text-gray-500 dark:text-gray-400">
                         <span>Session speaker voices</span>
                         {sessionTtsSpeakerLoading && (
@@ -1194,7 +1196,7 @@ export default function ChatView({
                         )}
                       </div>
 
-                      <div className="max-h-44 space-y-2 overflow-y-auto pr-1">
+                      <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
                         {sessionTtsSpeakers.map((speaker) => (
                           <label key={speaker.speakerKey} className="block rounded-xl border border-gray-200 px-3 py-2 dark:border-gray-700">
                             <div className="mb-1 text-xs font-medium text-gray-500 dark:text-gray-400">{speaker.speakerLabel}</div>
