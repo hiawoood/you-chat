@@ -747,10 +747,7 @@ public class BackgroundPlaybackService extends Service {
         ArrayList<PlaybackChunkPart> currentParts = new ArrayList<>();
         StringBuilder currentDisplayChunk = new StringBuilder();
         int currentWordCount = 0;
-        String[] lines = text.split("\\r?\\n");
-
-        for (String rawLine : lines) {
-            SpeakerLine speakerLine = parseSpeakerLine(rawLine);
+        for (SpeakerLine speakerLine : splitSpeakerSegments(text)) {
             Matcher matcher = STREAMING_SENTENCE_PATTERN.matcher(speakerLine.body);
             int sentenceIndex = 0;
 
@@ -805,6 +802,54 @@ public class BackgroundPlaybackService extends Service {
         return chunks;
     }
 
+    private ArrayList<SpeakerLine> splitSpeakerSegments(String text) {
+        ArrayList<SpeakerLine> segments = new ArrayList<>();
+        Pattern pattern = Pattern.compile("([\"“])\\[([^\\]\\n]+)\\]\\s*");
+        Matcher matcher = pattern.matcher(text);
+        int cursor = 0;
+
+        while (matcher.find()) {
+            int matchStart = matcher.start();
+            if (matchStart > cursor) {
+                String narratorText = text.substring(cursor, matchStart);
+                if (!narratorText.trim().isEmpty()) {
+                    segments.add(new SpeakerLine("narrator", "Narrator", "", "", narratorText, defaultVoiceReferenceId));
+                }
+            }
+
+            int dialogStart = matcher.end();
+            String remaining = text.substring(dialogStart);
+            Matcher closingMatcher = Pattern.compile("[\"”]").matcher(remaining);
+            int dialogEnd = closingMatcher.find() ? dialogStart + closingMatcher.start() + 1 : text.length();
+            String speakerLabel = matcher.group(2) == null ? "Narrator" : matcher.group(2).trim();
+            String speakerKey = speakerLabel.toLowerCase(Locale.US).replaceAll("\\s+", " ");
+            segments.add(new SpeakerLine(
+                speakerKey,
+                speakerLabel,
+                matcher.group(),
+                matcher.group(1) == null ? "" : matcher.group(1),
+                text.substring(dialogStart, dialogEnd),
+                speakerVoiceReferenceIds.containsKey(speakerKey) ? speakerVoiceReferenceIds.get(speakerKey) : defaultVoiceReferenceId
+            ));
+
+            cursor = dialogEnd;
+            matcher.region(dialogEnd, text.length());
+        }
+
+        if (cursor < text.length()) {
+            String narratorText = text.substring(cursor);
+            if (!narratorText.trim().isEmpty()) {
+                segments.add(new SpeakerLine("narrator", "Narrator", "", "", narratorText, defaultVoiceReferenceId));
+            }
+        }
+
+        if (segments.isEmpty() && !text.trim().isEmpty()) {
+            segments.add(new SpeakerLine("narrator", "Narrator", "", "", text, defaultVoiceReferenceId));
+        }
+
+        return segments;
+    }
+
     private static class SpeakerLine {
         final String speakerKey;
         final String speakerLabel;
@@ -821,24 +866,6 @@ public class BackgroundPlaybackService extends Service {
             this.body = body;
             this.voiceReferenceId = voiceReferenceId;
         }
-    }
-
-    private SpeakerLine parseSpeakerLine(String rawLine) {
-        Matcher matcher = Pattern.compile("^\\s*([\"“])\\[([^\\]\\n]+)\\]\\s*").matcher(rawLine);
-        if (!matcher.find()) {
-            return new SpeakerLine("narrator", "Narrator", "", "", rawLine, defaultVoiceReferenceId);
-        }
-
-        String speakerLabel = matcher.group(2) == null ? "Narrator" : matcher.group(2).trim();
-        String speakerKey = speakerLabel.toLowerCase(Locale.US).replaceAll("\\s+", " ");
-        return new SpeakerLine(
-            speakerKey,
-            speakerLabel,
-            matcher.group(),
-            matcher.group(1) == null ? "" : matcher.group(1),
-            rawLine.substring(matcher.end()),
-            speakerVoiceReferenceIds.containsKey(speakerKey) ? speakerVoiceReferenceIds.get(speakerKey) : defaultVoiceReferenceId
-        );
     }
 
     private String formatTextForTts(String text) {

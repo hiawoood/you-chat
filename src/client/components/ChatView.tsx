@@ -514,8 +514,12 @@ export default function ChatView({
     try {
       const response = voiceId ? await api.selectTtsVoice(voiceId) : await api.clearSelectedTtsVoice();
       applyVoiceSelectionResponse(response);
+      setSpeakerContext({
+        defaultVoiceReferenceId: response.selectedVoiceId ?? null,
+        speakerMappings: sessionTtsSpeakers,
+      });
       setShowVoiceMenu(false);
-      await restartCurrentTtsPlayback();
+      await restartCurrentTtsPlayback(sessionTtsSpeakers, response.selectedVoiceId ?? null);
     } catch (error) {
       setTtsVoiceWarning(error instanceof Error ? error.message : "Failed to update TTS voice");
     } finally {
@@ -523,29 +527,57 @@ export default function ChatView({
     }
   };
 
-  const restartCurrentTtsPlayback = useCallback(async () => {
+  const restartCurrentTtsPlayback = useCallback(async (speakerMappingsOverride?: SessionTtsSpeakerMapping[], defaultVoiceOverride?: string | null) => {
     if (!ttsActiveMessageId || (!ttsIsPlaying && !ttsIsLoading)) {
       return;
     }
 
+    if (speakerMappingsOverride) {
+      setSpeakerContext({
+        defaultVoiceReferenceId: defaultVoiceOverride ?? selectedTtsVoiceId,
+        speakerMappings: speakerMappingsOverride,
+      });
+    }
+
     if (ttsActiveMessageId === activeStreamingTtsMessageId && streamingContentRef.current.trim()) {
-      await startPlayback(streamingContentRef.current, activeStreamingTtsMessageId, ttsCurrentChunk, null, { streaming: true });
+      await startPlayback(
+        streamingContentRef.current,
+        activeStreamingTtsMessageId,
+        ttsCurrentChunk,
+        defaultVoiceOverride ?? selectedTtsVoiceId,
+        { streaming: true },
+      );
       return;
     }
 
     const activeMessage = messages.find((message) => message.id === ttsActiveMessageId);
     if (activeMessage) {
-      await startPlayback(activeMessage.content, activeMessage.id, ttsCurrentChunk, null);
+      await startPlayback(
+        activeMessage.content,
+        activeMessage.id,
+        ttsCurrentChunk,
+        defaultVoiceOverride ?? selectedTtsVoiceId,
+      );
     }
-  }, [activeStreamingTtsMessageId, messages, startPlayback, ttsActiveMessageId, ttsCurrentChunk, ttsIsLoading, ttsIsPlaying]);
+  }, [activeStreamingTtsMessageId, messages, selectedTtsVoiceId, setSpeakerContext, startPlayback, ttsActiveMessageId, ttsCurrentChunk, ttsIsLoading, ttsIsPlaying]);
 
   const handleAssignSpeakerVoice = async (speakerKey: string, voiceId: string | null) => {
     setSessionTtsSpeakerActionKey(speakerKey);
     setSessionTtsSpeakerError(null);
     try {
-      await api.updateSessionTtsSpeaker(session.id, speakerKey, voiceId);
-      await loadSessionTtsSpeakers();
-      await restartCurrentTtsPlayback();
+      const response = await api.updateSessionTtsSpeaker(session.id, speakerKey, voiceId);
+      const nextSpeakerMappings = sessionTtsSpeakers.map((speaker) =>
+        speaker.speakerKey === speakerKey ? response.speaker : speaker,
+      );
+
+      setSessionTtsSpeakers(nextSpeakerMappings);
+      setSpeakerContext({
+        defaultVoiceReferenceId: selectedTtsVoiceId,
+        speakerMappings: nextSpeakerMappings,
+      });
+
+      await restartCurrentTtsPlayback(nextSpeakerMappings, selectedTtsVoiceId);
+      void loadSessionTtsSpeakers();
     } catch (error) {
       setSessionTtsSpeakerError(error instanceof Error ? error.message : "Failed to update speaker voice");
     } finally {

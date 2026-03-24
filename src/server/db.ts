@@ -868,7 +868,8 @@ function touchSessionTtsMapping(sessionId: string, now: number = Math.floor(Date
   db.run(`UPDATE chat_sessions SET updated_at = ? WHERE id = ?`, [now, sessionId]);
 }
 
-const SPEAKER_TAG_PATTERN = /^\s*["“]\[([^\]\n]+)\]\s*/;
+const SPEAKER_TAG_PATTERN = /["“]\[([^\]\n]+)\]\s*/g;
+const SPEAKER_SCAN_TAIL_LENGTH = 128;
 
 export function normalizeSpeakerKey(label: string): string {
   const trimmed = label.trim();
@@ -876,21 +877,20 @@ export function normalizeSpeakerKey(label: string): string {
   return trimmed.toLowerCase().replace(/\s+/g, " ");
 }
 
-function extractSpeakerFromLine(line: string) {
-  const match = line.match(SPEAKER_TAG_PATTERN);
-  if (!match) {
-    return null;
+function extractSpeakersFromText(text: string) {
+  const speakers: Array<{ speakerKey: string; speakerLabel: string }> = [];
+  const seenKeys = new Set<string>();
+
+  for (const match of text.matchAll(SPEAKER_TAG_PATTERN)) {
+    const speakerLabel = match[1]?.trim() || "Narrator";
+    if (!speakerLabel) continue;
+    const speakerKey = normalizeSpeakerKey(speakerLabel);
+    if (seenKeys.has(speakerKey)) continue;
+    seenKeys.add(speakerKey);
+    speakers.push({ speakerKey, speakerLabel });
   }
 
-  const speakerLabel = match[1]?.trim() || "Narrator";
-  if (!speakerLabel) {
-    return null;
-  }
-
-  return {
-    speakerKey: normalizeSpeakerKey(speakerLabel),
-    speakerLabel,
-  };
+  return speakers;
 }
 
 export function ensureSessionNarratorSpeaker(sessionId: string) {
@@ -909,22 +909,9 @@ export function syncStreamingMessageSpeakers(sessionId: string, messageId: strin
 
   const appendedContent = content.slice(previousState.processed_length);
   const workingText = `${previousState.pending_line}${appendedContent}`;
-  const newlineTerminated = workingText.endsWith("\n") || workingText.endsWith("\r");
-  const rawLines = workingText.split(/\r?\n/);
-  const nextPendingLine = !finalize && !newlineTerminated ? rawLines.pop() || "" : "";
 
-  for (const rawLine of rawLines) {
-    const speaker = extractSpeakerFromLine(rawLine);
-    if (speaker) {
-      upsertSessionTtsSpeakerMapping(sessionId, speaker.speakerKey, speaker.speakerLabel, null);
-    }
-  }
-
-  if (finalize && nextPendingLine) {
-    const speaker = extractSpeakerFromLine(nextPendingLine);
-    if (speaker) {
-      upsertSessionTtsSpeakerMapping(sessionId, speaker.speakerKey, speaker.speakerLabel, null);
-    }
+  for (const speaker of extractSpeakersFromText(workingText)) {
+    upsertSessionTtsSpeakerMapping(sessionId, speaker.speakerKey, speaker.speakerLabel, null);
   }
 
   if (finalize) {
@@ -932,7 +919,8 @@ export function syncStreamingMessageSpeakers(sessionId: string, messageId: strin
     return;
   }
 
-  setTtsMessageSpeakerState(messageId, content.length - nextPendingLine.length, nextPendingLine);
+  const nextPendingLine = workingText.slice(-Math.min(SPEAKER_SCAN_TAIL_LENGTH, workingText.length));
+  setTtsMessageSpeakerState(messageId, content.length, nextPendingLine);
 }
 
 export function rebuildSessionTtsSpeakerMappings(sessionId: string) {
@@ -941,10 +929,8 @@ export function rebuildSessionTtsSpeakerMappings(sessionId: string) {
   const seenKeys = new Set(["narrator"]);
 
   for (const message of messages) {
-    const lines = message.content.split(/\r?\n/);
-    for (const rawLine of lines) {
-      const speaker = extractSpeakerFromLine(rawLine);
-      if (!speaker || seenKeys.has(speaker.speakerKey)) continue;
+    for (const speaker of extractSpeakersFromText(message.content)) {
+      if (seenKeys.has(speaker.speakerKey)) continue;
       seenKeys.add(speaker.speakerKey);
       nextMappings.push({ speakerKey: speaker.speakerKey, speakerLabel: speaker.speakerLabel });
     }

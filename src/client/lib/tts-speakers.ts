@@ -21,7 +21,8 @@ export interface TtsChunkPlan {
 }
 
 const SENTENCE_PATTERN = /[^.!?]+(?:[.!?]+["')\]”’]*|$)/g;
-const SPEAKER_TAG_PATTERN = /^\s*(["“])\[([^\]\n]+)\]\s*/;
+const DIALOG_SPEAKER_TAG_PATTERN = /(["“])\[([^\]\n]+)\]\s*/g;
+const DIALOG_CLOSING_QUOTE_PATTERN = /["”]/;
 const COMPLETE_SENTENCE_PATTERN = /[.!?]+["')\]”’]*$/;
 
 export function normalizeSpeakerKey(label: string) {
@@ -34,26 +35,80 @@ function splitSentences(text: string) {
   return text.match(SENTENCE_PATTERN)?.map((sentence) => sentence.trim()).filter(Boolean) || [text.trim()];
 }
 
-function parseSpeakerLine(line: string) {
-  const match = line.match(SPEAKER_TAG_PATTERN);
-  if (!match) {
-    return {
+interface SpeakerSegment {
+  speakerKey: string;
+  speakerLabel: string;
+  prefix: string;
+  ttsLead: string;
+  body: string;
+}
+
+function splitSpeakerSegments(text: string): SpeakerSegment[] {
+  const segments: SpeakerSegment[] = [];
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+  DIALOG_SPEAKER_TAG_PATTERN.lastIndex = 0;
+
+  while ((match = DIALOG_SPEAKER_TAG_PATTERN.exec(text)) !== null) {
+    const matchIndex = match.index;
+    if (matchIndex > cursor) {
+      const narratorText = text.slice(cursor, matchIndex);
+      if (narratorText.trim()) {
+        segments.push({
+          speakerKey: "narrator",
+          speakerLabel: "Narrator",
+          prefix: "",
+          ttsLead: "",
+          body: narratorText,
+        });
+      }
+    }
+
+    const dialogStart = matchIndex + match[0].length;
+    const remainingText = text.slice(dialogStart);
+    const closingQuoteMatch = remainingText.match(DIALOG_CLOSING_QUOTE_PATTERN);
+    const dialogEnd = closingQuoteMatch && closingQuoteMatch.index !== undefined
+      ? dialogStart + closingQuoteMatch.index + closingQuoteMatch[0].length
+      : text.length;
+    const dialogBody = text.slice(dialogStart, dialogEnd);
+    const speakerLabel = match[2]?.trim() || "Narrator";
+
+    segments.push({
+      speakerKey: normalizeSpeakerKey(speakerLabel),
+      speakerLabel,
+      prefix: match[0],
+      ttsLead: match[1] || "",
+      body: dialogBody,
+    });
+
+    cursor = dialogEnd;
+    DIALOG_SPEAKER_TAG_PATTERN.lastIndex = dialogEnd;
+  }
+
+  if (cursor < text.length) {
+    const narratorText = text.slice(cursor);
+    if (narratorText.trim()) {
+      segments.push({
+        speakerKey: "narrator",
+        speakerLabel: "Narrator",
+        prefix: "",
+        ttsLead: "",
+        body: narratorText,
+      });
+    }
+  }
+
+  if (segments.length === 0 && text.trim()) {
+    segments.push({
       speakerKey: "narrator",
       speakerLabel: "Narrator",
       prefix: "",
       ttsLead: "",
-      body: line,
-    };
+      body: text,
+    });
   }
 
-  const speakerLabel = match[2]?.trim() || "Narrator";
-  return {
-    speakerKey: normalizeSpeakerKey(speakerLabel),
-    speakerLabel,
-    prefix: match[0],
-    ttsLead: match[1] || "",
-    body: line.slice(match[0].length),
-  };
+  return segments;
 }
 
 export function buildSpeakerChunkPlans(
@@ -64,29 +119,27 @@ export function buildSpeakerChunkPlans(
 ): TtsChunkPlan[] {
   const targetWordsPerChunk = options.targetWordsPerChunk ?? 60;
   const voiceBySpeakerKey = new Map(speakerMappings.map((mapping) => [mapping.speakerKey, mapping.voiceReferenceId]));
-  const lines = text.split(/\r?\n/);
   const sentenceUnits: TtsChunkPartPlan[] = [];
 
-  for (const line of lines) {
-    const parsedLine = parseSpeakerLine(line);
-    const displaySentences = splitSentences(parsedLine.body);
+  for (const segment of splitSpeakerSegments(text)) {
+    const displaySentences = splitSentences(segment.body);
 
     for (let index = 0; index < displaySentences.length; index++) {
       const displaySentence = displaySentences[index];
       if (!displaySentence) continue;
 
-      const ttsSentence = `${index === 0 ? parsedLine.ttsLead : ""}${formatTextForTts(displaySentence).trim()}`.trim();
+      const ttsSentence = `${index === 0 ? segment.ttsLead : ""}${formatTextForTts(displaySentence).trim()}`.trim();
       if (!ttsSentence) continue;
       if (options.completeSentencesOnly && !COMPLETE_SENTENCE_PATTERN.test(ttsSentence)) {
         continue;
       }
 
       sentenceUnits.push({
-        speakerKey: parsedLine.speakerKey,
-        speakerLabel: parsedLine.speakerLabel,
-        voiceReferenceId: voiceBySpeakerKey.get(parsedLine.speakerKey) ?? defaultVoiceReferenceId,
+        speakerKey: segment.speakerKey,
+        speakerLabel: segment.speakerLabel,
+        voiceReferenceId: voiceBySpeakerKey.get(segment.speakerKey) ?? defaultVoiceReferenceId,
         text: ttsSentence,
-        displayText: `${index === 0 ? parsedLine.prefix : ""}${displaySentence}`,
+        displayText: `${index === 0 ? segment.prefix : ""}${displaySentence}`,
       });
     }
   }
