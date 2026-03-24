@@ -14,8 +14,6 @@ import {
   getStatusSnapshotWithBalance,
   recreateInstance,
   requestInstanceLogs,
-  syncSavedVoicesWithActiveService,
-  syncVoiceReferenceWithService,
   subscribeStatusUpdates,
 } from "../services/vastai";
 import {
@@ -192,7 +190,6 @@ tts.post("/start", async (c) => {
   try {
     // Start/reuse instance - startCheapestInstance handles adoption of existing healthy instances
     const instance = await startCheapestInstance();
-    await syncSavedVoicesWithActiveService();
 
     return c.json({
       success: true,
@@ -228,7 +225,6 @@ tts.post("/start", async (c) => {
 tts.post("/restart", async (c) => {
   try {
     const instance = await recreateInstance();
-    await syncSavedVoicesWithActiveService();
 
     return c.json({
       success: true,
@@ -436,20 +432,9 @@ tts.post("/voices", async (c) => {
       storedFile.sizeBytes
     );
 
-    let warning: string | null = null;
-    try {
-      const syncedVoice = await syncVoiceReferenceWithService(voice);
-      if (!syncedVoice) {
-        warning = "Voice will sync the next time the TTS service starts.";
-      }
-    } catch (error) {
-      warning = error instanceof Error ? error.message : "Voice will sync when the TTS service is ready.";
-    }
-
     const selectedVoiceId = getSelectedTtsVoiceReferenceId(user.id);
     return c.json({
       success: true,
-      warning,
       voice: formatVoiceReference(c, getTtsVoiceReference(user.id, voice.id) || voice, selectedVoiceId),
       ...getVoiceSelectionResponse(c, user.id),
     });
