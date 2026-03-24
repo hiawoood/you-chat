@@ -133,11 +133,21 @@ sessions.get("/:id/tts-speakers", async (c) => {
   rebuildSessionTtsSpeakerMappings(sessionId);
   const selectedVoiceId = getSelectedTtsVoiceReferenceId(user.id);
   const selectedVoice = selectedVoiceId ? getTtsVoiceReference(user.id, selectedVoiceId) : null;
-  const speakers = listSessionTtsSpeakerMappings(sessionId).map((speaker) => ({
-    speakerKey: speaker.speaker_key,
-    speakerLabel: speaker.speaker_label,
-    voiceReferenceId: speaker.voice_reference_id,
-  }));
+  const speakers = listSessionTtsSpeakerMappings(sessionId).map((speaker) => {
+    const validVoiceReferenceId = speaker.voice_reference_id && getTtsVoiceReference(user.id, speaker.voice_reference_id)
+      ? speaker.voice_reference_id
+      : null;
+
+    if (speaker.voice_reference_id && !validVoiceReferenceId) {
+      updateSessionTtsSpeakerVoice(sessionId, speaker.speaker_key, null);
+    }
+
+    return {
+      speakerKey: speaker.speaker_key,
+      speakerLabel: speaker.speaker_label,
+      voiceReferenceId: validVoiceReferenceId,
+    };
+  });
 
   return c.json({
     speakers,

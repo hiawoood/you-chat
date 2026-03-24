@@ -74,9 +74,18 @@ function buildChunkPartHash(
   partIndex: number,
   text: string,
   speakerKey: string,
-  voiceReferenceId: string | null
+  voiceReferenceId: string | null,
+  contextSignature: string,
 ): string {
-  return hashText(`${TTS_AUDIO_FORMAT}::${messageId}::${chunkIndex}::${partIndex}::${speakerKey}::${voiceReferenceId || "builtin"}::${text}`);
+  return hashText(`${TTS_AUDIO_FORMAT}::${contextSignature}::${messageId}::${chunkIndex}::${partIndex}::${speakerKey}::${voiceReferenceId || "builtin"}::${text}`);
+}
+
+function buildSpeakerContextSignature(context: SpeakerPlaybackContext): string {
+  const normalizedMappings = [...context.speakerMappings]
+    .map((mapping) => `${normalizeSpeakerKey(mapping.speakerKey)}:${mapping.voiceReferenceId || "default"}`)
+    .sort();
+
+  return hashText(`${context.defaultVoiceReferenceId || "builtin"}::${normalizedMappings.join("|")}`);
 }
 
 
@@ -257,6 +266,7 @@ function chunkTextArraysMatch(a: string[], b: string[]): boolean {
 function buildTtsChunks(
   messageId: string,
   chunkPlans: TtsChunkPlan[],
+  contextSignature: string,
   previousChunks: TTSChunk[] = []
 ): TTSChunk[] {
   let wordOffset = 0;
@@ -265,7 +275,7 @@ function buildTtsChunks(
     const words = chunk.text.split(/\s+/).filter(Boolean).length;
     const previousChunk = previousChunks[index];
     const nextParts = chunk.parts.map((part, partIndex) => {
-      const hash = buildChunkPartHash(messageId, index, partIndex, part.text, part.speakerKey, part.voiceReferenceId);
+      const hash = buildChunkPartHash(messageId, index, partIndex, part.text, part.speakerKey, part.voiceReferenceId, contextSignature);
       const previousPart = previousChunk?.parts[partIndex];
       const shouldReusePrevious = previousPart?.hash === hash;
 
@@ -959,6 +969,7 @@ export function useChunkedVastTTS() {
       ...speakerContextRef.current,
       defaultVoiceReferenceId: voiceReferenceId ?? speakerContextRef.current.defaultVoiceReferenceId,
     };
+    const contextSignature = buildSpeakerContextSignature(context);
     const chunkPlans = buildChunkPlans(text, context, options.streaming ? { completeSentencesOnly: true } : {});
     const nativeChunkDescriptors = chunkPlans.map((chunk) => ({
       displayText: chunk.displayText,
@@ -994,7 +1005,7 @@ export function useChunkedVastTTS() {
       }
 
       startChunkIndex = Math.max(0, Math.min(startChunkIndex, textChunks.length - 1));
-      chunksRef.current = buildTtsChunks(messageId, chunkPlans).map((chunk, index) => ({
+      chunksRef.current = buildTtsChunks(messageId, chunkPlans, contextSignature).map((chunk, index) => ({
         ...chunk,
         status: index === startChunkIndex ? "generating" : chunk.status,
       }));
@@ -1062,7 +1073,7 @@ export function useChunkedVastTTS() {
     startChunkIndex = Math.max(0, Math.min(startChunkIndex, textChunks.length - 1));
 
     const builtChunks: TTSChunk[] = [];
-    const initialChunks = buildTtsChunks(messageId, chunkPlans);
+    const initialChunks = buildTtsChunks(messageId, chunkPlans, contextSignature);
     for (const chunk of initialChunks) {
       const partsWithAudio = await Promise.all(chunk.parts.map(async (part) => ({
         ...part,
@@ -1114,10 +1125,12 @@ export function useChunkedVastTTS() {
       return;
     }
 
-    const nextChunkPlans = buildChunkPlans(text, {
+    const context = {
       ...speakerContextRef.current,
       defaultVoiceReferenceId: voiceReferenceId ?? speakerContextRef.current.defaultVoiceReferenceId,
-    }, { completeSentencesOnly: true });
+    };
+    const contextSignature = buildSpeakerContextSignature(context);
+    const nextChunkPlans = buildChunkPlans(text, context, { completeSentencesOnly: true });
     const nextChunkTexts = nextChunkPlans.map((chunk) => chunk.text);
     const previousChunkTexts = textChunksRef.current;
 
@@ -1138,7 +1151,7 @@ export function useChunkedVastTTS() {
 
     textChunksRef.current = nextChunkTexts;
     const previousChunks = chunksRef.current;
-    chunksRef.current = buildTtsChunks(messageId, nextChunkPlans, previousChunks).map((chunk, index) => {
+    chunksRef.current = buildTtsChunks(messageId, nextChunkPlans, contextSignature, previousChunks).map((chunk, index) => {
       const previousChunk = previousChunks[index];
       if (!previousChunk) {
         return chunk;

@@ -745,7 +745,17 @@ export function updateTtsVoiceReference(userId: string, voiceId: string, updates
 }
 
 export function deleteTtsVoiceReference(userId: string, voiceId: string) {
+  const affectedSessionIds = db.query(`
+    SELECT DISTINCT session_id FROM session_tts_speaker_mappings WHERE voice_reference_id = ?
+  `).all(voiceId) as Array<{ session_id: string }>;
+
+  db.run(`UPDATE session_tts_speaker_mappings SET voice_reference_id = NULL, updated_at = ? WHERE voice_reference_id = ?`, [Math.floor(Date.now() / 1000), voiceId]);
+  db.run(`UPDATE user_tts_settings SET selected_voice_id = NULL, updated_at = ? WHERE user_id = ? AND selected_voice_id = ?`, [Math.floor(Date.now() / 1000), userId, voiceId]);
   db.run(`DELETE FROM tts_voice_references WHERE user_id = ? AND id = ?`, [userId, voiceId]);
+
+  for (const row of affectedSessionIds) {
+    touchSessionTtsMapping(row.session_id);
+  }
 }
 
 export function getSelectedTtsVoiceReferenceId(userId: string): string | null {
