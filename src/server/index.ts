@@ -10,7 +10,7 @@ import chat from "./routes/chat";
 import agentsRoute from "./routes/agents";
 import credentials from "./routes/credentials";
 import tts from "./routes/tts";
-import { cleanupDuplicateInstances, syncSavedVoicesWithActiveService } from "./services/vastai";
+import { cleanupDuplicateInstances } from "./services/vastai";
 
 // Initialize database
 initDb();
@@ -24,12 +24,6 @@ setInterval(() => {
 setTimeout(() => {
   cleanupDuplicateInstances();
 }, 5000);
-
-setTimeout(() => {
-  void syncSavedVoicesWithActiveService().catch((error) => {
-    console.warn("[TTS] Voice sync skipped at startup:", error);
-  });
-}, 7000);
 
 const app = new Hono<AppEnv>();
 

@@ -20,8 +20,9 @@ export interface TtsChunkPlan {
   parts: TtsChunkPartPlan[];
 }
 
-const SENTENCE_PATTERN = /[^.!?]+(?:[.!?]+["')\]]*|$)/g;
+const SENTENCE_PATTERN = /[^.!?]+(?:[.!?]+["')\]”’]*|$)/g;
 const SPEAKER_TAG_PATTERN = /^\s*\[([^\]\n]+)\]\s*/;
+const COMPLETE_SENTENCE_PATTERN = /[.!?]+["')\]”’]*$/;
 
 export function normalizeSpeakerKey(label: string) {
   const trimmed = label.trim();
@@ -74,7 +75,7 @@ export function buildSpeakerChunkPlans(
 
       const ttsSentence = formatTextForTts(displaySentence).trim();
       if (!ttsSentence) continue;
-      if (options.completeSentencesOnly && !/[.!?]+["')\]]*$/.test(ttsSentence)) {
+      if (options.completeSentencesOnly && !COMPLETE_SENTENCE_PATTERN.test(ttsSentence)) {
         continue;
       }
 

@@ -1460,7 +1460,15 @@ export async function generateSpeechParts(parts: TTSSpeechPartRequest[], voiceRe
 }
 
 export async function syncVoiceReferenceWithService(voiceReference: TtsVoiceReference) {
-  const instance = await startCheapestInstance();
+  const instance = activeInstance;
+  if (!instance) {
+    updateTtsVoiceReference(voiceReference.user_id, voiceReference.id, {
+      sync_status: "pending",
+      last_sync_error: null,
+    });
+    return null;
+  }
+
   const uploadedVoice = await syncVoiceReferenceToInstance(instance, voiceReference);
   syncedVoiceLibraryInstanceId = instance.id;
   return uploadedVoice;
@@ -1476,7 +1484,11 @@ export async function syncSavedVoicesWithActiveService() {
     return;
   }
 
-  const instance = activeInstance || await startCheapestInstance();
+  const instance = activeInstance;
+  if (!instance) {
+    return;
+  }
+
   await syncStoredVoicesForInstance(instance);
 }
 

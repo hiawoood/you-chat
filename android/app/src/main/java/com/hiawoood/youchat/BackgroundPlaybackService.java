@@ -97,7 +97,8 @@ public class BackgroundPlaybackService extends Service {
     private static final float ACCELEROMETER_THRESHOLD = 1.8f;
     private static final float ACCELEROMETER_GRAVITY_ALPHA = 0.8f;
     private static final int TTS_TARGET_WORDS_PER_CHUNK = 60;
-    private static final Pattern STREAMING_SENTENCE_PATTERN = Pattern.compile("[^.!?]+(?:[.!?]+[\\\"')\\]]*|$)");
+    private static final Pattern STREAMING_SENTENCE_PATTERN = Pattern.compile("[^.!?]+(?:[.!?]+[\\\"')\\]”’]*|$)");
+    private static final Pattern COMPLETE_SENTENCE_PATTERN = Pattern.compile("[.!?]+[\\\"')\\]”’]*$");
     private static final Pattern TTS_STAGE_DIRECTION_PATTERN = Pattern.compile("\\[(clear throat|sigh|shush|cough|groan|sniff|gasp|chuckle|laugh)\\]", Pattern.CASE_INSENSITIVE);
     private static final Pattern ALL_CAPS_WORD_PATTERN = Pattern.compile("\\b[A-Z]{2,}(?:['-][A-Z]+)*\\b");
 
@@ -756,7 +757,7 @@ public class BackgroundPlaybackService extends Service {
             while (matcher.find()) {
                 String displaySentence = matcher.group().trim();
                 String ttsSentence = formatTextForTts(displaySentence);
-                if (ttsSentence.isEmpty() || !ttsSentence.matches(".*[.!?]+[\\\"')\\]]*$")) {
+                if (ttsSentence.isEmpty() || !COMPLETE_SENTENCE_PATTERN.matcher(ttsSentence).find()) {
                     continue;
                 }
 

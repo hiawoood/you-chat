@@ -438,7 +438,10 @@ tts.post("/voices", async (c) => {
 
     let warning: string | null = null;
     try {
-      await syncVoiceReferenceWithService(voice);
+      const syncedVoice = await syncVoiceReferenceWithService(voice);
+      if (!syncedVoice) {
+        warning = "Voice will sync the next time the TTS service starts.";
+      }
     } catch (error) {
       warning = error instanceof Error ? error.message : "Voice will sync when the TTS service is ready.";
     }
