@@ -490,14 +490,21 @@ async function syncVoiceReferenceToInstance(instance: VastInstance, voiceReferen
 }
 
 async function syncStoredVoicesForInstance(instance: VastInstance) {
-  if (syncedVoiceLibraryInstanceId === instance.id) {
+  const localVoices = listAllTtsVoiceReferences();
+  const hasPendingLocalVoiceChanges = localVoices.some((voiceReference) =>
+    !voiceReference.remote_voice_id ||
+    voiceReference.sync_status !== "synced" ||
+    (voiceReference.last_synced_at ?? 0) < voiceReference.updated_at
+  );
+
+  if (syncedVoiceLibraryInstanceId === instance.id && !hasPendingLocalVoiceChanges) {
     return;
   }
 
   const remoteVoices = await listRemoteVoices(instance);
   const remoteVoiceIds = new Set(remoteVoices.map((voice) => voice.voice_id));
 
-  for (const voiceReference of listAllTtsVoiceReferences()) {
+  for (const voiceReference of localVoices) {
     if (voiceReference.remote_voice_id && remoteVoiceIds.has(voiceReference.remote_voice_id)) {
       updateTtsVoiceReference(voiceReference.user_id, voiceReference.id, {
         sync_status: "synced",
@@ -511,6 +518,21 @@ async function syncStoredVoicesForInstance(instance: VastInstance) {
   }
 
   syncedVoiceLibraryInstanceId = instance.id;
+}
+
+async function ensureRequestedVoiceIsAvailable(instance: VastInstance, requestedVoiceIdentifier: string | null) {
+  if (!requestedVoiceIdentifier) {
+    return;
+  }
+
+  const remoteVoices = await listRemoteVoices(instance);
+  const voiceExists = remoteVoices.some((voice) =>
+    voice.voice_id === requestedVoiceIdentifier || voice.name === requestedVoiceIdentifier,
+  );
+
+  if (!voiceExists) {
+    throw new Error(`Requested voice is not available on the active TTS instance: ${requestedVoiceIdentifier}`);
+  }
 }
 
 async function uploadVoiceReferenceToInstance(instance: VastInstance, voiceReference: TtsVoiceReference) {
@@ -1265,6 +1287,8 @@ export async function generateSpeech(
     }
   }
 
+  await ensureRequestedVoiceIsAvailable(instance, requestedVoiceIdentifier);
+
   // Update last activity
   instance.lastActivity = new Date();
   resetInactivityTimer();
@@ -1442,6 +1466,8 @@ export async function generateSpeechParts(parts: TTSSpeechPartRequest[], voiceRe
         voiceIdentifier = syncedVoice.voice_id;
       }
     }
+
+    await ensureRequestedVoiceIsAvailable(instance, voiceIdentifier);
 
     for (const index of indices) {
       const part = parts[index];

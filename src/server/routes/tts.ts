@@ -14,6 +14,7 @@ import {
   getStatusSnapshotWithBalance,
   recreateInstance,
   requestInstanceLogs,
+  syncSavedVoicesWithActiveService,
   subscribeStatusUpdates,
 } from "../services/vastai";
 import {
@@ -190,6 +191,7 @@ tts.post("/start", async (c) => {
   try {
     // Start/reuse instance - startCheapestInstance handles adoption of existing healthy instances
     const instance = await startCheapestInstance();
+    await syncSavedVoicesWithActiveService();
 
     return c.json({
       success: true,
@@ -225,6 +227,7 @@ tts.post("/start", async (c) => {
 tts.post("/restart", async (c) => {
   try {
     const instance = await recreateInstance();
+    await syncSavedVoicesWithActiveService();
 
     return c.json({
       success: true,
