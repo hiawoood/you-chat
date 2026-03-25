@@ -126,6 +126,7 @@ let activeReferenceState: ActiveReferenceState = {
 };
 
 let syncedVoiceLibraryInstanceId: string | null = null;
+let syncedVoiceLibrarySignature: string | null = null;
 
 function statusInstanceFromActive(instance: VastInstance | null) {
   if (!instance) return undefined;
@@ -410,6 +411,13 @@ function buildRemoteVoiceName(voiceReference: TtsVoiceReference) {
   return `${slug}-${voiceReference.id.slice(0, 8)}`;
 }
 
+function buildLocalVoiceLibrarySignature(voiceReferences: TtsVoiceReference[]) {
+  return voiceReferences
+    .map((voiceReference) => `${voiceReference.id}:${voiceReference.updated_at}:${buildRemoteVoiceName(voiceReference)}`)
+    .sort()
+    .join("|");
+}
+
 async function listRemoteVoices(instance: VastInstance) {
   const response = await fetch(`${getInstanceBaseUrl(instance)}/voices`, {
     method: "GET",
@@ -424,7 +432,7 @@ async function listRemoteVoices(instance: VastInstance) {
   return body.voices || [];
 }
 
-async function uploadVoiceToLibrary(instance: VastInstance, voiceReference: TtsVoiceReference) {
+async function uploadVoiceToLibrary(instance: VastInstance, voiceReference: TtsVoiceReference, remoteVoiceName: string = buildRemoteVoiceName(voiceReference)) {
   const file = Bun.file(voiceReference.storage_path);
   if (!(await file.exists())) {
     throw new Error(`Voice reference file not found: ${voiceReference.label}`);
@@ -436,7 +444,7 @@ async function uploadVoiceToLibrary(instance: VastInstance, voiceReference: TtsV
     new Blob([await file.arrayBuffer()], { type: voiceReference.mime_type }),
     voiceReference.original_filename
   );
-  formData.append("voice_names", buildRemoteVoiceName(voiceReference));
+  formData.append("voice_names", remoteVoiceName);
   formData.append("norm_loudness", "true");
 
   const response = await runExclusiveTtsServiceRequest("voices", async () => fetch(`${getInstanceBaseUrl(instance)}/voices`, {
@@ -469,9 +477,9 @@ async function deleteRemoteVoice(instance: VastInstance, remoteVoiceId: string) 
   }
 }
 
-async function syncVoiceReferenceToInstance(instance: VastInstance, voiceReference: TtsVoiceReference) {
+async function syncVoiceReferenceToInstance(instance: VastInstance, voiceReference: TtsVoiceReference, remoteVoiceName: string = buildRemoteVoiceName(voiceReference)) {
   try {
-    const uploadedVoice = await uploadVoiceToLibrary(instance, voiceReference);
+    const uploadedVoice = await uploadVoiceToLibrary(instance, voiceReference, remoteVoiceName);
     updateTtsVoiceReference(voiceReference.user_id, voiceReference.id, {
       remote_voice_id: uploadedVoice.voice_id,
       remote_voice_name: uploadedVoice.name,
@@ -491,22 +499,26 @@ async function syncVoiceReferenceToInstance(instance: VastInstance, voiceReferen
 
 async function syncStoredVoicesForInstance(instance: VastInstance) {
   const localVoices = listAllTtsVoiceReferences();
-  const hasPendingLocalVoiceChanges = localVoices.some((voiceReference) =>
-    !voiceReference.remote_voice_id ||
-    voiceReference.sync_status !== "synced" ||
-    (voiceReference.last_synced_at ?? 0) < voiceReference.updated_at
-  );
+  const localVoiceLibrarySignature = buildLocalVoiceLibrarySignature(localVoices);
 
-  if (syncedVoiceLibraryInstanceId === instance.id && !hasPendingLocalVoiceChanges) {
+  if (syncedVoiceLibraryInstanceId === instance.id && syncedVoiceLibrarySignature === localVoiceLibrarySignature) {
     return;
   }
 
   const remoteVoices = await listRemoteVoices(instance);
-  const remoteVoiceIds = new Set(remoteVoices.map((voice) => voice.voice_id));
+  const remoteVoiceById = new Map(remoteVoices.map((voice) => [voice.voice_id, voice]));
+  const remoteVoiceByName = new Map(remoteVoices.map((voice) => [voice.name, voice]));
+  const keepRemoteVoiceIds = new Set<string>();
 
   for (const voiceReference of localVoices) {
-    if (voiceReference.remote_voice_id && remoteVoiceIds.has(voiceReference.remote_voice_id)) {
+    const desiredRemoteVoiceName = buildRemoteVoiceName(voiceReference);
+    const mappedRemoteVoice = voiceReference.remote_voice_id ? remoteVoiceById.get(voiceReference.remote_voice_id) : null;
+
+    if (mappedRemoteVoice && mappedRemoteVoice.name === desiredRemoteVoiceName) {
+      keepRemoteVoiceIds.add(mappedRemoteVoice.voice_id);
       updateTtsVoiceReference(voiceReference.user_id, voiceReference.id, {
+        remote_voice_id: mappedRemoteVoice.voice_id,
+        remote_voice_name: mappedRemoteVoice.name,
         sync_status: "synced",
         last_synced_at: Math.floor(Date.now() / 1000),
         last_sync_error: null,
@@ -514,10 +526,33 @@ async function syncStoredVoicesForInstance(instance: VastInstance) {
       continue;
     }
 
-    await syncVoiceReferenceToInstance(instance, voiceReference);
+    const matchingRemoteVoice = remoteVoiceByName.get(desiredRemoteVoiceName);
+    if (matchingRemoteVoice) {
+      keepRemoteVoiceIds.add(matchingRemoteVoice.voice_id);
+      updateTtsVoiceReference(voiceReference.user_id, voiceReference.id, {
+        remote_voice_id: matchingRemoteVoice.voice_id,
+        remote_voice_name: matchingRemoteVoice.name,
+        sync_status: "synced",
+        last_synced_at: Math.floor(Date.now() / 1000),
+        last_sync_error: null,
+      });
+      continue;
+    }
+
+    const uploadedVoice = await syncVoiceReferenceToInstance(instance, voiceReference, desiredRemoteVoiceName);
+    keepRemoteVoiceIds.add(uploadedVoice.voice_id);
+  }
+
+  for (const remoteVoice of remoteVoices) {
+    if (keepRemoteVoiceIds.has(remoteVoice.voice_id)) {
+      continue;
+    }
+
+    await deleteRemoteVoice(instance, remoteVoice.voice_id);
   }
 
   syncedVoiceLibraryInstanceId = instance.id;
+  syncedVoiceLibrarySignature = localVoiceLibrarySignature;
 }
 
 async function ensureRequestedVoiceIsAvailable(instance: VastInstance, requestedVoiceIdentifier: string | null) {
@@ -1497,6 +1532,7 @@ export async function syncVoiceReferenceWithService(voiceReference: TtsVoiceRefe
 
   const uploadedVoice = await syncVoiceReferenceToInstance(instance, voiceReference);
   syncedVoiceLibraryInstanceId = instance.id;
+  syncedVoiceLibrarySignature = null;
   return uploadedVoice;
 }
 
@@ -1555,6 +1591,7 @@ export async function destroyInstance(instanceId: string, options?: { preserveLi
     activeInstance = null;
     resetReferenceState();
     syncedVoiceLibraryInstanceId = null;
+    syncedVoiceLibrarySignature = null;
     clearInactivityTimer();
     emitStatusUpdate();
   }
