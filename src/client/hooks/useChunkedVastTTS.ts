@@ -349,6 +349,8 @@ export function useChunkedVastTTS() {
   const playbackTokenRef = useRef(0);
   const currentChunkIndexRef = useRef(0);
   const playbackLookaheadBaseIndexRef = useRef(0);
+  const prefetchLoopTokenRef = useRef(0);
+  const prefetchLoopRunningRef = useRef(false);
   const speakerContextRef = useRef<SpeakerPlaybackContext>({ sessionId: null, defaultVoiceReferenceId: null, speakerMappings: [] });
   const inflightAudioRef = useRef(new Map<string, Promise<string[]>>());
   const textRef = useRef<string>("");
@@ -488,6 +490,8 @@ export function useChunkedVastTTS() {
 
   const reset = useCallback(() => {
     playbackTokenRef.current += 1;
+    prefetchLoopTokenRef.current += 1;
+    prefetchLoopRunningRef.current = false;
     stopAudio();
     chunksRef.current = [];
     messageIdRef.current = null;
@@ -606,12 +610,48 @@ export function useChunkedVastTTS() {
     }
   }, [generateChunkAudioParts]);
 
-  const prefetchUpcomingChunks = useCallback(async (currentIndex: number) => {
-    for (let step = 1; step <= MAX_PREFETCH_AHEAD; step++) {
-      const nextIndex = currentIndex + step;
-      if (nextIndex >= chunksRef.current.length) return;
-      await prefetchChunk(nextIndex);
+  const prefetchUpcomingChunks = useCallback((currentIndex: number) => {
+    playbackLookaheadBaseIndexRef.current = currentIndex;
+    const loopToken = prefetchLoopTokenRef.current;
+    if (prefetchLoopRunningRef.current) {
+      return;
     }
+
+    prefetchLoopRunningRef.current = true;
+
+    void (async () => {
+      try {
+        while (loopToken === prefetchLoopTokenRef.current) {
+          const baseIndex = currentChunkIndexRef.current;
+          const lookaheadLimit = Math.min(chunksRef.current.length - 1, baseIndex + MAX_PREFETCH_AHEAD);
+          let nextIndex: number | null = null;
+
+          for (let index = baseIndex + 1; index <= lookaheadLimit; index++) {
+            const chunk = chunksRef.current[index];
+            if (!chunk || chunk.parts.every((part) => part.audio) || chunk.status === "generating") {
+              continue;
+            }
+            nextIndex = index;
+            break;
+          }
+
+          if (nextIndex === null) {
+            break;
+          }
+
+          await prefetchChunk(nextIndex);
+        }
+      } finally {
+        prefetchLoopRunningRef.current = false;
+        const baseIndex = currentChunkIndexRef.current;
+        const hasPendingChunk = chunksRef.current.slice(baseIndex + 1, baseIndex + MAX_PREFETCH_AHEAD + 1)
+          .some((chunk) => chunk && !chunk.parts.every((part) => part.audio) && chunk.status !== "generating");
+
+        if (loopToken === prefetchLoopTokenRef.current && hasPendingChunk) {
+          prefetchUpcomingChunks(baseIndex);
+        }
+      }
+    })();
   }, [prefetchChunk]);
 
   const chunkHasAudio = useCallback((chunk: TTSChunk) => chunk.parts.every((part) => Boolean(part.audio)), []);
