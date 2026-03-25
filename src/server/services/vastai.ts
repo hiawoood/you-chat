@@ -127,6 +127,13 @@ let activeReferenceState: ActiveReferenceState = {
 
 let syncedVoiceLibraryInstanceId: string | null = null;
 let syncedVoiceLibrarySignature: string | null = null;
+let cachedRemoteVoiceLibrary: {
+  instanceId: string | null;
+  voices: Array<{ voice_id: string; name: string; filename?: string }>;
+} = {
+  instanceId: null,
+  voices: [],
+};
 
 function statusInstanceFromActive(instance: VastInstance | null) {
   if (!instance) return undefined;
@@ -425,7 +432,29 @@ function buildLocalVoiceLibrarySignature(voiceReferences: TtsVoiceReference[]) {
     .join("|");
 }
 
-async function listRemoteVoices(instance: VastInstance) {
+function setCachedRemoteVoices(instance: VastInstance, voices: Array<{ voice_id: string; name: string; filename?: string }>) {
+  cachedRemoteVoiceLibrary = {
+    instanceId: instance.id,
+    voices,
+  };
+}
+
+function clearCachedRemoteVoices(instanceId?: string | null) {
+  if (instanceId && cachedRemoteVoiceLibrary.instanceId && cachedRemoteVoiceLibrary.instanceId !== instanceId) {
+    return;
+  }
+
+  cachedRemoteVoiceLibrary = {
+    instanceId: null,
+    voices: [],
+  };
+}
+
+async function listRemoteVoices(instance: VastInstance, options?: { useCache?: boolean }) {
+  if (options?.useCache !== false && cachedRemoteVoiceLibrary.instanceId === instance.id) {
+    return cachedRemoteVoiceLibrary.voices;
+  }
+
   const response = await fetch(`${getInstanceBaseUrl(instance)}/voices`, {
     method: "GET",
     signal: AbortSignal.timeout(30000),
@@ -436,7 +465,9 @@ async function listRemoteVoices(instance: VastInstance) {
   }
 
   const body = await response.json() as { voices?: Array<{ voice_id: string; name: string; filename?: string }> };
-  return body.voices || [];
+  const voices = body.voices || [];
+  setCachedRemoteVoices(instance, voices);
+  return voices;
 }
 
 async function uploadVoiceToLibrary(instance: VastInstance, voiceReference: TtsVoiceReference, remoteVoiceName: string = buildRemoteVoiceName(voiceReference)) {
@@ -470,6 +501,14 @@ async function uploadVoiceToLibrary(instance: VastInstance, voiceReference: TtsV
     throw new Error("Remote TTS service did not return uploaded voice metadata");
   }
 
+  if (cachedRemoteVoiceLibrary.instanceId === instance.id) {
+    const nextVoices = cachedRemoteVoiceLibrary.voices.filter((voice) => voice.voice_id !== uploadedVoice.voice_id);
+    nextVoices.push(uploadedVoice);
+    setCachedRemoteVoices(instance, nextVoices);
+  } else {
+    setCachedRemoteVoices(instance, [uploadedVoice]);
+  }
+
   return uploadedVoice;
 }
 
@@ -481,6 +520,13 @@ async function deleteRemoteVoice(instance: VastInstance, remoteVoiceId: string) 
 
   if (!response.ok && response.status !== 404) {
     throw new Error(`Failed to delete remote voice: ${await response.text()}`);
+  }
+
+  if (cachedRemoteVoiceLibrary.instanceId === instance.id) {
+    setCachedRemoteVoices(
+      instance,
+      cachedRemoteVoiceLibrary.voices.filter((voice) => voice.voice_id !== remoteVoiceId),
+    );
   }
 }
 
@@ -512,7 +558,7 @@ async function syncStoredVoicesForInstance(instance: VastInstance) {
     return;
   }
 
-  const remoteVoices = await listRemoteVoices(instance);
+  const remoteVoices = await listRemoteVoices(instance, { useCache: false });
   const remoteVoiceById = new Map(remoteVoices.map((voice) => [voice.voice_id, voice]));
   const remoteVoiceByName = new Map(remoteVoices.map((voice) => [voice.name, voice]));
   const keepRemoteVoiceIds = new Set<string>();
@@ -1540,6 +1586,7 @@ export async function syncVoiceReferenceWithService(voiceReference: TtsVoiceRefe
   const uploadedVoice = await syncVoiceReferenceToInstance(instance, voiceReference);
   syncedVoiceLibraryInstanceId = instance.id;
   syncedVoiceLibrarySignature = null;
+  clearCachedRemoteVoices(instance.id);
   return uploadedVoice;
 }
 
@@ -1599,6 +1646,7 @@ export async function destroyInstance(instanceId: string, options?: { preserveLi
     resetReferenceState();
     syncedVoiceLibraryInstanceId = null;
     syncedVoiceLibrarySignature = null;
+    clearCachedRemoteVoices(instanceId);
     clearInactivityTimer();
     emitStatusUpdate();
   }
