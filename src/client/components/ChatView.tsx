@@ -4,7 +4,6 @@ import type { ChatSession, Message, Agent, SessionTtsSpeakerMapping, TtsVoiceRef
 import { useChat } from "../hooks/useChat";
 import { useChunkedVastTTS } from "../hooks/useChunkedVastTTS";
 import { useWordContextMenu } from "../hooks/useWordContextMenu";
-import { useScrollDirection } from "../hooks/useScrollDirection";
 import MessageList from "./MessageList";
 import MessageInput from "./MessageInput";
 import CompactModal from "./CompactModal";
@@ -27,7 +26,7 @@ interface ChatViewProps {
   onMessageSent: (message: Message) => void;
   onMessageReceived: (message: Message) => void;
   onUpdateMessageId: (tempId: string, realId: string) => void;
-  onUpdateSession: (id: string, updates: { title?: string; agent?: string }) => void;
+  onUpdateSession: (id: string, updates: { title?: string; agent?: string; lastTtsMessageId?: string | null }) => void;
   onToggleSidebar?: () => void;
   onEditMessage?: (messageId: string, content: string) => Promise<void>;
   onDeleteMessage?: (messageId: string) => void;
@@ -69,8 +68,7 @@ export default function ChatView({
   const streamingContentRef = useRef("");
   const pendingTempIdRef = useRef<string | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
-  const scrollDirection = useScrollDirection(scrollContainerRef);
-  const hideHeader = scrollDirection === "down";
+  const hideHeader = false;
   const [showScrollBtn, setShowScrollBtn] = useState(false);
   const [suppressMessageAutoScroll, setSuppressMessageAutoScroll] = useState(false);
   const [showChunkTextPanel, setShowChunkTextPanel] = useState(false);
@@ -233,6 +231,14 @@ export default function ChatView({
   const handleAgentChange = (newAgent: string) => {
     onUpdateSession(session.id, { agent: newAgent });
   };
+
+  const persistLastPlayedMessage = useCallback((messageId: string | null) => {
+    if (session.last_tts_message_id === messageId) {
+      return;
+    }
+
+    onUpdateSession(session.id, { lastTtsMessageId: messageId });
+  }, [onUpdateSession, session.id, session.last_tts_message_id]);
 
   const [thinkingStatus, setThinkingStatus] = useState<string | null>(null);
 
@@ -421,6 +427,7 @@ export default function ChatView({
 
     const voiceId = await resolvePlaybackVoiceId();
     await startPlayback(content, messageId, Math.max(0, ttsCurrentChunk), voiceId);
+    persistLastPlayedMessage(messageId);
   };
 
   useEffect(() => {
@@ -446,27 +453,67 @@ export default function ChatView({
       }
 
       await startPlayback(content, messageId, ttsActiveMessageId === messageId ? Math.max(0, ttsCurrentChunk) : 0, voiceId, { streaming: true });
+      if (messageId !== STREAMING_TTS_PLACEHOLDER_ID) {
+        persistLastPlayedMessage(messageId);
+      }
       return;
     }
 
     const voiceId = await resolvePlaybackVoiceId();
     await ttsToggle(content, messageId, voiceId);
+    persistLastPlayedMessage(messageId);
   };
 
   const handleStartTTSFromWord = async (messageId: string, content: string, wordIndex: number) => {
     const voiceId = await resolvePlaybackVoiceId();
     await startFromWord(content, messageId, wordIndex, voiceId);
+    persistLastPlayedMessage(messageId);
     hideWordMenu();
   };
 
   const handlePlayTTSChunk = async (messageId: string, content: string, chunkIndex: number) => {
     if (ttsActiveMessageId === messageId) {
       await ttsSeekToChunk(chunkIndex);
+      persistLastPlayedMessage(messageId);
       return;
     }
 
     const voiceId = await resolvePlaybackVoiceId();
     await startPlayback(content, messageId, chunkIndex, voiceId, { streaming: messageId === activeStreamingTtsMessageId });
+    persistLastPlayedMessage(messageId);
+  };
+
+  const handleResumeSessionTts = async () => {
+    const lastPlayedMessageId = session.last_tts_message_id;
+    if (!lastPlayedMessageId) {
+      return;
+    }
+
+    if (ttsActiveMessageId === lastPlayedMessageId) {
+      if (ttsIsPlaying) {
+        ttsPause();
+        return;
+      }
+
+      if (ttsIsPaused) {
+        await ttsResume();
+        return;
+      }
+    }
+
+    if (lastPlayedMessageId === activeStreamingTtsMessageId && streamingContentRef.current.trim()) {
+      const voiceId = await resolvePlaybackVoiceId();
+      await startPlayback(streamingContentRef.current, lastPlayedMessageId, -1, voiceId, { streaming: true });
+      return;
+    }
+
+    const targetMessage = messages.find((message) => message.id === lastPlayedMessageId);
+    if (!targetMessage) {
+      return;
+    }
+
+    const voiceId = await resolvePlaybackVoiceId();
+    await startPlayback(targetMessage.content, targetMessage.id, -1, voiceId);
   };
 
   const handleCompactGenerate = async ({
@@ -780,6 +827,13 @@ export default function ChatView({
 
   const hasMessages = messages.length > 0;
   const hasActiveStream = isStreaming || isCompacting || hasInFlightStream;
+  const canResumeSessionTts = Boolean(
+    session.last_tts_message_id && (
+      session.last_tts_message_id === activeStreamingTtsMessageId
+        ? streamingContent.trim()
+        : messages.some((message) => message.id === session.last_tts_message_id)
+    )
+  );
 
   useEffect(() => {
     void loadSessionTtsSpeakers();
@@ -813,6 +867,23 @@ export default function ChatView({
           <h2 className="font-semibold text-sm truncate flex-1 min-w-0 text-gray-900 dark:text-white">{session.title}</h2>
 
           <div className="flex items-center gap-1 flex-shrink-0">
+            <button
+              onClick={() => void handleResumeSessionTts()}
+              disabled={!canResumeSessionTts}
+              className="p-1.5 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-md text-gray-500 dark:text-gray-400 disabled:opacity-40 disabled:cursor-not-allowed"
+              title={session.last_tts_message_id ? "Resume session TTS" : "No TTS progress in this session yet"}
+            >
+              {ttsActiveMessageId === session.last_tts_message_id && ttsIsPlaying ? (
+                <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M6 5h4v14H6zM14 5h4v14h-4z" />
+                </svg>
+              ) : (
+                <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M8 5v14l11-7z" />
+                </svg>
+              )}
+            </button>
+
             {/* Scroll to bottom */}
             {showScrollBtn && (
               <button

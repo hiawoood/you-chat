@@ -248,7 +248,7 @@ export default function Chat() {
     }
   };
 
-  const handleUpdateSession = async (id: string, updates: { title?: string; agent?: string }) => {
+  const handleUpdateSession = async (id: string, updates: { title?: string; agent?: string; lastTtsMessageId?: string | null }) => {
     try {
       const updated = await api.updateSession(id, updates);
       setSessions((prev) => prev.map((s) => (s.id === id ? updated : s)));

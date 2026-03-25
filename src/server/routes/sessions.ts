@@ -61,7 +61,16 @@ sessions.patch("/:id", async (c) => {
   if (!user) return c.json({ error: "Unauthorized" }, 401);
 
   const body = await c.req.json();
-  const session = updateChatSession(c.req.param("id"), user.id, body);
+  const sessionId = c.req.param("id");
+
+  if (body.lastTtsMessageId !== undefined && body.lastTtsMessageId !== null) {
+    const messageExists = getMessages(sessionId).some((message: any) => message.id === body.lastTtsMessageId);
+    if (!messageExists) {
+      return c.json({ error: "Last played TTS message not found in session" }, 404);
+    }
+  }
+
+  const session = updateChatSession(sessionId, user.id, body);
   if (!session) return c.json({ error: "Not found" }, 404);
 
   return c.json(session);

@@ -803,7 +803,9 @@ public class BackgroundPlaybackService extends Service {
                     segmentWordCount += unit.wordCount;
                 }
 
-                if (currentWordCount + segmentWordCount > TTS_TARGET_WORDS_PER_CHUNK && !currentParts.isEmpty()) {
+                boolean canKeepDialogWhole = segmentWordCount <= TTS_TARGET_WORDS_PER_CHUNK;
+
+                if (canKeepDialogWhole && currentWordCount + segmentWordCount > TTS_TARGET_WORDS_PER_CHUNK && !currentParts.isEmpty()) {
                     chunks.add(new PlaybackChunk(currentDisplayChunk.toString().trim(), new ArrayList<>(currentParts)));
                     currentParts.clear();
                     currentDisplayChunk.setLength(0);
@@ -811,6 +813,13 @@ public class BackgroundPlaybackService extends Service {
                 }
 
                 for (PlaybackSentenceUnit unit : segmentUnits) {
+                    if (!canKeepDialogWhole && currentWordCount + unit.wordCount > TTS_TARGET_WORDS_PER_CHUNK && !currentParts.isEmpty()) {
+                        chunks.add(new PlaybackChunk(currentDisplayChunk.toString().trim(), new ArrayList<>(currentParts)));
+                        currentParts.clear();
+                        currentDisplayChunk.setLength(0);
+                        currentWordCount = 0;
+                    }
+
                     PlaybackChunkPart previousPart = currentParts.isEmpty() ? null : currentParts.get(currentParts.size() - 1);
                     if (previousPart != null
                         && previousPart.speakerKey.equals(unit.part.speakerKey)
@@ -825,9 +834,6 @@ public class BackgroundPlaybackService extends Service {
                         currentParts.add(unit.part);
                     }
 
-                    if (currentDisplayChunk.length() > 0) {
-                        currentDisplayChunk.append('\n');
-                    }
                     currentDisplayChunk.append(unit.displayText);
                     currentWordCount += unit.wordCount;
                 }
@@ -856,9 +862,6 @@ public class BackgroundPlaybackService extends Service {
                     currentParts.add(unit.part);
                 }
 
-                if (currentDisplayChunk.length() > 0) {
-                    currentDisplayChunk.append('\n');
-                }
                 currentDisplayChunk.append(unit.displayText);
                 currentWordCount += unit.wordCount;
             }

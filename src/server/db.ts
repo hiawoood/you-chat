@@ -96,6 +96,7 @@ export function initDb() {
       user_id TEXT NOT NULL,
       title TEXT DEFAULT 'New Chat',
       agent TEXT DEFAULT 'express',
+      last_tts_message_id TEXT,
       created_at INTEGER DEFAULT (unixepoch()),
       updated_at INTEGER DEFAULT (unixepoch()),
       FOREIGN KEY (user_id) REFERENCES user(id) ON DELETE CASCADE
@@ -141,6 +142,7 @@ export function initDb() {
     // Column already exists
   }
   ensureTableColumn("chat_sessions", "tts_mapping_updated_at", `ALTER TABLE chat_sessions ADD COLUMN tts_mapping_updated_at INTEGER DEFAULT (unixepoch())`);
+  ensureTableColumn("chat_sessions", "last_tts_message_id", `ALTER TABLE chat_sessions ADD COLUMN last_tts_message_id TEXT`);
 
   // User credentials for You.com cookies
   db.run(`
@@ -308,17 +310,17 @@ export function createChatSession(userId: string, title = "untitled", agent = "e
   const id = generateId();
   const now = Math.floor(Date.now() / 1000);
   db.run(
-    `INSERT INTO chat_sessions (id, user_id, title, agent, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
-    [id, userId, title, agent, now, now]
+    `INSERT INTO chat_sessions (id, user_id, title, agent, last_tts_message_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [id, userId, title, agent, null, now, now]
   );
   ensureSessionNarratorSpeaker(id);
-  return { id, user_id: userId, title, agent, created_at: now, updated_at: now };
+  return { id, user_id: userId, title, agent, last_tts_message_id: null, created_at: now, updated_at: now };
 }
 
-export function updateChatSession(id: string, userId: string, updates: { title?: string; agent?: string }) {
+export function updateChatSession(id: string, userId: string, updates: { title?: string; agent?: string; lastTtsMessageId?: string | null }) {
   const now = Math.floor(Date.now() / 1000);
   const sets: string[] = ["updated_at = ?"];
-  const values: (string | number)[] = [now];
+  const values: (string | number | null)[] = [now];
 
   if (updates.title) {
     sets.push("title = ?");
@@ -328,10 +330,26 @@ export function updateChatSession(id: string, userId: string, updates: { title?:
     sets.push("agent = ?");
     values.push(updates.agent);
   }
+  if (updates.lastTtsMessageId !== undefined) {
+    sets.push("last_tts_message_id = ?");
+    values.push(updates.lastTtsMessageId);
+  }
 
   values.push(id, userId);
   db.run(`UPDATE chat_sessions SET ${sets.join(", ")} WHERE id = ? AND user_id = ?`, values);
   return getChatSession(id, userId);
+}
+
+function clearSessionLastTtsMessageIfMissing(sessionId: string) {
+  const session = db.query(`SELECT last_tts_message_id FROM chat_sessions WHERE id = ?`).get(sessionId) as { last_tts_message_id: string | null } | null;
+  if (!session?.last_tts_message_id) {
+    return;
+  }
+
+  const exists = db.query(`SELECT 1 FROM messages WHERE id = ? AND session_id = ?`).get(session.last_tts_message_id, sessionId);
+  if (!exists) {
+    db.run(`UPDATE chat_sessions SET last_tts_message_id = NULL, updated_at = ? WHERE id = ?`, [Math.floor(Date.now() / 1000), sessionId]);
+  }
 }
 
 export function deleteChatSession(id: string, userId: string) {
@@ -401,12 +419,14 @@ export function deleteMessage(messageId: string, sessionId: string) {
   db.run(`DELETE FROM messages WHERE id = ? AND session_id = ?`, [messageId, sessionId]);
   deleteTtsMessageSpeakerState(messageId);
   rebuildSessionTtsSpeakerMappings(sessionId);
+  clearSessionLastTtsMessageIfMissing(sessionId);
 }
 
 export function deleteStreamingMessages(sessionId: string) {
   const result = db.run(`DELETE FROM messages WHERE session_id = ? AND status = 'streaming'`, [sessionId]);
   db.run(`DELETE FROM tts_message_speaker_state WHERE message_id NOT IN (SELECT id FROM messages)`);
   rebuildSessionTtsSpeakerMappings(sessionId);
+  clearSessionLastTtsMessageIfMissing(sessionId);
   return result.changes;
 }
 
@@ -421,6 +441,7 @@ export function deleteMessagesAfter(messageId: string, sessionId: string) {
   );
   db.run(`DELETE FROM tts_message_speaker_state WHERE message_id NOT IN (SELECT id FROM messages)`);
   rebuildSessionTtsSpeakerMappings(sessionId);
+  clearSessionLastTtsMessageIfMissing(sessionId);
   return result.changes;
 }
 

@@ -28,6 +28,7 @@ export interface ChatSession {
   user_id: string;
   title: string;
   agent: string;
+  last_tts_message_id?: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -126,7 +127,7 @@ export const api = {
   createSession: (data?: { title?: string; agent?: string }): Promise<ChatSession> =>
     fetchAPI("/sessions", { method: "POST", body: JSON.stringify(data || {}) }),
   getSession: (id: string): Promise<ChatSession> => fetchAPI(`/sessions/${id}`),
-  updateSession: (id: string, data: { title?: string; agent?: string }): Promise<ChatSession> =>
+  updateSession: (id: string, data: { title?: string; agent?: string; lastTtsMessageId?: string | null }): Promise<ChatSession> =>
     fetchAPI(`/sessions/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
   deleteSession: (id: string): Promise<void> =>
     fetchAPI(`/sessions/${id}`, { method: "DELETE" }),

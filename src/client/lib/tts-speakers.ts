@@ -32,7 +32,7 @@ export function normalizeSpeakerKey(label: string) {
 }
 
 function splitSentences(text: string) {
-  return text.match(SENTENCE_PATTERN)?.map((sentence) => sentence.trim()).filter(Boolean) || [text.trim()];
+  return text.match(SENTENCE_PATTERN)?.filter((sentence) => sentence.trim().length > 0) || [text];
 }
 
 interface SpeakerSegment {
@@ -132,7 +132,7 @@ export function buildSpeakerChunkPlans(
     if (currentParts.length === 0) return;
     chunks.push({
       text: currentParts.map((part) => part.text).join(" ").trim(),
-      displayText: currentParts.map((part) => part.displayText).join("\n").trim(),
+      displayText: currentParts.map((part) => part.displayText).join("").trim(),
       parts: currentParts.map((part) => ({ ...part })),
     });
     currentParts = [];
@@ -147,7 +147,7 @@ export function buildSpeakerChunkPlans(
       previousPart.voiceReferenceId === unit.voiceReferenceId
     ) {
       previousPart.text = `${previousPart.text} ${unit.text}`.trim();
-      previousPart.displayText = `${previousPart.displayText}\n${unit.displayText}`.trim();
+      previousPart.displayText = `${previousPart.displayText}${unit.displayText}`;
     } else {
       currentParts.push({ ...unit });
     }
@@ -186,11 +186,23 @@ export function buildSpeakerChunkPlans(
 
     if (segment.isDialog) {
       const segmentWordCount = segmentUnits.reduce((sum, entry) => sum + entry.wordCount, 0);
-      if (currentWordCount + segmentWordCount > targetWordsPerChunk && currentParts.length > 0) {
+      const canKeepDialogWhole = segmentWordCount <= targetWordsPerChunk;
+
+      if (canKeepDialogWhole && currentWordCount + segmentWordCount > targetWordsPerChunk && currentParts.length > 0) {
         flushChunk();
       }
 
+      if (canKeepDialogWhole) {
+        for (const entry of segmentUnits) {
+          appendUnit(entry.unit, entry.wordCount);
+        }
+        continue;
+      }
+
       for (const entry of segmentUnits) {
+        if (currentWordCount + entry.wordCount > targetWordsPerChunk && currentParts.length > 0) {
+          flushChunk();
+        }
         appendUnit(entry.unit, entry.wordCount);
       }
       continue;
