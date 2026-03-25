@@ -38,7 +38,7 @@ interface StartPlaybackOptions {
   streaming?: boolean;
 }
 
-const MAX_PREFETCH_AHEAD = 2;
+const MAX_PREFETCH_AHEAD = 5;
 const PLAYBACK_START_DELAY_SECONDS = 0.05;
 const DEFAULT_PLAYBACK_SPEED = 1;
 const MIN_PLAYBACK_SPEED = 0.5;
