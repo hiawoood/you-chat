@@ -478,6 +478,7 @@ public class BackgroundPlaybackService extends Service {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                     PlaybackParams params = new PlaybackParams();
                     params.setSpeed(playbackSpeed);
+                    params.setPitch(1f);
                     player.setPlaybackParams(params);
                 }
 
@@ -596,6 +597,7 @@ public class BackgroundPlaybackService extends Service {
             try {
                 PlaybackParams params = mediaPlayer.getPlaybackParams();
                 params.setSpeed(playbackSpeed);
+                params.setPitch(1f);
                 mediaPlayer.setPlaybackParams(params);
             } catch (Exception ignored) {
             }
