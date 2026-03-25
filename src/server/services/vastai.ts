@@ -413,7 +413,14 @@ function buildRemoteVoiceName(voiceReference: TtsVoiceReference) {
 
 function buildLocalVoiceLibrarySignature(voiceReferences: TtsVoiceReference[]) {
   return voiceReferences
-    .map((voiceReference) => `${voiceReference.id}:${voiceReference.updated_at}:${buildRemoteVoiceName(voiceReference)}`)
+    .map((voiceReference) => [
+      voiceReference.id,
+      buildRemoteVoiceName(voiceReference),
+      voiceReference.original_filename,
+      voiceReference.mime_type,
+      String(voiceReference.size_bytes),
+      voiceReference.storage_path,
+    ].join(":"))
     .sort()
     .join("|");
 }
