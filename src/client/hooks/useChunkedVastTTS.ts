@@ -14,6 +14,7 @@ export interface TTSChunk {
 }
 
 export interface SpeakerPlaybackContext {
+  sessionId: string | null;
   defaultVoiceReferenceId: string | null;
   speakerMappings: SpeakerVoiceMapping[];
 }
@@ -348,7 +349,7 @@ export function useChunkedVastTTS() {
   const playbackTokenRef = useRef(0);
   const currentChunkIndexRef = useRef(0);
   const playbackLookaheadBaseIndexRef = useRef(0);
-  const speakerContextRef = useRef<SpeakerPlaybackContext>({ defaultVoiceReferenceId: null, speakerMappings: [] });
+  const speakerContextRef = useRef<SpeakerPlaybackContext>({ sessionId: null, defaultVoiceReferenceId: null, speakerMappings: [] });
   const inflightAudioRef = useRef(new Map<string, Promise<string[]>>());
   const textRef = useRef<string>("");
   const textChunksRef = useRef<string[]>([]);
@@ -525,8 +526,10 @@ export function useChunkedVastTTS() {
     const request = (async () => {
       const missingParts = chunk.parts.filter((_, index) => !cachedAudios[index]);
       const response = await api.post("/tts/speak", {
+        sessionId: speakerContextRef.current.sessionId,
         parts: missingParts.map((part) => ({
           text: part.text,
+          speakerKey: part.speakerKey,
           voiceReferenceId: part.voiceReferenceId,
         })),
       });
@@ -1029,6 +1032,7 @@ export function useChunkedVastTTS() {
       });
 
       await nativeTtsPlugin.startPlayback({
+        sessionId: context.sessionId,
         messageId,
         chunks: nativeChunkDescriptors,
         speakerMappings: context.speakerMappings.map((mapping) => ({
@@ -1179,6 +1183,7 @@ export function useChunkedVastTTS() {
 
     if (nativeTtsEnabled && nativeTtsPlugin) {
       await nativeTtsPlugin.updatePlaybackChunks({
+        sessionId: speakerContextRef.current.sessionId,
         messageId,
         chunks: nextChunkPlans.map((chunk) => ({
           displayText: chunk.displayText,

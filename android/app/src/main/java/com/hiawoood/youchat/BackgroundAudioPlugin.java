@@ -45,6 +45,10 @@ public class BackgroundAudioPlugin extends Plugin {
         }
 
         Intent intent = createServiceIntent(BackgroundPlaybackService.ACTION_START_PLAYBACK);
+        String sessionId = call.getString("sessionId");
+        if (sessionId != null) {
+            intent.putExtra(BackgroundPlaybackService.EXTRA_SESSION_ID, sessionId);
+        }
         intent.putExtra(BackgroundPlaybackService.EXTRA_MESSAGE_ID, messageId);
         intent.putExtra(BackgroundPlaybackService.EXTRA_CHUNKS_JSON, chunksArray.toString());
         JSArray speakerMappingsArray = call.getArray("speakerMappings");
@@ -121,6 +125,10 @@ public class BackgroundAudioPlugin extends Plugin {
         }
 
         Intent intent = createServiceIntent(BackgroundPlaybackService.ACTION_UPDATE_CHUNKS);
+        String sessionId = call.getString("sessionId");
+        if (sessionId != null) {
+            intent.putExtra(BackgroundPlaybackService.EXTRA_SESSION_ID, sessionId);
+        }
         intent.putExtra(BackgroundPlaybackService.EXTRA_MESSAGE_ID, messageId);
         intent.putExtra(BackgroundPlaybackService.EXTRA_CHUNKS_JSON, chunksArray.toString());
         JSArray speakerMappingsArray = call.getArray("speakerMappings");

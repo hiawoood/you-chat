@@ -73,6 +73,7 @@ public class BackgroundPlaybackService extends Service {
     public static final String ACTION_SET_MOTION_AUTO_STOP = "com.hiawoood.youchat.action.SET_MOTION_AUTO_STOP";
 
     public static final String EXTRA_MESSAGE_ID = "messageId";
+    public static final String EXTRA_SESSION_ID = "sessionId";
     public static final String EXTRA_CHUNKS_JSON = "chunksJson";
     public static final String EXTRA_START_CHUNK_INDEX = "startChunkIndex";
     public static final String EXTRA_PLAYBACK_SPEED = "playbackSpeed";
@@ -120,6 +121,7 @@ public class BackgroundPlaybackService extends Service {
     private SensorEventListener motionSensorListener;
 
     private String activeMessageId;
+    private String activeSessionId;
     private String activeChunksJson = "[]";
     private ArrayList<String> chunkTexts = new ArrayList<>();
     private ArrayList<PlaybackChunk> playbackChunks = new ArrayList<>();
@@ -347,6 +349,7 @@ public class BackgroundPlaybackService extends Service {
         clearPreparedChunks();
 
         activeMessageId = intent.getStringExtra(EXTRA_MESSAGE_ID);
+        activeSessionId = intent.getStringExtra(EXTRA_SESSION_ID);
         baseUrl = intent.getStringExtra(EXTRA_BASE_URL);
         activeMessageStreamingPlayback = intent.getBooleanExtra(EXTRA_STREAMING_PLAYBACK, false);
         waitingForStreamingChunks = false;
@@ -606,6 +609,11 @@ public class BackgroundPlaybackService extends Service {
 
         if (messageId == null || updatedChunksJson == null || activeMessageId == null || !activeMessageId.equals(messageId)) {
             return;
+        }
+
+        String updatedSessionId = intent.getStringExtra(EXTRA_SESSION_ID);
+        if (updatedSessionId != null) {
+            activeSessionId = updatedSessionId;
         }
 
         applySpeakerMappingsJson(intent.getStringExtra(EXTRA_SPEAKER_MAPPINGS_JSON), intent.getStringExtra(EXTRA_DEFAULT_VOICE_REFERENCE_ID));
@@ -1003,6 +1011,7 @@ public class BackgroundPlaybackService extends Service {
         stopCurrentPlayer();
         clearPreparedChunks();
         activeMessageId = null;
+        activeSessionId = null;
         activeChunksJson = "[]";
         chunkTexts = new ArrayList<>();
         playbackChunks = new ArrayList<>();
@@ -1150,10 +1159,14 @@ public class BackgroundPlaybackService extends Service {
             }
 
             JSONObject payload = new JSONObject();
+            if (activeSessionId != null) {
+                payload.put("sessionId", activeSessionId);
+            }
             JSONArray parts = new JSONArray();
             for (PlaybackChunkPart part : chunk.parts) {
                 JSONObject partPayload = new JSONObject();
                 partPayload.put("text", part.text);
+                partPayload.put("speakerKey", part.speakerKey);
                 if (part.voiceReferenceId != null) {
                     partPayload.put("voiceReferenceId", part.voiceReferenceId);
                 }

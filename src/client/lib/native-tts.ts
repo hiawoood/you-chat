@@ -39,6 +39,7 @@ export interface NativeTtsChunkDescriptor {
 
 interface NativeTtsPlugin {
   startPlayback(options: {
+    sessionId?: string | null;
     messageId: string;
     chunks: NativeTtsChunkDescriptor[];
     speakerMappings: NativeTtsSpeakerMappingDescriptor[];
@@ -55,7 +56,7 @@ interface NativeTtsPlugin {
   prevChunk(): Promise<void>;
   seekToChunk(options: { chunkIndex: number }): Promise<void>;
   setPlaybackSpeed(options: { playbackSpeed: number }): Promise<void>;
-  updatePlaybackChunks(options: { messageId: string; chunks: NativeTtsChunkDescriptor[]; speakerMappings?: NativeTtsSpeakerMappingDescriptor[]; defaultVoiceReferenceId?: string | null }): Promise<void>;
+  updatePlaybackChunks(options: { sessionId?: string | null; messageId: string; chunks: NativeTtsChunkDescriptor[]; speakerMappings?: NativeTtsSpeakerMappingDescriptor[]; defaultVoiceReferenceId?: string | null }): Promise<void>;
   getState(): Promise<NativeTtsStatePayload>;
   getMotionAutoStopConfig(): Promise<NativeMotionAutoStopConfig>;
   setMotionAutoStopConfig(options: NativeMotionAutoStopConfig): Promise<NativeMotionAutoStopConfig>;

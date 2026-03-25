@@ -271,10 +271,11 @@ export default function ChatView({
 
   useEffect(() => {
     setSpeakerContext({
+      sessionId: session.id,
       defaultVoiceReferenceId: selectedTtsVoiceId,
       speakerMappings: sessionTtsSpeakers,
     });
-  }, [selectedTtsVoiceId, sessionTtsSpeakers, setSpeakerContext]);
+  }, [selectedTtsVoiceId, session.id, sessionTtsSpeakers, setSpeakerContext]);
 
   const loadTtsServiceStatus = useCallback(async () => {
     try {
@@ -515,6 +516,7 @@ export default function ChatView({
       const response = voiceId ? await api.selectTtsVoice(voiceId) : await api.clearSelectedTtsVoice();
       applyVoiceSelectionResponse(response);
       setSpeakerContext({
+        sessionId: session.id,
         defaultVoiceReferenceId: response.selectedVoiceId ?? null,
         speakerMappings: sessionTtsSpeakers,
       });
@@ -537,6 +539,7 @@ export default function ChatView({
 
     if (speakerMappingsOverride) {
       setSpeakerContext({
+        sessionId: session.id,
         defaultVoiceReferenceId: defaultVoiceOverride ?? selectedTtsVoiceId,
         speakerMappings: speakerMappingsOverride,
       });
@@ -581,6 +584,7 @@ export default function ChatView({
 
       setSessionTtsSpeakers(nextSpeakerMappings);
       setSpeakerContext({
+        sessionId: session.id,
         defaultVoiceReferenceId: selectedTtsVoiceId,
         speakerMappings: nextSpeakerMappings,
       });

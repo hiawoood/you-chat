@@ -20,10 +20,12 @@ import {
 import {
   createTtsVoiceReference,
   deleteTtsVoiceReference,
+  getChatSession,
   getSelectedTtsVoiceReference,
   getSelectedTtsVoiceReferenceId,
   getTtsProgress,
   getTtsVoiceReference,
+  listSessionTtsSpeakerMappings,
   listTtsVoiceReferences,
   setSelectedTtsVoiceReference,
   setTtsProgress,
@@ -82,7 +84,7 @@ tts.post("/speak", async (c) => {
 
   try {
     const body = await c.req.json();
-    const { text, voice, voiceReferenceId, speed, language, parts } = body;
+    const { text, voice, voiceReferenceId, speed, language, parts, sessionId } = body;
 
     const hasText = typeof text === "string" && text.trim().length > 0;
     const hasParts = Array.isArray(parts) && parts.length > 0;
@@ -102,17 +104,30 @@ tts.post("/speak", async (c) => {
       selectedVoice = getSelectedTtsVoiceReference(user.id);
     }
 
+    const sessionSpeakerVoiceIds = new Map<string, string | null>();
+    if (typeof sessionId === "string" && sessionId.trim()) {
+      const session = getChatSession(sessionId, user.id);
+      if (session) {
+        for (const mapping of listSessionTtsSpeakerMappings(sessionId)) {
+          sessionSpeakerVoiceIds.set(mapping.speaker_key, mapping.voice_reference_id);
+        }
+      }
+    }
+
     try {
       if (hasParts) {
         const partRequests = [] as Array<{ text: string; voiceReferenceId?: string | null }>;
         const partVoiceReferences = new Map<string, TtsVoiceReference>();
 
-        for (const rawPart of parts as Array<{ text?: unknown; voiceReferenceId?: unknown }>) {
+        for (const rawPart of parts as Array<{ text?: unknown; voiceReferenceId?: unknown; speakerKey?: unknown }>) {
           if (!rawPart || typeof rawPart.text !== "string" || !rawPart.text.trim()) {
             continue;
           }
 
           let partVoiceReferenceId: string | null = null;
+          if (typeof rawPart.speakerKey === "string" && rawPart.speakerKey.trim()) {
+            partVoiceReferenceId = sessionSpeakerVoiceIds.get(rawPart.speakerKey.trim()) ?? selectedVoice?.id ?? null;
+          }
           if (typeof rawPart.voiceReferenceId === "string" && rawPart.voiceReferenceId.trim()) {
             const voiceReference = getTtsVoiceReference(user.id, rawPart.voiceReferenceId.trim());
             if (!voiceReference) {
