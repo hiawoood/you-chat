@@ -362,6 +362,8 @@ function MessageBubble({
   const [editValue, setEditValue] = useState("");
   const [confirmAction, setConfirmAction] = useState<"delete" | "regenerate" | null>(null);
   const [isMobileEditMode, setIsMobileEditMode] = useState(false);
+  const [hoveredChunkIndex, setHoveredChunkIndex] = useState<number | null>(null);
+  const [selectedChunkIndex, setSelectedChunkIndex] = useState<number | null>(null);
 
   const resizeEditTextarea = (textarea: HTMLTextAreaElement) => {
     textarea.style.height = "auto";
@@ -439,8 +441,16 @@ function MessageBubble({
 
   const isCollapsed = collapsed && isLong && !editing;
   const isBusy = isDeleting || isSaving || isForking || actionDisabled;
+  const shouldRenderChunkLayout = !isUser && (ttsTextChunks?.length ?? 0) > 1;
   const shouldRenderChunkButtons = !isUser && isTTSActive && !!onPlayTTSChunk && (ttsTextChunks?.length ?? 0) > 1;
+  const shouldEnablePassiveChunkHighlight = shouldRenderChunkLayout && !isTTSActive;
+  const highlightedChunkIndex = isTTSActive ? (ttsCurrentChunk ?? null) : (hoveredChunkIndex ?? selectedChunkIndex);
   const showInlineTtsButton = !isUser && !editing && !!onToggleTTS;
+
+  useEffect(() => {
+    setHoveredChunkIndex(null);
+    setSelectedChunkIndex(null);
+  }, [message.id, isTTSActive]);
 
   useEffect(() => {
     if (!ttsAutoScrollEnabled || !isTTSActive || isCollapsed || editing || !shouldRenderChunkButtons) {
@@ -541,11 +551,13 @@ function MessageBubble({
               ref={contentRef}
               className={`relative overflow-hidden transition-all duration-200 ${isCollapsed ? "max-h-[72px]" : ""}`}
             >
-              {shouldRenderChunkButtons && ttsTextChunks ? (
-                <div className="space-y-3">
+              {shouldRenderChunkLayout && ttsTextChunks ? (
+                <div className={shouldRenderChunkButtons ? "space-y-3" : "space-y-1.5"}>
                   {ttsTextChunks.map((chunkText, chunkIndex) => {
                     const isCurrentChunk = isTTSActive && ttsCurrentChunk === chunkIndex;
                     const isChunkLoading = isCurrentChunk && isTTSLoading;
+                    const isHighlightedChunk = highlightedChunkIndex === chunkIndex;
+                    const shouldShowPassiveHighlight = shouldEnablePassiveChunkHighlight && isHighlightedChunk;
 
                     return (
                       <div
@@ -553,33 +565,58 @@ function MessageBubble({
                         ref={(element) => {
                           chunkRefs.current[chunkIndex] = element;
                         }}
-                        className={`rounded-md transition-colors ${isCurrentChunk ? "bg-emerald-50/80 dark:bg-emerald-900/20" : ""}`}
+                        tabIndex={shouldEnablePassiveChunkHighlight ? 0 : undefined}
+                        role={shouldEnablePassiveChunkHighlight ? "button" : undefined}
+                        aria-label={shouldEnablePassiveChunkHighlight ? `Highlight chunk ${chunkIndex + 1}` : undefined}
+                        onMouseEnter={shouldEnablePassiveChunkHighlight ? () => setHoveredChunkIndex(chunkIndex) : undefined}
+                        onMouseLeave={shouldEnablePassiveChunkHighlight ? () => setHoveredChunkIndex((current) => current === chunkIndex ? null : current) : undefined}
+                        onFocus={shouldEnablePassiveChunkHighlight ? () => setHoveredChunkIndex(chunkIndex) : undefined}
+                        onBlur={shouldEnablePassiveChunkHighlight ? () => setHoveredChunkIndex((current) => current === chunkIndex ? null : current) : undefined}
+                        onClick={shouldEnablePassiveChunkHighlight ? () => {
+                          setSelectedChunkIndex((current) => current === chunkIndex ? null : chunkIndex);
+                        } : undefined}
+                        onKeyDown={shouldEnablePassiveChunkHighlight ? (event) => {
+                          if (event.key !== "Enter" && event.key !== " ") {
+                            return;
+                          }
+                          event.preventDefault();
+                          setSelectedChunkIndex((current) => current === chunkIndex ? null : chunkIndex);
+                        } : undefined}
+                        className={`rounded-md transition-colors outline-none ${
+                          isCurrentChunk
+                            ? "bg-emerald-50/80 dark:bg-emerald-900/20"
+                            : shouldShowPassiveHighlight
+                              ? "bg-amber-50/80 ring-1 ring-amber-200/70 dark:bg-amber-500/10 dark:ring-amber-400/20"
+                              : ""
+                        } ${shouldEnablePassiveChunkHighlight ? "cursor-pointer focus-visible:bg-amber-50/80 focus-visible:ring-1 focus-visible:ring-amber-200/70 dark:focus-visible:bg-amber-500/10 dark:focus-visible:ring-amber-400/20" : ""}`}
                       >
-                        <div className={`markdown-content text-sm break-words ${isUser ? "markdown-user" : ""}`}>
+                        <div className={`markdown-content text-sm break-words ${isUser ? "markdown-user" : ""} ${shouldEnablePassiveChunkHighlight ? "px-1 py-0.5" : ""}`}>
                           <ReactMarkdown remarkPlugins={[remarkGfm]}>{chunkText}</ReactMarkdown>
                         </div>
-                        <div className="mt-1 flex justify-end">
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              onPlayTTSChunk?.(chunkIndex);
-                            }}
-                            className={`inline-flex h-6 w-6 items-center justify-center rounded-full border transition-colors ${isCurrentChunk ? "border-emerald-400 bg-emerald-100 text-emerald-700 dark:border-emerald-500 dark:bg-emerald-900/40 dark:text-emerald-300" : "border-gray-200 bg-gray-50 text-gray-500 hover:border-gray-300 hover:bg-gray-100 hover:text-gray-700 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:border-gray-600 dark:hover:bg-gray-700 dark:hover:text-gray-200"}`}
-                            title={`Play chunk ${chunkIndex + 1}`}
-                            aria-label={`Play chunk ${chunkIndex + 1}`}
-                          >
-                            {isChunkLoading ? (
-                              <svg className="h-3 w-3 animate-spin" fill="none" viewBox="0 0 24 24">
-                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                              </svg>
-                            ) : (
-                              <svg className="h-3 w-3" fill="currentColor" viewBox="0 0 24 24">
-                                <path d="M8 5v14l11-7z" />
-                              </svg>
-                            )}
-                          </button>
-                        </div>
+                        {shouldRenderChunkButtons && (
+                          <div className="mt-1 flex justify-end">
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onPlayTTSChunk?.(chunkIndex);
+                              }}
+                              className={`inline-flex h-6 w-6 items-center justify-center rounded-full border transition-colors ${isCurrentChunk ? "border-emerald-400 bg-emerald-100 text-emerald-700 dark:border-emerald-500 dark:bg-emerald-900/40 dark:text-emerald-300" : "border-gray-200 bg-gray-50 text-gray-500 hover:border-gray-300 hover:bg-gray-100 hover:text-gray-700 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:border-gray-600 dark:hover:bg-gray-700 dark:hover:text-gray-200"}`}
+                              title={`Play chunk ${chunkIndex + 1}`}
+                              aria-label={`Play chunk ${chunkIndex + 1}`}
+                            >
+                              {isChunkLoading ? (
+                                <svg className="h-3 w-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                                </svg>
+                              ) : (
+                                <svg className="h-3 w-3" fill="currentColor" viewBox="0 0 24 24">
+                                  <path d="M8 5v14l11-7z" />
+                                </svg>
+                              )}
+                            </button>
+                          </div>
+                        )}
                       </div>
                     );
                   })}
