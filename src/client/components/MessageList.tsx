@@ -2,13 +2,130 @@ import { useState, useRef, useEffect } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Message } from "../lib/api";
-import { splitStreamingTextIntoDisplayChunks, splitTextIntoDisplayChunks, type TTSChunk } from "../hooks/useChunkedVastTTS";
+import { splitStreamingTextIntoDisplayChunks, splitStreamingTextIntoTtsChunks, splitTextIntoDisplayChunks, splitTextIntoTtsChunks, type TTSChunk } from "../hooks/useChunkedVastTTS";
 
 const COLLAPSE_HEIGHT = 72;
 const COLLAPSE_LINE_COUNT = 3;
 const EDIT_TEXTAREA_MOBILE_MAX_HEIGHT = 260;
 const EDIT_TEXTAREA_MAX_HEIGHT = 520;
 const MOBILE_EDIT_MEDIA_QUERY = "(max-width: 768px), (pointer: coarse)";
+
+interface ChunkHighlightRect {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+interface ChunkHighlightLayout {
+  rects: ChunkHighlightRect[];
+  bounds: ChunkHighlightRect | null;
+}
+
+interface TextWordRange {
+  node: Text;
+  startOffset: number;
+  endOffset: number;
+}
+
+function collectRenderedWordRanges(root: HTMLElement): TextWordRange[] {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const words: TextWordRange[] = [];
+  let currentNode = walker.nextNode();
+
+  while (currentNode) {
+    if (currentNode.nodeType === Node.TEXT_NODE) {
+      const textNode = currentNode as Text;
+      const content = textNode.textContent || "";
+      const matches = content.matchAll(/\S+/g);
+
+      for (const match of matches) {
+        const startOffset = match.index ?? 0;
+        words.push({
+          node: textNode,
+          startOffset,
+          endOffset: startOffset + match[0].length,
+        });
+      }
+    }
+
+    currentNode = walker.nextNode();
+  }
+
+  return words;
+}
+
+function buildChunkHighlightLayouts(root: HTMLElement, chunkWordCounts: number[]): ChunkHighlightLayout[] {
+  const renderedWords = collectRenderedWordRanges(root);
+  if (renderedWords.length === 0) {
+    return chunkWordCounts.map(() => ({ rects: [], bounds: null }));
+  }
+
+  const rootRect = root.getBoundingClientRect();
+  const layouts: ChunkHighlightLayout[] = [];
+  let nextWordIndex = 0;
+
+  for (let chunkIndex = 0; chunkIndex < chunkWordCounts.length; chunkIndex++) {
+    const requestedWordCount = Math.max(1, chunkWordCounts[chunkIndex] || 0);
+    if (nextWordIndex >= renderedWords.length) {
+      layouts.push({ rects: [], bounds: null });
+      continue;
+    }
+
+    const startWord = nextWordIndex;
+    const endWord = chunkIndex === chunkWordCounts.length - 1
+      ? renderedWords.length - 1
+      : Math.min(renderedWords.length - 1, startWord + requestedWordCount - 1);
+    nextWordIndex = endWord + 1;
+
+    const range = document.createRange();
+    range.setStart(renderedWords[startWord].node, renderedWords[startWord].startOffset);
+    range.setEnd(renderedWords[endWord].node, renderedWords[endWord].endOffset);
+
+    const rects = Array.from(range.getClientRects())
+      .filter((rect) => rect.width > 0 && rect.height > 0)
+      .map((rect) => ({
+        left: rect.left - rootRect.left,
+        top: rect.top - rootRect.top,
+        width: rect.width,
+        height: rect.height,
+      }));
+
+    if (rects.length === 0) {
+      layouts.push({ rects: [], bounds: null });
+      continue;
+    }
+
+    const left = Math.min(...rects.map((rect) => rect.left));
+    const top = Math.min(...rects.map((rect) => rect.top));
+    const right = Math.max(...rects.map((rect) => rect.left + rect.width));
+    const bottom = Math.max(...rects.map((rect) => rect.top + rect.height));
+
+    layouts.push({
+      rects,
+      bounds: {
+        left,
+        top,
+        width: right - left,
+        height: bottom - top,
+      },
+    });
+  }
+
+  return layouts;
+}
+
+function findChunkIndexAtPoint(layouts: ChunkHighlightLayout[], x: number, y: number): number | null {
+  for (let chunkIndex = 0; chunkIndex < layouts.length; chunkIndex++) {
+    const layout = layouts[chunkIndex];
+    if (!layout) continue;
+    if (layout.rects.some((rect) => x >= rect.left && x <= rect.left + rect.width && y >= rect.top && y <= rect.top + rect.height)) {
+      return chunkIndex;
+    }
+  }
+
+  return null;
+}
 
 interface MessageListProps {
   messages: Message[];
@@ -159,6 +276,11 @@ export default function MessageList({
           : isActivelyStreaming
             ? splitStreamingTextIntoDisplayChunks(item.content)
             : splitTextIntoDisplayChunks(item.content);
+        const messageTtsChunkWordCounts = isTTSActive && ttsChunks && ttsChunks.length > 0
+          ? ttsChunks.map((chunk) => chunk.text.split(/\s+/).filter(Boolean).length)
+          : isActivelyStreaming
+            ? splitStreamingTextIntoTtsChunks(item.content).map((chunk) => chunk.split(/\s+/).filter(Boolean).length)
+            : splitTextIntoTtsChunks(item.content).map((chunk) => chunk.split(/\s+/).filter(Boolean).length);
         
         // Calculate which chunk words are in for highlighting
         const getWordChunkInfo = (wordIndex: number) => {
@@ -215,6 +337,7 @@ export default function MessageList({
             isTTSLoading={isTTSActive && ttsIsLoading}
             ttsChunks={ttsChunks}
             ttsTextChunks={messageTtsChunks}
+            ttsChunkWordCounts={messageTtsChunkWordCounts}
             ttsCurrentChunk={ttsCurrentChunk}
             ttsAutoScrollEnabled={ttsAutoScrollEnabled}
             getWordChunkInfo={getWordChunkInfo}
@@ -322,6 +445,7 @@ function MessageBubble({
   isTTSLoading = false,
   ttsChunks,
   ttsTextChunks,
+  ttsChunkWordCounts,
   ttsCurrentChunk,
   ttsAutoScrollEnabled = false,
   getWordChunkInfo,
@@ -348,14 +472,15 @@ function MessageBubble({
   isTTSLoading?: boolean;
   ttsChunks?: TTSChunk[];
   ttsTextChunks?: string[];
+  ttsChunkWordCounts?: number[];
   ttsCurrentChunk?: number;
   ttsAutoScrollEnabled?: boolean;
   getWordChunkInfo?: (wordIndex: number) => { chunkIndex: number; isCurrent: boolean } | null;
 }) {
   const isUser = message.role === "user";
   const contentRef = useRef<HTMLDivElement>(null);
+  const markdownRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const chunkRefs = useRef<Record<number, HTMLDivElement | null>>({});
   const [isLong, setIsLong] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -364,6 +489,7 @@ function MessageBubble({
   const [isMobileEditMode, setIsMobileEditMode] = useState(false);
   const [hoveredChunkIndex, setHoveredChunkIndex] = useState<number | null>(null);
   const [selectedChunkIndex, setSelectedChunkIndex] = useState<number | null>(null);
+  const [chunkLayouts, setChunkLayouts] = useState<ChunkHighlightLayout[]>([]);
 
   const resizeEditTextarea = (textarea: HTMLTextAreaElement) => {
     textarea.style.height = "auto";
@@ -441,16 +567,50 @@ function MessageBubble({
 
   const isCollapsed = collapsed && isLong && !editing;
   const isBusy = isDeleting || isSaving || isForking || actionDisabled;
-  const shouldRenderChunkLayout = !isUser && (ttsTextChunks?.length ?? 0) > 1;
-  const shouldRenderChunkActions = !isUser && !!onPlayTTSChunk && (ttsTextChunks?.length ?? 0) > 1;
+  const shouldRenderChunkLayout = !isUser && (ttsChunkWordCounts?.length ?? 0) > 1;
+  const shouldRenderChunkActions = !isUser && !!onPlayTTSChunk && (ttsChunkWordCounts?.length ?? 0) > 1;
   const shouldEnableChunkSelection = shouldRenderChunkLayout && !!onPlayTTSChunk;
-  const highlightedChunkIndex = hoveredChunkIndex ?? selectedChunkIndex;
+  const interactiveChunkIndex = hoveredChunkIndex ?? selectedChunkIndex;
+  const actionChunkIndex = interactiveChunkIndex ?? (isTTSActive ? (ttsCurrentChunk ?? null) : null);
   const showInlineTtsButton = !isUser && !editing && !!onToggleTTS;
+  const chunkWordSignature = ttsChunkWordCounts?.join(",") || "";
 
   useEffect(() => {
     setHoveredChunkIndex(null);
     setSelectedChunkIndex(null);
   }, [message.id]);
+
+  useEffect(() => {
+    const markdownElement = markdownRef.current;
+    if (!markdownElement || !shouldRenderChunkLayout || !ttsChunkWordCounts?.length || editing || isCollapsed) {
+      setChunkLayouts([]);
+      return;
+    }
+
+    const updateChunkLayouts = () => {
+      const currentRoot = markdownRef.current;
+      if (!currentRoot) return;
+      setChunkLayouts(buildChunkHighlightLayouts(currentRoot, ttsChunkWordCounts));
+    };
+
+    updateChunkLayouts();
+
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", updateChunkLayouts);
+      return () => window.removeEventListener("resize", updateChunkLayouts);
+    }
+
+    const resizeObserver = new ResizeObserver(() => {
+      updateChunkLayouts();
+    });
+    resizeObserver.observe(markdownElement);
+    window.addEventListener("resize", updateChunkLayouts);
+
+    return () => {
+      resizeObserver.disconnect();
+      window.removeEventListener("resize", updateChunkLayouts);
+    };
+  }, [chunkWordSignature, editing, isCollapsed, message.content, shouldRenderChunkLayout, ttsChunkWordCounts]);
 
   useEffect(() => {
     if (!ttsAutoScrollEnabled || !isTTSActive || isCollapsed || editing || !shouldRenderChunkLayout) {
@@ -461,19 +621,57 @@ function MessageBubble({
       return;
     }
 
-    const targetChunk = chunkRefs.current[ttsCurrentChunk];
-    if (!targetChunk) {
+    const targetLayout = chunkLayouts[ttsCurrentChunk];
+    if (!targetLayout?.bounds || !contentRef.current) {
       return;
     }
 
     requestAnimationFrame(() => {
-      targetChunk.scrollIntoView({
+      const scrollContainer = contentRef.current?.closest("[data-chat-scroll-container]") as HTMLElement | null;
+      if (!scrollContainer || !contentRef.current) {
+        return;
+      }
+
+      const contentRect = contentRef.current.getBoundingClientRect();
+      const scrollRect = scrollContainer.getBoundingClientRect();
+      const targetCenter = scrollContainer.scrollTop + (contentRect.top - scrollRect.top) + targetLayout.bounds.top + (targetLayout.bounds.height / 2);
+      scrollContainer.scrollTo({
+        top: Math.max(0, targetCenter - (scrollContainer.clientHeight / 2)),
         behavior: "smooth",
-        block: "center",
-        inline: "nearest",
       });
     });
-  }, [ttsAutoScrollEnabled, isTTSActive, isCollapsed, editing, shouldRenderChunkLayout, ttsCurrentChunk]);
+  }, [chunkLayouts, editing, isCollapsed, isTTSActive, shouldRenderChunkLayout, ttsAutoScrollEnabled, ttsCurrentChunk]);
+
+  const resolveChunkIndexFromPointer = (clientX: number, clientY: number) => {
+    const contentElement = contentRef.current;
+    if (!contentElement) {
+      return null;
+    }
+
+    const contentRect = contentElement.getBoundingClientRect();
+    return findChunkIndexAtPoint(chunkLayouts, clientX - contentRect.left, clientY - contentRect.top);
+  };
+
+  const handleChunkPointerMove = (event: React.MouseEvent<HTMLDivElement>) => {
+    if (!shouldEnableChunkSelection) return;
+    setHoveredChunkIndex(resolveChunkIndexFromPointer(event.clientX, event.clientY));
+  };
+
+  const handleChunkPointerLeave = () => {
+    setHoveredChunkIndex(null);
+  };
+
+  const handleChunkPointerSelect = (clientX: number, clientY: number) => {
+    if (!shouldEnableChunkSelection) return;
+    const nextChunkIndex = resolveChunkIndexFromPointer(clientX, clientY);
+    if (nextChunkIndex === null) {
+      return;
+    }
+
+    setSelectedChunkIndex((current) => current === nextChunkIndex ? null : nextChunkIndex);
+  };
+
+  const activeChunkLayout = actionChunkIndex !== null ? chunkLayouts[actionChunkIndex] : null;
 
   return (
     <div className={`group ${isUser ? "flex flex-col items-end" : "flex flex-col items-start"} ${isBusy ? "opacity-50" : ""}`}>
@@ -549,85 +747,81 @@ function MessageBubble({
           <>
             <div
               ref={contentRef}
+              onMouseMove={handleChunkPointerMove}
+              onMouseLeave={handleChunkPointerLeave}
+              onClick={(event) => {
+                if (!shouldEnableChunkSelection) return;
+                if ((event.target as HTMLElement).closest("button, a, input, textarea, select")) {
+                  return;
+                }
+                handleChunkPointerSelect(event.clientX, event.clientY);
+              }}
+              onTouchStart={(event) => {
+                if (!shouldEnableChunkSelection) return;
+                const touch = event.touches[0];
+                if (!touch) return;
+                handleChunkPointerSelect(touch.clientX, touch.clientY);
+              }}
               className={`relative overflow-hidden transition-all duration-200 ${isCollapsed ? "max-h-[72px]" : ""}`}
             >
-              {shouldRenderChunkLayout && ttsTextChunks ? (
-                <div className="space-y-1.5">
-                  {ttsTextChunks.map((chunkText, chunkIndex) => {
-                    const isCurrentChunk = isTTSActive && ttsCurrentChunk === chunkIndex;
-                    const isChunkLoading = isCurrentChunk && isTTSLoading;
-                    const isHighlightedChunk = highlightedChunkIndex === chunkIndex;
-                    const shouldShowInteractiveHighlight = isHighlightedChunk && !isCurrentChunk;
-                    const shouldShowChunkAction = shouldRenderChunkActions && (isCurrentChunk || isHighlightedChunk);
+              <div className="pointer-events-none absolute inset-0 z-0">
+                {chunkLayouts.map((layout, chunkIndex) => {
+                  const isCurrentChunk = isTTSActive && ttsCurrentChunk === chunkIndex;
+                  const isInteractiveChunk = interactiveChunkIndex === chunkIndex && !isCurrentChunk;
+                  if (!isCurrentChunk && !isInteractiveChunk) {
+                    return null;
+                  }
 
-                    return (
-                      <div
-                        key={`${message.id}-chunk-${chunkIndex}`}
-                        ref={(element) => {
-                          chunkRefs.current[chunkIndex] = element;
-                        }}
-                        tabIndex={shouldEnableChunkSelection ? 0 : undefined}
-                        role={shouldEnableChunkSelection ? "button" : undefined}
-                        aria-label={shouldEnableChunkSelection ? `Highlight chunk ${chunkIndex + 1}` : undefined}
-                        onMouseEnter={shouldEnableChunkSelection ? () => setHoveredChunkIndex(chunkIndex) : undefined}
-                        onMouseLeave={shouldEnableChunkSelection ? () => setHoveredChunkIndex((current) => current === chunkIndex ? null : current) : undefined}
-                        onFocus={shouldEnableChunkSelection ? () => setHoveredChunkIndex(chunkIndex) : undefined}
-                        onBlur={shouldEnableChunkSelection ? () => setHoveredChunkIndex((current) => current === chunkIndex ? null : current) : undefined}
-                        onClick={shouldEnableChunkSelection ? () => {
-                          setSelectedChunkIndex((current) => current === chunkIndex ? null : chunkIndex);
-                        } : undefined}
-                        onKeyDown={shouldEnableChunkSelection ? (event) => {
-                          if (event.key !== "Enter" && event.key !== " ") {
-                            return;
-                          }
-                          event.preventDefault();
-                          setSelectedChunkIndex((current) => current === chunkIndex ? null : chunkIndex);
-                        } : undefined}
-                        className={`relative rounded-md px-1.5 py-1 transition-colors outline-none ${
-                          isCurrentChunk
-                            ? "bg-emerald-50/80 dark:bg-emerald-900/20"
-                            : shouldShowInteractiveHighlight
-                              ? "bg-amber-50/80 ring-1 ring-amber-200/70 dark:bg-amber-500/10 dark:ring-amber-400/20"
-                              : ""
-                        } ${shouldEnableChunkSelection ? "cursor-pointer focus-visible:bg-amber-50/80 focus-visible:ring-1 focus-visible:ring-amber-200/70 dark:focus-visible:bg-amber-500/10 dark:focus-visible:ring-amber-400/20" : ""}`}
-                      >
-                        <div className={`markdown-content text-sm break-words ${isUser ? "markdown-user" : ""}`}>
-                          <ReactMarkdown remarkPlugins={[remarkGfm]}>{chunkText}</ReactMarkdown>
-                        </div>
-                        {shouldShowChunkAction && (
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              onPlayTTSChunk?.(chunkIndex);
-                            }}
-                            className={`absolute bottom-1.5 right-1.5 inline-flex h-6 w-6 items-center justify-center rounded-full border shadow-sm backdrop-blur transition-all ${
-                              isCurrentChunk
-                                ? "border-emerald-400 bg-emerald-100/95 text-emerald-700 dark:border-emerald-500 dark:bg-emerald-900/60 dark:text-emerald-300"
-                                : "border-amber-200 bg-white/95 text-amber-700 hover:bg-amber-50 dark:border-amber-400/30 dark:bg-gray-900/90 dark:text-amber-300 dark:hover:bg-gray-800"
-                            }`}
-                            title={isCurrentChunk ? `Replay chunk ${chunkIndex + 1}` : `Start TTS from chunk ${chunkIndex + 1}`}
-                            aria-label={isCurrentChunk ? `Replay chunk ${chunkIndex + 1}` : `Start TTS from chunk ${chunkIndex + 1}`}
-                          >
-                            {isChunkLoading ? (
-                              <svg className="h-3 w-3 animate-spin" fill="none" viewBox="0 0 24 24">
-                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                              </svg>
-                            ) : (
-                              <svg className="h-3 w-3" fill="currentColor" viewBox="0 0 24 24">
-                                <path d="M8 5v14l11-7z" />
-                              </svg>
-                            )}
-                          </button>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              ) : (
-                <div className={`markdown-content text-sm break-words ${isUser ? "markdown-user" : ""}`}>
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
-                </div>
+                  return layout.rects.map((rect, rectIndex) => (
+                    <div
+                      key={`${message.id}-highlight-${chunkIndex}-${rectIndex}`}
+                      className={`absolute rounded-sm ${
+                        isCurrentChunk
+                          ? "bg-emerald-50/80 dark:bg-emerald-900/20"
+                          : "bg-amber-50/80 ring-1 ring-amber-200/70 dark:bg-amber-500/10 dark:ring-amber-400/20"
+                      }`}
+                      style={{
+                        left: `${rect.left - 1}px`,
+                        top: `${rect.top - 1}px`,
+                        width: `${rect.width + 2}px`,
+                        height: `${rect.height + 2}px`,
+                      }}
+                    />
+                  ));
+                })}
+              </div>
+              <div ref={markdownRef} className={`relative z-10 markdown-content text-sm break-words ${isUser ? "markdown-user" : ""}`}>
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+              </div>
+              {shouldRenderChunkActions && actionChunkIndex !== null && activeChunkLayout?.bounds && (
+                <button
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onPlayTTSChunk?.(actionChunkIndex);
+                  }}
+                  className={`absolute z-20 inline-flex h-6 w-6 items-center justify-center rounded-full border shadow-sm backdrop-blur transition-all ${
+                    isTTSActive && ttsCurrentChunk === actionChunkIndex
+                      ? "border-emerald-400 bg-emerald-100/95 text-emerald-700 dark:border-emerald-500 dark:bg-emerald-900/60 dark:text-emerald-300"
+                      : "border-amber-200 bg-white/95 text-amber-700 hover:bg-amber-50 dark:border-amber-400/30 dark:bg-gray-900/90 dark:text-amber-300 dark:hover:bg-gray-800"
+                  }`}
+                  style={{
+                    left: `${activeChunkLayout.bounds.left + activeChunkLayout.bounds.width - 24}px`,
+                    top: `${activeChunkLayout.bounds.top + activeChunkLayout.bounds.height - 24}px`,
+                  }}
+                  title={isTTSActive && ttsCurrentChunk === actionChunkIndex ? `Replay chunk ${actionChunkIndex + 1}` : `Start TTS from chunk ${actionChunkIndex + 1}`}
+                  aria-label={isTTSActive && ttsCurrentChunk === actionChunkIndex ? `Replay chunk ${actionChunkIndex + 1}` : `Start TTS from chunk ${actionChunkIndex + 1}`}
+                >
+                  {isTTSActive && ttsCurrentChunk === actionChunkIndex && ttsIsLoading ? (
+                    <svg className="h-3 w-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                    </svg>
+                  ) : (
+                    <svg className="h-3 w-3" fill="currentColor" viewBox="0 0 24 24">
+                      <path d="M8 5v14l11-7z" />
+                    </svg>
+                  )}
+                </button>
               )}
               {isStreaming && !isCollapsed && <span className="inline-block w-2 h-4 ml-1 bg-gray-500 animate-pulse" />}
               {isCollapsed && (
