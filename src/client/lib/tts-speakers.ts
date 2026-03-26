@@ -12,12 +12,16 @@ export interface TtsChunkPartPlan {
   text: string;
   displayText: string;
   voiceReferenceId: string | null;
+  sourceStartOffset: number;
+  sourceEndOffset: number;
 }
 
 export interface TtsChunkPlan {
   text: string;
   displayText: string;
   parts: TtsChunkPartPlan[];
+  sourceStartOffset: number;
+  sourceEndOffset: number;
 }
 
 const SENTENCE_PATTERN = /[^.!?]+(?:[.!?]+["')\]”’]*|$)/g;
@@ -32,7 +36,27 @@ export function normalizeSpeakerKey(label: string) {
 }
 
 function splitSentences(text: string) {
-  return text.match(SENTENCE_PATTERN)?.filter((sentence) => sentence.trim().length > 0) || [text];
+  const sentences: Array<{ text: string; startOffset: number; endOffset: number }> = [];
+  const matches = text.matchAll(SENTENCE_PATTERN);
+
+  for (const match of matches) {
+    const sentence = match[0] || "";
+    if (!sentence.trim()) continue;
+    const startOffset = match.index ?? 0;
+    sentences.push({
+      text: sentence,
+      startOffset,
+      endOffset: startOffset + sentence.length,
+    });
+  }
+
+  if (sentences.length > 0) {
+    return sentences;
+  }
+
+  return text
+    ? [{ text, startOffset: 0, endOffset: text.length }]
+    : [];
 }
 
 interface SpeakerSegment {
@@ -42,6 +66,8 @@ interface SpeakerSegment {
   ttsLead: string;
   body: string;
   isDialog: boolean;
+  sourceStartOffset: number;
+  bodyStartOffset: number;
 }
 
 function splitSpeakerSegments(text: string): SpeakerSegment[] {
@@ -62,6 +88,8 @@ function splitSpeakerSegments(text: string): SpeakerSegment[] {
           ttsLead: "",
           body: narratorText,
           isDialog: false,
+          sourceStartOffset: cursor,
+          bodyStartOffset: cursor,
         });
       }
     }
@@ -82,6 +110,8 @@ function splitSpeakerSegments(text: string): SpeakerSegment[] {
       ttsLead: match[1] || "",
       body: dialogBody,
       isDialog: true,
+      sourceStartOffset: matchIndex,
+      bodyStartOffset: dialogStart,
     });
 
     cursor = dialogEnd;
@@ -98,6 +128,8 @@ function splitSpeakerSegments(text: string): SpeakerSegment[] {
         ttsLead: "",
         body: narratorText,
         isDialog: false,
+        sourceStartOffset: cursor,
+        bodyStartOffset: cursor,
       });
     }
   }
@@ -110,6 +142,8 @@ function splitSpeakerSegments(text: string): SpeakerSegment[] {
       ttsLead: "",
       body: text,
       isDialog: false,
+      sourceStartOffset: 0,
+      bodyStartOffset: 0,
     });
   }
 
@@ -134,6 +168,8 @@ export function buildSpeakerChunkPlans(
       text: currentParts.map((part) => part.text).join(" ").trim(),
       displayText: currentParts.map((part) => part.displayText).join("").trim(),
       parts: currentParts.map((part) => ({ ...part })),
+      sourceStartOffset: currentParts[0]?.sourceStartOffset ?? 0,
+      sourceEndOffset: currentParts[currentParts.length - 1]?.sourceEndOffset ?? 0,
     });
     currentParts = [];
     currentWordCount = 0;
@@ -148,6 +184,7 @@ export function buildSpeakerChunkPlans(
     ) {
       previousPart.text = `${previousPart.text} ${unit.text}`.trim();
       previousPart.displayText = `${previousPart.displayText}${unit.displayText}`;
+      previousPart.sourceEndOffset = unit.sourceEndOffset;
     } else {
       currentParts.push({ ...unit });
     }
@@ -162,11 +199,16 @@ export function buildSpeakerChunkPlans(
       const displaySentence = displaySentences[index];
       if (!displaySentence) continue;
 
-      const ttsSentence = `${index === 0 ? segment.ttsLead : ""}${formatTextForTts(displaySentence).trim()}`.trim();
+      const ttsSentence = `${index === 0 ? segment.ttsLead : ""}${formatTextForTts(displaySentence.text).trim()}`.trim();
       if (!ttsSentence) continue;
       if (options.completeSentencesOnly && !COMPLETE_SENTENCE_PATTERN.test(ttsSentence)) {
         continue;
       }
+
+      const sourceStartOffset = index === 0
+        ? segment.sourceStartOffset
+        : segment.bodyStartOffset + displaySentence.startOffset;
+      const sourceEndOffset = segment.bodyStartOffset + displaySentence.endOffset;
 
       segmentUnits.push({
         unit: {
@@ -174,7 +216,9 @@ export function buildSpeakerChunkPlans(
           speakerLabel: segment.speakerLabel,
           voiceReferenceId: voiceBySpeakerKey.get(segment.speakerKey) ?? defaultVoiceReferenceId,
           text: ttsSentence,
-          displayText: `${index === 0 ? segment.prefix : ""}${displaySentence}`,
+          displayText: `${index === 0 ? segment.prefix : ""}${displaySentence.text}`,
+          sourceStartOffset,
+          sourceEndOffset,
         },
         wordCount: ttsSentence.split(/\s+/).filter(Boolean).length,
       });

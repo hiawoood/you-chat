@@ -2,7 +2,8 @@ import { useState, useRef, useEffect } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Message } from "../lib/api";
-import { splitStreamingTextIntoDisplayChunks, splitStreamingTextIntoTtsChunks, splitTextIntoDisplayChunks, splitTextIntoTtsChunks, type TTSChunk } from "../hooks/useChunkedVastTTS";
+import { splitStreamingTextIntoDisplayChunkPlans, splitTextIntoDisplayChunkPlans, type TTSChunk } from "../hooks/useChunkedVastTTS";
+import { extractRenderedMarkdownWordSourceRanges, type SourceRange } from "../lib/markdown-word-ranges";
 
 const COLLAPSE_HEIGHT = 72;
 const COLLAPSE_LINE_COUNT = 3;
@@ -26,6 +27,11 @@ interface TextWordRange {
   node: Text;
   startOffset: number;
   endOffset: number;
+}
+
+interface RenderedWordRange extends TextWordRange {
+  sourceStartOffset: number;
+  sourceEndOffset: number;
 }
 
 function collectRenderedWordRanges(root: HTMLElement): TextWordRange[] {
@@ -55,13 +61,47 @@ function collectRenderedWordRanges(root: HTMLElement): TextWordRange[] {
   return words;
 }
 
-function buildChunkHighlightLayouts(root: HTMLElement, chunkWordCounts: number[]): ChunkHighlightLayout[] {
+function buildRangeLayout(root: HTMLElement, startWord: TextWordRange, endWord: TextWordRange): ChunkHighlightLayout {
+  const rootRect = root.getBoundingClientRect();
+  const range = document.createRange();
+  range.setStart(startWord.node, startWord.startOffset);
+  range.setEnd(endWord.node, endWord.endOffset);
+
+  const rects = Array.from(range.getClientRects())
+    .filter((rect) => rect.width > 0 && rect.height > 0)
+    .map((rect) => ({
+      left: rect.left - rootRect.left,
+      top: rect.top - rootRect.top,
+      width: rect.width,
+      height: rect.height,
+    }));
+
+  if (rects.length === 0) {
+    return { rects: [], bounds: null };
+  }
+
+  const left = Math.min(...rects.map((rect) => rect.left));
+  const top = Math.min(...rects.map((rect) => rect.top));
+  const right = Math.max(...rects.map((rect) => rect.left + rect.width));
+  const bottom = Math.max(...rects.map((rect) => rect.top + rect.height));
+
+  return {
+    rects,
+    bounds: {
+      left,
+      top,
+      width: right - left,
+      height: bottom - top,
+    },
+  };
+}
+
+function buildChunkHighlightLayoutsFromWordCounts(root: HTMLElement, chunkWordCounts: number[]): ChunkHighlightLayout[] {
   const renderedWords = collectRenderedWordRanges(root);
   if (renderedWords.length === 0) {
     return chunkWordCounts.map(() => ({ rects: [], bounds: null }));
   }
 
-  const rootRect = root.getBoundingClientRect();
   const layouts: ChunkHighlightLayout[] = [];
   let nextWordIndex = 0;
 
@@ -77,39 +117,59 @@ function buildChunkHighlightLayouts(root: HTMLElement, chunkWordCounts: number[]
       ? renderedWords.length - 1
       : Math.min(renderedWords.length - 1, startWord + requestedWordCount - 1);
     nextWordIndex = endWord + 1;
+    layouts.push(buildRangeLayout(root, renderedWords[startWord], renderedWords[endWord]));
+  }
 
-    const range = document.createRange();
-    range.setStart(renderedWords[startWord].node, renderedWords[startWord].startOffset);
-    range.setEnd(renderedWords[endWord].node, renderedWords[endWord].endOffset);
+  return layouts;
+}
 
-    const rects = Array.from(range.getClientRects())
-      .filter((rect) => rect.width > 0 && rect.height > 0)
-      .map((rect) => ({
-        left: rect.left - rootRect.left,
-        top: rect.top - rootRect.top,
-        width: rect.width,
-        height: rect.height,
-      }));
+function buildChunkHighlightLayouts(root: HTMLElement, markdown: string, chunkSourceRanges: SourceRange[], fallbackWordCounts: number[]): ChunkHighlightLayout[] {
+  const renderedWords = collectRenderedWordRanges(root);
+  if (renderedWords.length === 0) {
+    return chunkSourceRanges.map(() => ({ rects: [], bounds: null }));
+  }
 
-    if (rects.length === 0) {
+  const sourceWords = extractRenderedMarkdownWordSourceRanges(markdown);
+  if (sourceWords.length !== renderedWords.length) {
+    return buildChunkHighlightLayoutsFromWordCounts(root, fallbackWordCounts);
+  }
+
+  const renderedWordsWithSource: RenderedWordRange[] = renderedWords.map((word, index) => ({
+    ...word,
+    sourceStartOffset: sourceWords[index]?.start ?? 0,
+    sourceEndOffset: sourceWords[index]?.end ?? 0,
+  }));
+
+  const layouts: ChunkHighlightLayout[] = [];
+  let searchStartIndex = 0;
+
+  for (const chunkSourceRange of chunkSourceRanges) {
+    let startWordIndex = -1;
+    for (let wordIndex = searchStartIndex; wordIndex < renderedWordsWithSource.length; wordIndex++) {
+      const renderedWord = renderedWordsWithSource[wordIndex];
+      if (!renderedWord) continue;
+      if (renderedWord.sourceEndOffset > chunkSourceRange.start) {
+        startWordIndex = wordIndex;
+        break;
+      }
+    }
+
+    if (startWordIndex === -1) {
       layouts.push({ rects: [], bounds: null });
       continue;
     }
 
-    const left = Math.min(...rects.map((rect) => rect.left));
-    const top = Math.min(...rects.map((rect) => rect.top));
-    const right = Math.max(...rects.map((rect) => rect.left + rect.width));
-    const bottom = Math.max(...rects.map((rect) => rect.top + rect.height));
+    let endWordIndex = startWordIndex;
+    for (let wordIndex = startWordIndex; wordIndex < renderedWordsWithSource.length; wordIndex++) {
+      const renderedWord = renderedWordsWithSource[wordIndex];
+      if (!renderedWord || renderedWord.sourceStartOffset >= chunkSourceRange.end) {
+        break;
+      }
+      endWordIndex = wordIndex;
+    }
 
-    layouts.push({
-      rects,
-      bounds: {
-        left,
-        top,
-        width: right - left,
-        height: bottom - top,
-      },
-    });
+    searchStartIndex = endWordIndex + 1;
+    layouts.push(buildRangeLayout(root, renderedWordsWithSource[startWordIndex], renderedWordsWithSource[endWordIndex]));
   }
 
   return layouts;
@@ -271,32 +331,26 @@ export default function MessageList({
         const isUserItem = item.role === "user";
 
         const isTTSActive = ttsActiveMessageId === item.id;
-        const messageTtsChunks = isTTSActive && ttsChunks && ttsChunks.length > 0
-          ? ttsChunks.map((chunk) => chunk.displayText)
+        const messageChunkPlans = isTTSActive && ttsChunks && ttsChunks.length > 0
+          ? ttsChunks.map((chunk) => ({
+              displayText: chunk.displayText,
+              sourceStartOffset: chunk.sourceStartOffset,
+              sourceEndOffset: chunk.sourceEndOffset,
+              wordCount: chunk.text.split(/\s+/).filter(Boolean).length,
+            }))
           : isActivelyStreaming
-            ? splitStreamingTextIntoDisplayChunks(item.content)
-            : splitTextIntoDisplayChunks(item.content);
-        const messageTtsChunkWordCounts = isTTSActive && ttsChunks && ttsChunks.length > 0
-          ? ttsChunks.map((chunk) => chunk.text.split(/\s+/).filter(Boolean).length)
-          : isActivelyStreaming
-            ? splitStreamingTextIntoTtsChunks(item.content).map((chunk) => chunk.split(/\s+/).filter(Boolean).length)
-            : splitTextIntoTtsChunks(item.content).map((chunk) => chunk.split(/\s+/).filter(Boolean).length);
-        
-        // Calculate which chunk words are in for highlighting
-        const getWordChunkInfo = (wordIndex: number) => {
-          if (!isTTSActive || !ttsChunks) return null;
-          let wordCount = 0;
-          for (let i = 0; i < ttsChunks.length; i++) {
-            const chunk = ttsChunks[i];
-            if (!chunk) continue;
-            const chunkWordCount = chunk.text.split(/\s+/).length;
-            if (wordCount + chunkWordCount > wordIndex) {
-              return { chunkIndex: i, isCurrent: i === ttsCurrentChunk };
-            }
-            wordCount += chunkWordCount;
-          }
-          return null;
-        };
+            ? splitStreamingTextIntoDisplayChunkPlans(item.content).map((chunk) => ({
+                displayText: chunk.displayText,
+                sourceStartOffset: chunk.sourceStartOffset,
+                sourceEndOffset: chunk.sourceEndOffset,
+                wordCount: chunk.text.split(/\s+/).filter(Boolean).length,
+              }))
+            : splitTextIntoDisplayChunkPlans(item.content).map((chunk) => ({
+                displayText: chunk.displayText,
+                sourceStartOffset: chunk.sourceStartOffset,
+                sourceEndOffset: chunk.sourceEndOffset,
+                wordCount: chunk.text.split(/\s+/).filter(Boolean).length,
+              }));
 
         return (
           <MessageBubble
@@ -335,12 +389,10 @@ export default function MessageList({
             isTTSActive={isTTSActive}
             isTTSPlaying={isTTSActive && ttsIsPlaying}
             isTTSLoading={isTTSActive && ttsIsLoading}
-            ttsChunks={ttsChunks}
-            ttsTextChunks={messageTtsChunks}
-            ttsChunkWordCounts={messageTtsChunkWordCounts}
             ttsCurrentChunk={ttsCurrentChunk}
             ttsAutoScrollEnabled={ttsAutoScrollEnabled}
-            getWordChunkInfo={getWordChunkInfo}
+            chunkSourceRanges={messageChunkPlans.map((chunk) => ({ start: chunk.sourceStartOffset, end: chunk.sourceEndOffset }))}
+            chunkWordCounts={messageChunkPlans.map((chunk) => chunk.wordCount)}
           />
         );
       })}
@@ -443,12 +495,10 @@ function MessageBubble({
   isTTSActive = false,
   isTTSPlaying = false,
   isTTSLoading = false,
-  ttsChunks,
-  ttsTextChunks,
-  ttsChunkWordCounts,
   ttsCurrentChunk,
   ttsAutoScrollEnabled = false,
-  getWordChunkInfo,
+  chunkSourceRanges = [],
+  chunkWordCounts = [],
 }: {
   message: Message;
   isStreaming?: boolean;
@@ -470,12 +520,10 @@ function MessageBubble({
   isTTSActive?: boolean;
   isTTSPlaying?: boolean;
   isTTSLoading?: boolean;
-  ttsChunks?: TTSChunk[];
-  ttsTextChunks?: string[];
-  ttsChunkWordCounts?: number[];
   ttsCurrentChunk?: number;
   ttsAutoScrollEnabled?: boolean;
-  getWordChunkInfo?: (wordIndex: number) => { chunkIndex: number; isCurrent: boolean } | null;
+  chunkSourceRanges?: SourceRange[];
+  chunkWordCounts?: number[];
 }) {
   const isUser = message.role === "user";
   const contentRef = useRef<HTMLDivElement>(null);
@@ -567,13 +615,14 @@ function MessageBubble({
 
   const isCollapsed = collapsed && isLong && !editing;
   const isBusy = isDeleting || isSaving || isForking || actionDisabled;
-  const shouldRenderChunkLayout = !isUser && (ttsChunkWordCounts?.length ?? 0) > 1;
-  const shouldRenderChunkActions = !isUser && !!onPlayTTSChunk && (ttsChunkWordCounts?.length ?? 0) > 1;
+  const shouldRenderChunkLayout = !isUser && chunkSourceRanges.length > 1;
+  const shouldRenderChunkActions = !isUser && !!onPlayTTSChunk && chunkSourceRanges.length > 1;
   const shouldEnableChunkSelection = shouldRenderChunkLayout && !!onPlayTTSChunk;
   const interactiveChunkIndex = hoveredChunkIndex ?? selectedChunkIndex;
   const actionChunkIndex = interactiveChunkIndex ?? (isTTSActive ? (ttsCurrentChunk ?? null) : null);
   const showInlineTtsButton = !isUser && !editing && !!onToggleTTS;
-  const chunkWordSignature = ttsChunkWordCounts?.join(",") || "";
+  const chunkSourceSignature = chunkSourceRanges.map((range) => `${range.start}:${range.end}`).join("|");
+  const chunkWordSignature = chunkWordCounts.join(",");
 
   useEffect(() => {
     setHoveredChunkIndex(null);
@@ -582,7 +631,7 @@ function MessageBubble({
 
   useEffect(() => {
     const markdownElement = markdownRef.current;
-    if (!markdownElement || !shouldRenderChunkLayout || !ttsChunkWordCounts?.length || editing || isCollapsed) {
+    if (!markdownElement || !shouldRenderChunkLayout || !chunkSourceRanges.length || editing || isCollapsed) {
       setChunkLayouts([]);
       return;
     }
@@ -590,7 +639,7 @@ function MessageBubble({
     const updateChunkLayouts = () => {
       const currentRoot = markdownRef.current;
       if (!currentRoot) return;
-      setChunkLayouts(buildChunkHighlightLayouts(currentRoot, ttsChunkWordCounts));
+      setChunkLayouts(buildChunkHighlightLayouts(currentRoot, message.content, chunkSourceRanges, chunkWordCounts));
     };
 
     updateChunkLayouts();
@@ -610,7 +659,7 @@ function MessageBubble({
       resizeObserver.disconnect();
       window.removeEventListener("resize", updateChunkLayouts);
     };
-  }, [chunkWordSignature, editing, isCollapsed, message.content, shouldRenderChunkLayout, ttsChunkWordCounts]);
+  }, [chunkSourceSignature, chunkWordSignature, chunkSourceRanges, chunkWordCounts, editing, isCollapsed, message.content, shouldRenderChunkLayout]);
 
   useEffect(() => {
     if (!ttsAutoScrollEnabled || !isTTSActive || isCollapsed || editing || !shouldRenderChunkLayout) {

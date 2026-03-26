@@ -10,6 +10,8 @@ export interface TTSChunk {
   parts: Array<TtsChunkPartPlan & { hash: string; audio: string | null }>;
   startWord: number;
   endWord: number;
+  sourceStartOffset: number;
+  sourceEndOffset: number;
   status: "pending" | "generating" | "ready" | "error" | "playing";
 }
 
@@ -224,6 +226,14 @@ function buildChunkPlans(text: string, context: SpeakerPlaybackContext, options:
   });
 }
 
+export function splitTextIntoDisplayChunkPlans(
+  text: string,
+  targetWordsPerChunk: number = 60,
+  options: { completeSentencesOnly?: boolean } = {}
+): TtsChunkPlan[] {
+  return buildSpeakerChunkPlans(text, [], null, { targetWordsPerChunk, completeSentencesOnly: options.completeSentencesOnly });
+}
+
 export function splitTextIntoTtsChunks(
   text: string,
   targetWordsPerChunk: number = 60,
@@ -237,7 +247,7 @@ export function splitTextIntoDisplayChunks(
   targetWordsPerChunk: number = 60,
   options: { completeSentencesOnly?: boolean } = {}
 ): string[] {
-  return buildSpeakerChunkPlans(text, [], null, { targetWordsPerChunk, completeSentencesOnly: options.completeSentencesOnly }).map((chunk) => chunk.displayText);
+  return splitTextIntoDisplayChunkPlans(text, targetWordsPerChunk, options).map((chunk) => chunk.displayText);
 }
 
 export function splitStreamingTextIntoTtsChunks(text: string, targetWordsPerChunk: number = 60): string[] {
@@ -246,6 +256,10 @@ export function splitStreamingTextIntoTtsChunks(text: string, targetWordsPerChun
 
 export function splitStreamingTextIntoDisplayChunks(text: string, targetWordsPerChunk: number = 60): string[] {
   return splitTextIntoDisplayChunks(text, targetWordsPerChunk, { completeSentencesOnly: true });
+}
+
+export function splitStreamingTextIntoDisplayChunkPlans(text: string, targetWordsPerChunk: number = 60): TtsChunkPlan[] {
+  return splitTextIntoDisplayChunkPlans(text, targetWordsPerChunk, { completeSentencesOnly: true });
 }
 
 function findChunkForWordIndex(chunks: string[], targetWordIndex: number): number {
@@ -296,6 +310,8 @@ function buildTtsChunks(
       parts: nextParts,
       startWord: wordOffset,
       endWord: wordOffset + words,
+      sourceStartOffset: chunk.sourceStartOffset,
+      sourceEndOffset: chunk.sourceEndOffset,
       status: everyPartReady
         ? "ready"
         : previousChunk?.status === "playing"
