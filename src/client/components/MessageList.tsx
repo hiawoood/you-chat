@@ -10,6 +10,10 @@ const COLLAPSE_LINE_COUNT = 3;
 const EDIT_TEXTAREA_MOBILE_MAX_HEIGHT = 260;
 const EDIT_TEXTAREA_MAX_HEIGHT = 520;
 const MOBILE_EDIT_MEDIA_QUERY = "(max-width: 768px), (pointer: coarse)";
+const CHUNK_HITBOX_PADDING_X = 10;
+const CHUNK_HITBOX_PADDING_Y = 6;
+const CHUNK_ACTION_BUTTON_SIZE = 24;
+const CHUNK_ACTION_BUTTON_MARGIN = 4;
 
 interface ChunkHighlightRect {
   left: number;
@@ -21,6 +25,7 @@ interface ChunkHighlightRect {
 interface ChunkHighlightLayout {
   rects: ChunkHighlightRect[];
   bounds: ChunkHighlightRect | null;
+  hitBounds: ChunkHighlightRect | null;
 }
 
 interface TextWordRange {
@@ -77,7 +82,7 @@ function buildRangeLayout(root: HTMLElement, startWord: TextWordRange, endWord: 
     }));
 
   if (rects.length === 0) {
-    return { rects: [], bounds: null };
+    return { rects: [], bounds: null, hitBounds: null };
   }
 
   const left = Math.min(...rects.map((rect) => rect.left));
@@ -93,13 +98,19 @@ function buildRangeLayout(root: HTMLElement, startWord: TextWordRange, endWord: 
       width: right - left,
       height: bottom - top,
     },
+    hitBounds: {
+      left: Math.max(0, left - CHUNK_HITBOX_PADDING_X),
+      top: Math.max(0, top - CHUNK_HITBOX_PADDING_Y),
+      width: (right - left) + (CHUNK_HITBOX_PADDING_X * 2),
+      height: (bottom - top) + (CHUNK_HITBOX_PADDING_Y * 2),
+    },
   };
 }
 
 function buildChunkHighlightLayoutsFromWordCounts(root: HTMLElement, chunkWordCounts: number[]): ChunkHighlightLayout[] {
   const renderedWords = collectRenderedWordRanges(root);
   if (renderedWords.length === 0) {
-    return chunkWordCounts.map(() => ({ rects: [], bounds: null }));
+    return chunkWordCounts.map(() => ({ rects: [], bounds: null, hitBounds: null }));
   }
 
   const layouts: ChunkHighlightLayout[] = [];
@@ -108,7 +119,7 @@ function buildChunkHighlightLayoutsFromWordCounts(root: HTMLElement, chunkWordCo
   for (let chunkIndex = 0; chunkIndex < chunkWordCounts.length; chunkIndex++) {
     const requestedWordCount = Math.max(1, chunkWordCounts[chunkIndex] || 0);
     if (nextWordIndex >= renderedWords.length) {
-      layouts.push({ rects: [], bounds: null });
+      layouts.push({ rects: [], bounds: null, hitBounds: null });
       continue;
     }
 
@@ -126,7 +137,7 @@ function buildChunkHighlightLayoutsFromWordCounts(root: HTMLElement, chunkWordCo
 function buildChunkHighlightLayouts(root: HTMLElement, markdown: string, chunkSourceRanges: SourceRange[], fallbackWordCounts: number[]): ChunkHighlightLayout[] {
   const renderedWords = collectRenderedWordRanges(root);
   if (renderedWords.length === 0) {
-    return chunkSourceRanges.map(() => ({ rects: [], bounds: null }));
+    return chunkSourceRanges.map(() => ({ rects: [], bounds: null, hitBounds: null }));
   }
 
   const sourceWords = extractRenderedMarkdownWordSourceRanges(markdown);
@@ -155,7 +166,7 @@ function buildChunkHighlightLayouts(root: HTMLElement, markdown: string, chunkSo
     }
 
     if (startWordIndex === -1) {
-      layouts.push({ rects: [], bounds: null });
+      layouts.push({ rects: [], bounds: null, hitBounds: null });
       continue;
     }
 
@@ -175,16 +186,27 @@ function buildChunkHighlightLayouts(root: HTMLElement, markdown: string, chunkSo
   return layouts;
 }
 
+function isPointInRect(rect: ChunkHighlightRect | null, x: number, y: number) {
+  if (!rect) return false;
+  return x >= rect.left && x <= rect.left + rect.width && y >= rect.top && y <= rect.top + rect.height;
+}
+
 function findChunkIndexAtPoint(layouts: ChunkHighlightLayout[], x: number, y: number): number | null {
+  let matchedChunkIndex: number | null = null;
+  let matchedArea = Number.POSITIVE_INFINITY;
+
   for (let chunkIndex = 0; chunkIndex < layouts.length; chunkIndex++) {
     const layout = layouts[chunkIndex];
-    if (!layout) continue;
-    if (layout.rects.some((rect) => x >= rect.left && x <= rect.left + rect.width && y >= rect.top && y <= rect.top + rect.height)) {
-      return chunkIndex;
+    if (!layout || !isPointInRect(layout.hitBounds, x, y)) continue;
+
+    const area = (layout.hitBounds?.width ?? 0) * (layout.hitBounds?.height ?? 0);
+    if (area < matchedArea) {
+      matchedChunkIndex = chunkIndex;
+      matchedArea = area;
     }
   }
 
-  return null;
+  return matchedChunkIndex;
 }
 
 interface MessageListProps {
@@ -721,6 +743,7 @@ function MessageBubble({
   };
 
   const activeChunkLayout = actionChunkIndex !== null ? chunkLayouts[actionChunkIndex] : null;
+  const actionLayoutBounds = activeChunkLayout?.hitBounds ?? activeChunkLayout?.bounds ?? null;
 
   return (
     <div className={`group ${isUser ? "flex flex-col items-end" : "flex flex-col items-start"} ${isBusy ? "opacity-50" : ""}`}>
@@ -842,20 +865,20 @@ function MessageBubble({
               <div ref={markdownRef} className={`relative z-10 markdown-content text-sm break-words ${isUser ? "markdown-user" : ""}`}>
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
               </div>
-              {shouldRenderChunkActions && actionChunkIndex !== null && activeChunkLayout?.bounds && (
+              {shouldRenderChunkActions && actionChunkIndex !== null && actionLayoutBounds && (
                 <button
                   onClick={(event) => {
                     event.stopPropagation();
                     onPlayTTSChunk?.(actionChunkIndex);
                   }}
-                  className={`absolute z-20 inline-flex h-6 w-6 items-center justify-center rounded-full border shadow-sm backdrop-blur transition-all ${
+                  className={`absolute z-20 inline-flex h-6 w-6 cursor-pointer items-center justify-center rounded-full border shadow-sm transition-all ${
                     isTTSActive && ttsCurrentChunk === actionChunkIndex
-                      ? "border-emerald-400 bg-emerald-100/95 text-emerald-700 dark:border-emerald-500 dark:bg-emerald-900/60 dark:text-emerald-300"
-                      : "border-amber-200 bg-white/95 text-amber-700 hover:bg-amber-50 dark:border-amber-400/30 dark:bg-gray-900/90 dark:text-amber-300 dark:hover:bg-gray-800"
+                      ? "border-emerald-400 bg-emerald-100 text-emerald-700 hover:bg-emerald-200 dark:border-emerald-500 dark:bg-emerald-900 dark:text-emerald-300 dark:hover:bg-emerald-800"
+                      : "border-amber-300 bg-white text-amber-700 hover:bg-amber-100 dark:border-amber-500/50 dark:bg-gray-900 dark:text-amber-300 dark:hover:bg-gray-800"
                   }`}
                   style={{
-                    left: `${activeChunkLayout.bounds.left + activeChunkLayout.bounds.width - 24}px`,
-                    top: `${activeChunkLayout.bounds.top + activeChunkLayout.bounds.height - 24}px`,
+                    left: `${Math.max(0, actionLayoutBounds.left + actionLayoutBounds.width - CHUNK_ACTION_BUTTON_SIZE - CHUNK_ACTION_BUTTON_MARGIN)}px`,
+                    top: `${Math.max(0, actionLayoutBounds.top + actionLayoutBounds.height - CHUNK_ACTION_BUTTON_SIZE - CHUNK_ACTION_BUTTON_MARGIN)}px`,
                   }}
                   title={isTTSActive && ttsCurrentChunk === actionChunkIndex ? `Replay chunk ${actionChunkIndex + 1}` : `Start TTS from chunk ${actionChunkIndex + 1}`}
                   aria-label={isTTSActive && ttsCurrentChunk === actionChunkIndex ? `Replay chunk ${actionChunkIndex + 1}` : `Start TTS from chunk ${actionChunkIndex + 1}`}
