@@ -124,6 +124,9 @@ export default function ChatView({
   const [ttsLogsInstanceId, setTtsLogsInstanceId] = useState<string | null>(null);
   const [ttsLogsLoading, setTtsLogsLoading] = useState(false);
   const [ttsLogsError, setTtsLogsError] = useState<string | null>(null);
+  const [previewVoiceId, setPreviewVoiceId] = useState<string | null>(null);
+  const previewAudioRef = useRef<HTMLAudioElement | null>(null);
+  const previewVoiceIdRef = useRef<string | null>(null);
   const chunkPanelTouchStartRef = useRef<{ x: number; y: number } | null>(null);
   const playButtonLongPressTimerRef = useRef<number | null>(null);
   const suppressPlayButtonClickRef = useRef(false);
@@ -312,6 +315,29 @@ export default function ChatView({
     });
   }, [selectedTtsVoiceId, session.id, sessionTtsSpeakers, setSpeakerContext]);
 
+  const stopVoicePreview = useCallback(() => {
+    const previewAudio = previewAudioRef.current;
+    if (!previewAudio) {
+      previewVoiceIdRef.current = null;
+      setPreviewVoiceId(null);
+      return;
+    }
+
+    previewAudio.pause();
+    previewAudio.currentTime = 0;
+    previewAudio.onended = null;
+    previewAudio.onerror = null;
+    previewAudioRef.current = null;
+    previewVoiceIdRef.current = null;
+    setPreviewVoiceId(null);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      stopVoicePreview();
+    };
+  }, [stopVoicePreview]);
+
   const loadTtsServiceStatus = useCallback(async () => {
     try {
       const response = await api.getTtsStatus();
@@ -468,6 +494,7 @@ export default function ChatView({
   }, [activeStreamingTtsMessageId, selectedTtsVoiceId, streamingContent, syncStreamingPlayback, ttsActiveMessageId]);
 
   const handleToggleTTS = async (messageId: string, content: string) => {
+    stopVoicePreview();
     if (messageId === activeStreamingTtsMessageId && !!streamingContent.trim()) {
       const voiceId = await resolvePlaybackVoiceId();
 
@@ -506,6 +533,7 @@ export default function ChatView({
   };
 
   const handleStartTTSFromWord = async (messageId: string, content: string, wordIndex: number) => {
+    stopVoicePreview();
     const voiceId = await resolvePlaybackVoiceId();
     setTtsAutoScrollEnabled(true);
     await startFromWord(content, messageId, wordIndex, voiceId);
@@ -514,6 +542,7 @@ export default function ChatView({
   };
 
   const handlePlayTTSChunk = async (messageId: string, content: string, chunkIndex: number) => {
+    stopVoicePreview();
     setTtsAutoScrollEnabled(true);
     if (ttsActiveMessageId === messageId) {
       await ttsSeekToChunk(chunkIndex);
@@ -527,6 +556,7 @@ export default function ChatView({
   };
 
   const handleResumeSessionTts = async () => {
+    stopVoicePreview();
     const lastPlayedMessageId = session.last_tts_message_id;
     if (!lastPlayedMessageId) {
       return;
@@ -602,6 +632,7 @@ export default function ChatView({
   };
 
   const handleSelectTtsVoice = async (voiceId: string | null) => {
+    stopVoicePreview();
     setTtsVoiceLoading(true);
     setTtsVoiceWarning(null);
 
@@ -667,6 +698,7 @@ export default function ChatView({
   }, [activeStreamingTtsMessageId, messages, selectedTtsVoiceId, setSpeakerContext, startPlayback, ttsActiveMessageId, ttsCurrentChunk, ttsIsLoading, ttsIsPlaying, ttsStop]);
 
   const handleAssignSpeakerVoice = async (speakerKey: string, voiceId: string | null) => {
+    stopVoicePreview();
     setSessionTtsSpeakerActionKey(speakerKey);
     setSessionTtsSpeakerError(null);
     try {
@@ -706,6 +738,58 @@ export default function ChatView({
       setSessionTtsSpeakerError(error instanceof Error ? error.message : "Failed to update speaker visibility");
     } finally {
       setSessionTtsSpeakerActionKey(null);
+    }
+  };
+
+  const handlePreviewSpeakerVoice = async (voice: TtsVoiceReference | null) => {
+    if (!voice) {
+      setSessionTtsSpeakerError("Select a saved voice reference first to preview it.");
+      return;
+    }
+
+    if (previewVoiceIdRef.current === voice.id) {
+      stopVoicePreview();
+      return;
+    }
+
+    stopVoicePreview();
+    setSessionTtsSpeakerError(null);
+
+    if (ttsIsPlaying) {
+      ttsPause();
+    } else if (ttsIsLoading) {
+      await ttsStop();
+    }
+
+    const previewAudio = new Audio(voice.previewUrl || api.getTtsVoicePreviewUrl(voice.id));
+    previewAudioRef.current = previewAudio;
+    previewVoiceIdRef.current = voice.id;
+    setPreviewVoiceId(voice.id);
+
+    previewAudio.onended = () => {
+      if (previewAudioRef.current !== previewAudio) return;
+      previewAudioRef.current = null;
+      previewVoiceIdRef.current = null;
+      setPreviewVoiceId(null);
+    };
+
+    previewAudio.onerror = () => {
+      if (previewAudioRef.current !== previewAudio) return;
+      previewAudioRef.current = null;
+      previewVoiceIdRef.current = null;
+      setPreviewVoiceId(null);
+      setSessionTtsSpeakerError(`Failed to preview "${voice.label}".`);
+    };
+
+    try {
+      await previewAudio.play();
+    } catch (error) {
+      if (previewAudioRef.current === previewAudio) {
+        previewAudioRef.current = null;
+        previewVoiceIdRef.current = null;
+        setPreviewVoiceId(null);
+      }
+      setSessionTtsSpeakerError(error instanceof Error ? error.message : `Failed to preview "${voice.label}".`);
     }
   };
 
@@ -932,6 +1016,10 @@ export default function ChatView({
   const effectiveCollapsedIds = ttsActiveMessageId
     ? new Set([...collapsedIds].filter((messageId) => messageId !== ttsActiveMessageId))
     : collapsedIds;
+  const getSpeakerPreviewVoice = (speaker: SessionTtsSpeakerMapping) => {
+    const effectiveVoiceId = speaker.voiceReferenceId ?? selectedTtsVoiceId;
+    return effectiveVoiceId ? ttsVoices.find((voice) => voice.id === effectiveVoiceId) || null : null;
+  };
 
   return (
     <div className="relative flex flex-col h-full bg-white dark:bg-gray-900">
@@ -1359,6 +1447,8 @@ export default function ChatView({
                         <div className="space-y-2">
                           {visibleSessionTtsSpeakers.map((speaker) => {
                             const isBusy = sessionTtsSpeakerActionKey === speaker.speakerKey;
+                            const previewVoice = getSpeakerPreviewVoice(speaker);
+                            const isPreviewing = previewVoiceId === previewVoice?.id;
 
                             return (
                               <div key={speaker.speakerKey} className="rounded-xl border border-gray-200 px-3 py-2 dark:border-gray-700">
@@ -1375,17 +1465,48 @@ export default function ChatView({
                                     Hide
                                   </button>
                                 </div>
-                                <select
-                                  value={speaker.voiceReferenceId ?? "default"}
-                                  disabled={isBusy}
-                                  onChange={(event) => void handleAssignSpeakerVoice(speaker.speakerKey, event.target.value === "default" ? null : event.target.value)}
-                                  className="w-full rounded-md border border-gray-200 bg-white px-2 py-1.5 text-sm text-gray-700 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200"
-                                >
-                                  <option value="default">Default voice ({selectedTtsVoice?.label || "builtin"})</option>
-                                  {ttsVoices.map((voice) => (
-                                    <option key={`${speaker.speakerKey}-${voice.id}`} value={voice.id}>{voice.label}</option>
-                                  ))}
-                                </select>
+                                <div className="flex items-center gap-2">
+                                  <select
+                                    value={speaker.voiceReferenceId ?? "default"}
+                                    disabled={isBusy}
+                                    onChange={(event) => void handleAssignSpeakerVoice(speaker.speakerKey, event.target.value === "default" ? null : event.target.value)}
+                                    className="min-w-0 flex-1 rounded-md border border-gray-200 bg-white px-2 py-1.5 text-sm text-gray-700 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200"
+                                  >
+                                    <option value="default">Default voice ({selectedTtsVoice?.label || "builtin"})</option>
+                                    {ttsVoices.map((voice) => (
+                                      <option key={`${speaker.speakerKey}-${voice.id}`} value={voice.id}>{voice.label}</option>
+                                    ))}
+                                  </select>
+                                  <button
+                                    type="button"
+                                    disabled={isBusy || !previewVoice}
+                                    onClick={() => void handlePreviewSpeakerVoice(previewVoice)}
+                                    className={`inline-flex h-9 w-9 items-center justify-center rounded-md border transition-colors ${
+                                      isPreviewing
+                                        ? "border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
+                                        : "border-gray-200 bg-white text-gray-500 hover:bg-gray-50 hover:text-gray-700 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200"
+                                    }`}
+                                    title={previewVoice ? (isPreviewing ? `Stop previewing ${previewVoice.label}` : `Preview ${previewVoice.label}`) : "No saved voice reference available to preview"}
+                                    aria-label={previewVoice ? (isPreviewing ? `Stop previewing ${previewVoice.label}` : `Preview ${previewVoice.label}`) : "No saved voice reference available to preview"}
+                                  >
+                                    {isPreviewing ? (
+                                      <svg className="h-4 w-4" fill="currentColor" viewBox="0 0 24 24">
+                                        <rect x="6" y="6" width="12" height="12" rx="2" />
+                                      </svg>
+                                    ) : (
+                                      <svg className="h-4 w-4" fill="currentColor" viewBox="0 0 24 24">
+                                        <path d="M8 5v14l11-7z" />
+                                      </svg>
+                                    )}
+                                  </button>
+                                </div>
+                                <div className="mt-1 text-[10px] text-gray-400 dark:text-gray-500">
+                                  {previewVoice
+                                    ? `${speaker.voiceReferenceId ? "Speaker voice" : "Default voice"} preview: ${previewVoice.label}`
+                                    : speaker.voiceReferenceId
+                                      ? "Selected voice is unavailable."
+                                      : "Default voice preview is unavailable until you select a saved default voice."}
+                                </div>
                               </div>
                             );
                           })}
@@ -1413,6 +1534,8 @@ export default function ChatView({
                               <div className="mt-3 space-y-2">
                                 {hiddenSessionTtsSpeakers.map((speaker) => {
                                   const isBusy = sessionTtsSpeakerActionKey === speaker.speakerKey;
+                                  const previewVoice = getSpeakerPreviewVoice(speaker);
+                                  const isPreviewing = previewVoiceId === previewVoice?.id;
 
                                   return (
                                     <div key={speaker.speakerKey} className="rounded-xl border border-gray-200 px-3 py-2 dark:border-gray-700">
@@ -1430,17 +1553,48 @@ export default function ChatView({
                                           Unhide
                                         </button>
                                       </div>
-                                      <select
-                                        value={speaker.voiceReferenceId ?? "default"}
-                                        disabled={isBusy}
-                                        onChange={(event) => void handleAssignSpeakerVoice(speaker.speakerKey, event.target.value === "default" ? null : event.target.value)}
-                                        className="w-full rounded-md border border-gray-200 bg-white px-2 py-1.5 text-sm text-gray-700 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200"
-                                      >
-                                        <option value="default">Default voice ({selectedTtsVoice?.label || "builtin"})</option>
-                                        {ttsVoices.map((voice) => (
-                                          <option key={`${speaker.speakerKey}-${voice.id}`} value={voice.id}>{voice.label}</option>
-                                        ))}
-                                      </select>
+                                      <div className="flex items-center gap-2">
+                                        <select
+                                          value={speaker.voiceReferenceId ?? "default"}
+                                          disabled={isBusy}
+                                          onChange={(event) => void handleAssignSpeakerVoice(speaker.speakerKey, event.target.value === "default" ? null : event.target.value)}
+                                          className="min-w-0 flex-1 rounded-md border border-gray-200 bg-white px-2 py-1.5 text-sm text-gray-700 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200"
+                                        >
+                                          <option value="default">Default voice ({selectedTtsVoice?.label || "builtin"})</option>
+                                          {ttsVoices.map((voice) => (
+                                            <option key={`${speaker.speakerKey}-${voice.id}`} value={voice.id}>{voice.label}</option>
+                                          ))}
+                                        </select>
+                                        <button
+                                          type="button"
+                                          disabled={isBusy || !previewVoice}
+                                          onClick={() => void handlePreviewSpeakerVoice(previewVoice)}
+                                          className={`inline-flex h-9 w-9 items-center justify-center rounded-md border transition-colors ${
+                                            isPreviewing
+                                              ? "border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
+                                              : "border-gray-200 bg-white text-gray-500 hover:bg-gray-50 hover:text-gray-700 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200"
+                                          }`}
+                                          title={previewVoice ? (isPreviewing ? `Stop previewing ${previewVoice.label}` : `Preview ${previewVoice.label}`) : "No saved voice reference available to preview"}
+                                          aria-label={previewVoice ? (isPreviewing ? `Stop previewing ${previewVoice.label}` : `Preview ${previewVoice.label}`) : "No saved voice reference available to preview"}
+                                        >
+                                          {isPreviewing ? (
+                                            <svg className="h-4 w-4" fill="currentColor" viewBox="0 0 24 24">
+                                              <rect x="6" y="6" width="12" height="12" rx="2" />
+                                            </svg>
+                                          ) : (
+                                            <svg className="h-4 w-4" fill="currentColor" viewBox="0 0 24 24">
+                                              <path d="M8 5v14l11-7z" />
+                                            </svg>
+                                          )}
+                                        </button>
+                                      </div>
+                                      <div className="mt-1 text-[10px] text-gray-400 dark:text-gray-500">
+                                        {previewVoice
+                                          ? `${speaker.voiceReferenceId ? "Speaker voice" : "Default voice"} preview: ${previewVoice.label}`
+                                          : speaker.voiceReferenceId
+                                            ? "Selected voice is unavailable."
+                                            : "Default voice preview is unavailable until you select a saved default voice."}
+                                      </div>
                                     </div>
                                   );
                                 })}
