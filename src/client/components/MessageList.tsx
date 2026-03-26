@@ -583,7 +583,7 @@ function MessageBubble({
                           event.preventDefault();
                           setSelectedChunkIndex((current) => current === chunkIndex ? null : chunkIndex);
                         } : undefined}
-                        className={`relative rounded-md px-1.5 py-1 pr-10 transition-colors outline-none ${
+                        className={`relative rounded-md px-1.5 py-1 transition-colors outline-none ${
                           isCurrentChunk
                             ? "bg-emerald-50/80 dark:bg-emerald-900/20"
                             : shouldShowInteractiveHighlight
@@ -600,7 +600,7 @@ function MessageBubble({
                               e.stopPropagation();
                               onPlayTTSChunk?.(chunkIndex);
                             }}
-                            className={`absolute bottom-2 right-2 inline-flex h-6 w-6 items-center justify-center rounded-full border shadow-sm backdrop-blur transition-colors ${
+                            className={`absolute bottom-1.5 right-1.5 inline-flex h-6 w-6 items-center justify-center rounded-full border shadow-sm backdrop-blur transition-all ${
                               isCurrentChunk
                                 ? "border-emerald-400 bg-emerald-100/95 text-emerald-700 dark:border-emerald-500 dark:bg-emerald-900/60 dark:text-emerald-300"
                                 : "border-amber-200 bg-white/95 text-amber-700 hover:bg-amber-50 dark:border-amber-400/30 dark:bg-gray-900/90 dark:text-amber-300 dark:hover:bg-gray-800"

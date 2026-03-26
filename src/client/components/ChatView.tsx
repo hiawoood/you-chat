@@ -153,7 +153,6 @@ export default function ChatView({
     syncStreamingPlayback,
     pause: ttsPause,
     resume: ttsResume,
-    toggle: ttsToggle,
     nextChunk: ttsNextChunk,
     prevChunk: ttsPrevChunk,
     seekToChunk: ttsSeekToChunk,
@@ -478,10 +477,12 @@ export default function ChatView({
       }
 
       if (ttsActiveMessageId === messageId && ttsIsPaused) {
+        setTtsAutoScrollEnabled(true);
         await ttsResume();
         return;
       }
 
+      setTtsAutoScrollEnabled(true);
       await startPlayback(content, messageId, ttsActiveMessageId === messageId ? Math.max(0, ttsCurrentChunk) : 0, voiceId, { streaming: true });
       if (messageId !== STREAMING_TTS_PLACEHOLDER_ID) {
         persistLastPlayedMessage(messageId);
@@ -489,19 +490,31 @@ export default function ChatView({
       return;
     }
 
+    if (ttsActiveMessageId === messageId && ttsIsPlaying) {
+      ttsPause();
+      return;
+    }
+
     const voiceId = await resolvePlaybackVoiceId();
-    await ttsToggle(content, messageId, voiceId);
+    setTtsAutoScrollEnabled(true);
+    if (ttsActiveMessageId === messageId && ttsIsPaused) {
+      await ttsResume();
+    } else {
+      await startPlayback(content, messageId, -1, voiceId);
+    }
     persistLastPlayedMessage(messageId);
   };
 
   const handleStartTTSFromWord = async (messageId: string, content: string, wordIndex: number) => {
     const voiceId = await resolvePlaybackVoiceId();
+    setTtsAutoScrollEnabled(true);
     await startFromWord(content, messageId, wordIndex, voiceId);
     persistLastPlayedMessage(messageId);
     hideWordMenu();
   };
 
   const handlePlayTTSChunk = async (messageId: string, content: string, chunkIndex: number) => {
+    setTtsAutoScrollEnabled(true);
     if (ttsActiveMessageId === messageId) {
       await ttsSeekToChunk(chunkIndex);
       persistLastPlayedMessage(messageId);
@@ -526,6 +539,7 @@ export default function ChatView({
       }
 
       if (ttsIsPaused) {
+        setTtsAutoScrollEnabled(true);
         await ttsResume();
         return;
       }
@@ -533,6 +547,7 @@ export default function ChatView({
 
     if (lastPlayedMessageId === activeStreamingTtsMessageId && streamingContentRef.current.trim()) {
       const voiceId = await resolvePlaybackVoiceId();
+      setTtsAutoScrollEnabled(true);
       await startPlayback(streamingContentRef.current, lastPlayedMessageId, -1, voiceId, { streaming: true });
       return;
     }
@@ -543,6 +558,7 @@ export default function ChatView({
     }
 
     const voiceId = await resolvePlaybackVoiceId();
+    setTtsAutoScrollEnabled(true);
     await startPlayback(targetMessage.content, targetMessage.id, -1, voiceId);
   };
 
@@ -913,6 +929,9 @@ export default function ChatView({
 
   const visibleSessionTtsSpeakers = sessionTtsSpeakers.filter((speaker) => !speaker.hidden);
   const hiddenSessionTtsSpeakers = sessionTtsSpeakers.filter((speaker) => speaker.hidden);
+  const effectiveCollapsedIds = ttsActiveMessageId
+    ? new Set([...collapsedIds].filter((messageId) => messageId !== ttsActiveMessageId))
+    : collapsedIds;
 
   return (
     <div className="relative flex flex-col h-full bg-white dark:bg-gray-900">
@@ -1092,7 +1111,7 @@ export default function ChatView({
               onPlayTTSChunk={handlePlayTTSChunk}
               onWordClick={showWordMenu}
               actionLoading={actionLoading}
-              collapsedIds={collapsedIds}
+              collapsedIds={effectiveCollapsedIds}
               suppressAutoScrollOnNextAppend={suppressMessageAutoScroll}
               onAutoScrollSuppressed={() => setSuppressMessageAutoScroll(false)}
               disableAutoScroll={hasActiveStream}
