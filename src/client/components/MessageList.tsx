@@ -842,34 +842,36 @@ function MessageBubble({
               }}
               className={`relative overflow-hidden transition-all duration-200 ${isCollapsed ? "max-h-[72px]" : ""}`}
             >
-              <div className="pointer-events-none absolute inset-0 z-0">
-                {chunkLayouts.map((layout, chunkIndex) => {
-                  const isCurrentChunk = isTTSActive && ttsCurrentChunk === chunkIndex;
-                  const isInteractiveChunk = interactiveChunkIndex === chunkIndex && !isCurrentChunk;
-                  if (!isCurrentChunk && !isInteractiveChunk) {
-                    return null;
-                  }
+              <div ref={markdownRef} className={`relative z-10 flow-root markdown-content text-sm break-words ${isUser ? "markdown-user" : ""}`}>
+                <div className="pointer-events-none absolute inset-0 z-0">
+                  {chunkLayouts.map((layout, chunkIndex) => {
+                    const isCurrentChunk = isTTSActive && ttsCurrentChunk === chunkIndex;
+                    const isInteractiveChunk = interactiveChunkIndex === chunkIndex && !isCurrentChunk;
+                    if (!isCurrentChunk && !isInteractiveChunk) {
+                      return null;
+                    }
 
-                  return layout.rects.map((rect, rectIndex) => (
-                    <div
-                      key={`${message.id}-highlight-${chunkIndex}-${rectIndex}`}
-                      className={`absolute rounded-sm ${
-                        isCurrentChunk
-                          ? "bg-emerald-50/80 dark:bg-emerald-900/20"
-                          : "bg-amber-50/80 ring-1 ring-amber-200/70 dark:bg-amber-500/10 dark:ring-amber-400/20"
-                      }`}
-                      style={{
-                        left: `${rect.left - 1}px`,
-                        top: `${rect.top - 1}px`,
-                        width: `${rect.width + 2}px`,
-                        height: `${rect.height + 2}px`,
-                      }}
-                    />
-                  ));
-                })}
-              </div>
-              <div ref={markdownRef} className={`relative z-10 markdown-content text-sm break-words ${isUser ? "markdown-user" : ""}`}>
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+                    return layout.rects.map((rect, rectIndex) => (
+                      <div
+                        key={`${message.id}-highlight-${chunkIndex}-${rectIndex}`}
+                        className={`absolute rounded-sm ${
+                          isCurrentChunk
+                            ? "bg-emerald-50/80 dark:bg-emerald-900/20"
+                            : "bg-amber-50/80 ring-1 ring-amber-200/70 dark:bg-amber-500/10 dark:ring-amber-400/20"
+                        }`}
+                        style={{
+                          left: `${rect.left - 1}px`,
+                          top: `${rect.top - 1}px`,
+                          width: `${rect.width + 2}px`,
+                          height: `${rect.height + 2}px`,
+                        }}
+                      />
+                    ));
+                  })}
+                </div>
+                <div className="relative z-10">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+                </div>
               </div>
               {shouldRenderChunkActions && actionChunkIndex !== null && actionLayoutBounds && (
                 <button
