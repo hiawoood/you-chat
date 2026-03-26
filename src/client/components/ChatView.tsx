@@ -40,6 +40,35 @@ interface ChatViewProps {
   actionLoading?: string | null;
 }
 
+function sortSessionTtsSpeakers(speakers: SessionTtsSpeakerMapping[]): SessionTtsSpeakerMapping[] {
+  return [...speakers].sort((left, right) => {
+    if (left.hidden !== right.hidden) {
+      return Number(left.hidden) - Number(right.hidden);
+    }
+    if (left.speakerKey === "narrator" && right.speakerKey !== "narrator") {
+      return -1;
+    }
+    if (left.speakerKey !== "narrator" && right.speakerKey === "narrator") {
+      return 1;
+    }
+    return left.speakerLabel.localeCompare(right.speakerLabel, undefined, { sensitivity: "base" });
+  });
+}
+
+function mergeSessionTtsSpeaker(
+  speakers: SessionTtsSpeakerMapping[],
+  updatedSpeaker: SessionTtsSpeakerMapping,
+): SessionTtsSpeakerMapping[] {
+  const existingIndex = speakers.findIndex((speaker) => speaker.speakerKey === updatedSpeaker.speakerKey);
+  if (existingIndex === -1) {
+    return sortSessionTtsSpeakers([...speakers, updatedSpeaker]);
+  }
+
+  return sortSessionTtsSpeakers(
+    speakers.map((speaker) => speaker.speakerKey === updatedSpeaker.speakerKey ? updatedSpeaker : speaker),
+  );
+}
+
 export default function ChatView({
   session,
   messages,
@@ -85,6 +114,7 @@ export default function ChatView({
   const [sessionTtsSpeakerLoading, setSessionTtsSpeakerLoading] = useState(false);
   const [sessionTtsSpeakerError, setSessionTtsSpeakerError] = useState<string | null>(null);
   const [sessionTtsSpeakerActionKey, setSessionTtsSpeakerActionKey] = useState<string | null>(null);
+  const [showHiddenSpeakers, setShowHiddenSpeakers] = useState(false);
   const [ttsServiceStatus, setTtsServiceStatus] = useState<TtsStatusResponse | null>(null);
   const [ttsServiceStatusError, setTtsServiceStatusError] = useState<string | null>(null);
   const [ttsInstanceActionLoading, setTtsInstanceActionLoading] = useState(false);
@@ -254,7 +284,7 @@ export default function ChatView({
     setSessionTtsSpeakerError(null);
     try {
       const response = await api.getSessionTtsSpeakers(session.id);
-      setSessionTtsSpeakers(response.speakers || []);
+      setSessionTtsSpeakers(sortSessionTtsSpeakers(response.speakers || []));
     } catch (error) {
       setSessionTtsSpeakerError(error instanceof Error ? error.message : "Failed to load session speakers");
     } finally {
@@ -624,10 +654,8 @@ export default function ChatView({
     setSessionTtsSpeakerActionKey(speakerKey);
     setSessionTtsSpeakerError(null);
     try {
-      const response = await api.updateSessionTtsSpeaker(session.id, speakerKey, voiceId);
-      const nextSpeakerMappings = sessionTtsSpeakers.map((speaker) =>
-        speaker.speakerKey === speakerKey ? response.speaker : speaker,
-      );
+      const response = await api.updateSessionTtsSpeaker(session.id, speakerKey, { voiceReferenceId: voiceId });
+      const nextSpeakerMappings = mergeSessionTtsSpeaker(sessionTtsSpeakers, response.speaker);
 
       setSessionTtsSpeakers(nextSpeakerMappings);
       setSpeakerContext({
@@ -640,6 +668,26 @@ export default function ChatView({
       void loadSessionTtsSpeakers();
     } catch (error) {
       setSessionTtsSpeakerError(error instanceof Error ? error.message : "Failed to update speaker voice");
+    } finally {
+      setSessionTtsSpeakerActionKey(null);
+    }
+  };
+
+  const handleSetSpeakerHidden = async (speakerKey: string, hidden: boolean) => {
+    setSessionTtsSpeakerActionKey(speakerKey);
+    setSessionTtsSpeakerError(null);
+    try {
+      const response = await api.updateSessionTtsSpeaker(session.id, speakerKey, { hidden });
+      const nextSpeakerMappings = mergeSessionTtsSpeaker(sessionTtsSpeakers, response.speaker);
+
+      setSessionTtsSpeakers(nextSpeakerMappings);
+      setSpeakerContext({
+        sessionId: session.id,
+        defaultVoiceReferenceId: selectedTtsVoiceId,
+        speakerMappings: nextSpeakerMappings,
+      });
+    } catch (error) {
+      setSessionTtsSpeakerError(error instanceof Error ? error.message : "Failed to update speaker visibility");
     } finally {
       setSessionTtsSpeakerActionKey(null);
     }
@@ -840,6 +888,20 @@ export default function ChatView({
   }, [loadSessionTtsSpeakers]);
 
   useEffect(() => {
+    setShowHiddenSpeakers(false);
+  }, [session.id]);
+
+  useEffect(() => {
+    if (sessionTtsSpeakers.some((speaker) => !speaker.hidden)) {
+      return;
+    }
+
+    if (sessionTtsSpeakers.some((speaker) => speaker.hidden)) {
+      setShowHiddenSpeakers(true);
+    }
+  }, [sessionTtsSpeakers]);
+
+  useEffect(() => {
     if (!hasActiveStream) return;
 
     const timer = window.setTimeout(() => {
@@ -848,6 +910,9 @@ export default function ChatView({
 
     return () => window.clearTimeout(timer);
   }, [hasActiveStream, loadSessionTtsSpeakers, streamingContent]);
+
+  const visibleSessionTtsSpeakers = sessionTtsSpeakers.filter((speaker) => !speaker.hidden);
+  const hiddenSessionTtsSpeakers = sessionTtsSpeakers.filter((speaker) => speaker.hidden);
 
   return (
     <div className="relative flex flex-col h-full bg-white dark:bg-gray-900">
@@ -1271,23 +1336,99 @@ export default function ChatView({
                         )}
                       </div>
 
-                      <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
-                        {sessionTtsSpeakers.map((speaker) => (
-                          <label key={speaker.speakerKey} className="block rounded-xl border border-gray-200 px-3 py-2 dark:border-gray-700">
-                            <div className="mb-1 text-xs font-medium text-gray-500 dark:text-gray-400">{speaker.speakerLabel}</div>
-                            <select
-                              value={speaker.voiceReferenceId ?? "default"}
-                              disabled={sessionTtsSpeakerActionKey === speaker.speakerKey}
-                              onChange={(event) => void handleAssignSpeakerVoice(speaker.speakerKey, event.target.value === "default" ? null : event.target.value)}
-                              className="w-full rounded-md border border-gray-200 bg-white px-2 py-1.5 text-sm text-gray-700 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200"
+                      <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
+                        <div className="space-y-2">
+                          {visibleSessionTtsSpeakers.map((speaker) => {
+                            const isBusy = sessionTtsSpeakerActionKey === speaker.speakerKey;
+
+                            return (
+                              <div key={speaker.speakerKey} className="rounded-xl border border-gray-200 px-3 py-2 dark:border-gray-700">
+                                <div className="mb-2 flex items-center justify-between gap-2">
+                                  <div className="min-w-0 text-xs font-medium text-gray-500 dark:text-gray-400">
+                                    {speaker.speakerLabel}
+                                  </div>
+                                  <button
+                                    type="button"
+                                    disabled={isBusy}
+                                    onClick={() => void handleSetSpeakerHidden(speaker.speakerKey, true)}
+                                    className="rounded-md px-2 py-1 text-[11px] font-medium text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700 disabled:cursor-not-allowed disabled:opacity-60 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200"
+                                  >
+                                    Hide
+                                  </button>
+                                </div>
+                                <select
+                                  value={speaker.voiceReferenceId ?? "default"}
+                                  disabled={isBusy}
+                                  onChange={(event) => void handleAssignSpeakerVoice(speaker.speakerKey, event.target.value === "default" ? null : event.target.value)}
+                                  className="w-full rounded-md border border-gray-200 bg-white px-2 py-1.5 text-sm text-gray-700 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200"
+                                >
+                                  <option value="default">Default voice ({selectedTtsVoice?.label || "builtin"})</option>
+                                  {ttsVoices.map((voice) => (
+                                    <option key={`${speaker.speakerKey}-${voice.id}`} value={voice.id}>{voice.label}</option>
+                                  ))}
+                                </select>
+                              </div>
+                            );
+                          })}
+                        </div>
+
+                        {hiddenSessionTtsSpeakers.length > 0 && (
+                          <div className="rounded-xl border border-dashed border-gray-200 px-3 py-2 dark:border-gray-700">
+                            <button
+                              type="button"
+                              onClick={() => setShowHiddenSpeakers((prev) => !prev)}
+                              className="flex w-full items-center justify-between text-left text-[11px] font-medium text-gray-500 transition-colors hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
                             >
-                              <option value="default">Default voice ({selectedTtsVoice?.label || "builtin"})</option>
-                              {ttsVoices.map((voice) => (
-                                <option key={`${speaker.speakerKey}-${voice.id}`} value={voice.id}>{voice.label}</option>
-                              ))}
-                            </select>
-                          </label>
-                        ))}
+                              <span>{showHiddenSpeakers ? "Hide hidden speakers" : `Show hidden speakers (${hiddenSessionTtsSpeakers.length})`}</span>
+                              <svg
+                                className={`h-3.5 w-3.5 transition-transform ${showHiddenSpeakers ? "rotate-180" : ""}`}
+                                fill="none"
+                                stroke="currentColor"
+                                viewBox="0 0 24 24"
+                              >
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                              </svg>
+                            </button>
+
+                            {showHiddenSpeakers && (
+                              <div className="mt-3 space-y-2">
+                                {hiddenSessionTtsSpeakers.map((speaker) => {
+                                  const isBusy = sessionTtsSpeakerActionKey === speaker.speakerKey;
+
+                                  return (
+                                    <div key={speaker.speakerKey} className="rounded-xl border border-gray-200 px-3 py-2 dark:border-gray-700">
+                                      <div className="mb-2 flex items-center justify-between gap-2">
+                                        <div className="min-w-0">
+                                          <div className="text-xs font-medium text-gray-500 dark:text-gray-400">{speaker.speakerLabel}</div>
+                                          <div className="text-[10px] text-gray-400 dark:text-gray-500">Hidden from the main speaker list</div>
+                                        </div>
+                                        <button
+                                          type="button"
+                                          disabled={isBusy}
+                                          onClick={() => void handleSetSpeakerHidden(speaker.speakerKey, false)}
+                                          className="rounded-md px-2 py-1 text-[11px] font-medium text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700 disabled:cursor-not-allowed disabled:opacity-60 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200"
+                                        >
+                                          Unhide
+                                        </button>
+                                      </div>
+                                      <select
+                                        value={speaker.voiceReferenceId ?? "default"}
+                                        disabled={isBusy}
+                                        onChange={(event) => void handleAssignSpeakerVoice(speaker.speakerKey, event.target.value === "default" ? null : event.target.value)}
+                                        className="w-full rounded-md border border-gray-200 bg-white px-2 py-1.5 text-sm text-gray-700 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200"
+                                      >
+                                        <option value="default">Default voice ({selectedTtsVoice?.label || "builtin"})</option>
+                                        {ttsVoices.map((voice) => (
+                                          <option key={`${speaker.speakerKey}-${voice.id}`} value={voice.id}>{voice.label}</option>
+                                        ))}
+                                      </select>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </div>
+                        )}
                       </div>
 
                       {sessionTtsSpeakerError && (

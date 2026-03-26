@@ -70,6 +70,7 @@ export interface SessionTtsSpeakerMapping {
   speakerKey: string;
   speakerLabel: string;
   voiceReferenceId: string | null;
+  hidden: boolean;
 }
 
 export interface SessionTtsSpeakerResponse {
@@ -135,8 +136,12 @@ export const api = {
     fetchAPI(`/sessions/${sessionId}/messages`),
   getSessionTtsSpeakers: (sessionId: string): Promise<SessionTtsSpeakerResponse> =>
     fetchAPI(`/sessions/${sessionId}/tts-speakers`),
-  updateSessionTtsSpeaker: (sessionId: string, speakerKey: string, voiceReferenceId: string | null): Promise<{ success: boolean; speaker: SessionTtsSpeakerMapping }> =>
-    fetchAPI(`/sessions/${sessionId}/tts-speakers/${encodeURIComponent(speakerKey)}`, { method: "PATCH", body: JSON.stringify({ voiceReferenceId }) }),
+  updateSessionTtsSpeaker: (
+    sessionId: string,
+    speakerKey: string,
+    data: { voiceReferenceId?: string | null; hidden?: boolean }
+  ): Promise<{ success: boolean; speaker: SessionTtsSpeakerMapping }> =>
+    fetchAPI(`/sessions/${sessionId}/tts-speakers/${encodeURIComponent(speakerKey)}`, { method: "PATCH", body: JSON.stringify(data) }),
   editMessage: (sessionId: string, messageId: string, content: string): Promise<Message> =>
     fetchAPI(`/sessions/${sessionId}/messages/${messageId}`, { method: "PATCH", body: JSON.stringify({ content }) }),
   getMessage: (sessionId: string, messageId: string): Promise<Message & { status?: string }> =>

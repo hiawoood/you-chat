@@ -208,6 +208,7 @@ export function initDb() {
       speaker_key TEXT NOT NULL,
       speaker_label TEXT NOT NULL,
       voice_reference_id TEXT DEFAULT NULL,
+      hidden INTEGER NOT NULL DEFAULT 0,
       created_at INTEGER DEFAULT (unixepoch()),
       updated_at INTEGER DEFAULT (unixepoch()),
       PRIMARY KEY (session_id, speaker_key),
@@ -215,6 +216,7 @@ export function initDb() {
       FOREIGN KEY (voice_reference_id) REFERENCES tts_voice_references(id) ON DELETE SET NULL
     )
   `);
+  try { db.run(`ALTER TABLE session_tts_speaker_mappings ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0`); } catch { /* exists */ }
 
   db.run(`
     CREATE TABLE IF NOT EXISTS tts_message_speaker_state (
@@ -574,6 +576,7 @@ export interface SessionTtsSpeakerMapping {
   speaker_key: string;
   speaker_label: string;
   voice_reference_id: string | null;
+  hidden: number;
   created_at: number;
   updated_at: number;
 }
@@ -806,7 +809,7 @@ export function listSessionTtsSpeakerMappings(sessionId: string): SessionTtsSpea
   return db.query(`
     SELECT * FROM session_tts_speaker_mappings
     WHERE session_id = ?
-    ORDER BY CASE WHEN speaker_key = 'narrator' THEN 0 ELSE 1 END, speaker_label COLLATE NOCASE ASC
+    ORDER BY hidden ASC, CASE WHEN speaker_key = 'narrator' THEN 0 ELSE 1 END, speaker_label COLLATE NOCASE ASC
   `).all(sessionId) as SessionTtsSpeakerMapping[];
 }
 
@@ -843,13 +846,20 @@ export function updateSessionTtsSpeakerVoice(sessionId: string, speakerKey: stri
   return getSessionTtsSpeakerMapping(sessionId, speakerKey);
 }
 
+export function updateSessionTtsSpeakerHidden(sessionId: string, speakerKey: string, hidden: boolean) {
+  const now = Math.floor(Date.now() / 1000);
+  db.run(
+    `UPDATE session_tts_speaker_mappings SET hidden = ?, updated_at = ? WHERE session_id = ? AND speaker_key = ?`,
+    [hidden ? 1 : 0, now, sessionId, speakerKey]
+  );
+  touchSessionTtsMapping(sessionId, now);
+  return getSessionTtsSpeakerMapping(sessionId, speakerKey);
+}
+
 export function replaceSessionTtsSpeakerMappings(sessionId: string, nextMappings: Array<{ speakerKey: string; speakerLabel: string }>) {
   const now = Math.floor(Date.now() / 1000);
   const existing = listSessionTtsSpeakerMappings(sessionId);
   const existingVoiceByKey = new Map(existing.map((mapping) => [mapping.speaker_key, mapping.voice_reference_id]));
-  const nextKeySet = new Set(nextMappings.map((mapping) => mapping.speakerKey));
-
-  db.run(`DELETE FROM session_tts_speaker_mappings WHERE session_id = ? AND speaker_key NOT IN (${nextMappings.map(() => "?").join(", ") || "'__none__'"})`, [sessionId, ...nextKeySet]);
 
   for (const mapping of nextMappings) {
     db.run(

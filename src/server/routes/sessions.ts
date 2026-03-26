@@ -15,8 +15,10 @@ import {
   getSelectedTtsVoiceReferenceId,
   getTtsVoiceReference,
   updateSessionYouChatId,
+  getSessionTtsSpeakerMapping,
   listSessionTtsSpeakerMappings,
   rebuildSessionTtsSpeakerMappings,
+  updateSessionTtsSpeakerHidden,
   updateSessionTtsSpeakerVoice,
   getUserCredentials,
 } from "../db";
@@ -155,6 +157,7 @@ sessions.get("/:id/tts-speakers", async (c) => {
       speakerKey: speaker.speaker_key,
       speakerLabel: speaker.speaker_label,
       voiceReferenceId: validVoiceReferenceId,
+      hidden: Boolean(speaker.hidden),
     };
   });
 
@@ -173,18 +176,47 @@ sessions.patch("/:id/tts-speakers/:speakerKey", async (c) => {
   const session = getChatSession(sessionId, user.id);
   if (!session) return c.json({ error: "Not found" }, 404);
 
-  const body = await c.req.json<{ voiceReferenceId?: string | null }>();
-  const voiceReferenceId = body.voiceReferenceId ?? null;
-  if (voiceReferenceId) {
+  const body = await c.req.json<{ voiceReferenceId?: string | null; hidden?: boolean }>();
+  if (body.voiceReferenceId === undefined && body.hidden === undefined) {
+    return c.json({ error: "No speaker update provided" }, 400);
+  }
+  if (body.voiceReferenceId !== undefined && body.voiceReferenceId !== null && typeof body.voiceReferenceId !== "string") {
+    return c.json({ error: "voiceReferenceId must be a string or null" }, 400);
+  }
+  if (body.hidden !== undefined && typeof body.hidden !== "boolean") {
+    return c.json({ error: "hidden must be a boolean" }, 400);
+  }
+
+  const current = getSessionTtsSpeakerMapping(sessionId, speakerKey);
+  if (!current) {
+    return c.json({ error: "Speaker mapping not found" }, 404);
+  }
+
+  const voiceReferenceId = typeof body.voiceReferenceId === "string" && body.voiceReferenceId.trim()
+    ? body.voiceReferenceId
+    : null;
+  if (body.voiceReferenceId !== undefined && voiceReferenceId) {
     const voice = getTtsVoiceReference(user.id, voiceReferenceId);
     if (!voice) {
       return c.json({ error: "Voice reference not found" }, 404);
     }
   }
 
-  const updated = updateSessionTtsSpeakerVoice(sessionId, speakerKey, voiceReferenceId);
-  if (!updated) {
-    return c.json({ error: "Speaker mapping not found" }, 404);
+  let updated = current;
+  if (body.voiceReferenceId !== undefined) {
+    const next = updateSessionTtsSpeakerVoice(sessionId, speakerKey, voiceReferenceId);
+    if (!next) {
+      return c.json({ error: "Speaker mapping not found" }, 404);
+    }
+    updated = next;
+  }
+
+  if (body.hidden !== undefined) {
+    const next = updateSessionTtsSpeakerHidden(sessionId, speakerKey, Boolean(body.hidden));
+    if (!next) {
+      return c.json({ error: "Speaker mapping not found" }, 404);
+    }
+    updated = next;
   }
 
   return c.json({
@@ -193,6 +225,7 @@ sessions.patch("/:id/tts-speakers/:speakerKey", async (c) => {
       speakerKey: updated.speaker_key,
       speakerLabel: updated.speaker_label,
       voiceReferenceId: updated.voice_reference_id,
+      hidden: Boolean(updated.hidden),
     },
   });
 });
