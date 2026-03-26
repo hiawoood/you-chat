@@ -89,6 +89,10 @@ function buildRangeLayout(root: HTMLElement, startWord: TextWordRange, endWord: 
   const top = Math.min(...rects.map((rect) => rect.top));
   const right = Math.max(...rects.map((rect) => rect.left + rect.width));
   const bottom = Math.max(...rects.map((rect) => rect.top + rect.height));
+  const hitLeft = Math.max(0, left - CHUNK_HITBOX_PADDING_X);
+  const hitTop = Math.max(0, top - CHUNK_HITBOX_PADDING_Y);
+  const hitRight = Math.min(rootRect.width, right + CHUNK_HITBOX_PADDING_X);
+  const hitBottom = Math.min(rootRect.height, bottom + CHUNK_HITBOX_PADDING_Y);
 
   return {
     rects,
@@ -99,10 +103,10 @@ function buildRangeLayout(root: HTMLElement, startWord: TextWordRange, endWord: 
       height: bottom - top,
     },
     hitBounds: {
-      left: Math.max(0, left - CHUNK_HITBOX_PADDING_X),
-      top: Math.max(0, top - CHUNK_HITBOX_PADDING_Y),
-      width: (right - left) + (CHUNK_HITBOX_PADDING_X * 2),
-      height: (bottom - top) + (CHUNK_HITBOX_PADDING_Y * 2),
+      left: hitLeft,
+      top: hitTop,
+      width: Math.max(0, hitRight - hitLeft),
+      height: Math.max(0, hitBottom - hitTop),
     },
   };
 }
@@ -744,6 +748,8 @@ function MessageBubble({
 
   const activeChunkLayout = actionChunkIndex !== null ? chunkLayouts[actionChunkIndex] : null;
   const actionLayoutBounds = activeChunkLayout?.hitBounds ?? activeChunkLayout?.bounds ?? null;
+  const contentWidth = contentRef.current?.clientWidth ?? 0;
+  const contentHeight = contentRef.current?.clientHeight ?? 0;
 
   return (
     <div className={`group ${isUser ? "flex flex-col items-end" : "flex flex-col items-start"} ${isBusy ? "opacity-50" : ""}`}>
@@ -877,8 +883,14 @@ function MessageBubble({
                       : "border-amber-300 bg-white text-amber-700 hover:bg-amber-100 dark:border-amber-500/50 dark:bg-gray-900 dark:text-amber-300 dark:hover:bg-gray-800"
                   }`}
                   style={{
-                    left: `${Math.max(0, actionLayoutBounds.left + actionLayoutBounds.width - CHUNK_ACTION_BUTTON_SIZE - CHUNK_ACTION_BUTTON_MARGIN)}px`,
-                    top: `${Math.max(0, actionLayoutBounds.top + actionLayoutBounds.height - CHUNK_ACTION_BUTTON_SIZE - CHUNK_ACTION_BUTTON_MARGIN)}px`,
+                    left: `${Math.min(
+                      Math.max(0, actionLayoutBounds.left + actionLayoutBounds.width - CHUNK_ACTION_BUTTON_SIZE - CHUNK_ACTION_BUTTON_MARGIN),
+                      Math.max(0, contentWidth - CHUNK_ACTION_BUTTON_SIZE - CHUNK_ACTION_BUTTON_MARGIN),
+                    )}px`,
+                    top: `${Math.min(
+                      Math.max(0, actionLayoutBounds.top + actionLayoutBounds.height - CHUNK_ACTION_BUTTON_SIZE - CHUNK_ACTION_BUTTON_MARGIN),
+                      Math.max(0, contentHeight - CHUNK_ACTION_BUTTON_SIZE - CHUNK_ACTION_BUTTON_MARGIN),
+                    )}px`,
                   }}
                   title={isTTSActive && ttsCurrentChunk === actionChunkIndex ? `Replay chunk ${actionChunkIndex + 1}` : `Start TTS from chunk ${actionChunkIndex + 1}`}
                   aria-label={isTTSActive && ttsCurrentChunk === actionChunkIndex ? `Replay chunk ${actionChunkIndex + 1}` : `Start TTS from chunk ${actionChunkIndex + 1}`}
