@@ -28,6 +28,7 @@ interface ChatViewProps {
   onUpdateMessageId: (sessionId: string, tempId: string, realId: string) => void;
   onUpdateSession: (id: string, updates: { title?: string; agent?: string; lastTtsMessageId?: string | null }) => void;
   onToggleSidebar?: () => void;
+  onSelectSession?: (sessionId: string) => void;
   onEditMessage?: (messageId: string, content: string) => Promise<void>;
   onDeleteMessage?: (messageId: string) => void;
   onTruncateAfter?: (sessionId: string, messageId: string) => void;
@@ -87,6 +88,7 @@ export default function ChatView({
   onUpdateMessageId,
   onUpdateSession,
   onToggleSidebar,
+  onSelectSession,
   onEditMessage,
   onDeleteMessage,
   onTruncateAfter,
@@ -141,6 +143,8 @@ export default function ChatView({
   const chunkPanelTouchStartRef = useRef<{ x: number; y: number } | null>(null);
   const playButtonLongPressTimerRef = useRef<number | null>(null);
   const suppressPlayButtonClickRef = useRef(false);
+  const autoScrollButtonLongPressTimerRef = useRef<number | null>(null);
+  const suppressAutoScrollButtonClickRef = useRef(false);
   const pendingCollapseSessionIdRef = useRef<string | null>(session.id);
   const pullRefreshStartYRef = useRef<number | null>(null);
   const pullRefreshTrackingRef = useRef(false);
@@ -299,6 +303,7 @@ export default function ChatView({
   const motionAutoStopLabel = ttsMotionAutoStopEnabled && ttsMotionIdleRemainingMs !== null
     ? `${ttsMotionFadeActive ? "Fade" : "Stop"} ${formatCountdown(ttsMotionIdleRemainingMs)}`
     : null;
+  const canJumpToActiveTtsSession = Boolean(activeTtsSource && activeTtsSource.sessionId !== session.id);
   const showPullRefreshIndicator = pullRefreshDistance > 0 || messagesRefreshing;
   const pullRefreshProgress = Math.min(1, pullRefreshDistance / PULL_TO_REFRESH_TRIGGER_PX);
   const customAgents = useMemo(
@@ -1090,6 +1095,13 @@ export default function ChatView({
     }
   };
 
+  const clearAutoScrollButtonLongPress = () => {
+    if (autoScrollButtonLongPressTimerRef.current !== null) {
+      window.clearTimeout(autoScrollButtonLongPressTimerRef.current);
+      autoScrollButtonLongPressTimerRef.current = null;
+    }
+  };
+
   const handlePlayButtonPointerDown = (event: ReactPointerEvent<HTMLButtonElement>) => {
     if (event.pointerType === "mouse" && event.button !== 0) return;
 
@@ -1102,6 +1114,35 @@ export default function ChatView({
 
   const handlePlayButtonPointerUp = () => {
     clearPlayButtonLongPress();
+  };
+
+  const handleAutoScrollButtonPointerDown = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (!canJumpToActiveTtsSession || !activeTtsSourceRef.current || !onSelectSession) {
+      return;
+    }
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+
+    clearAutoScrollButtonLongPress();
+    autoScrollButtonLongPressTimerRef.current = window.setTimeout(() => {
+      suppressAutoScrollButtonClickRef.current = true;
+      const sourceSessionId = activeTtsSourceRef.current?.sessionId;
+      if (sourceSessionId) {
+        onSelectSession(sourceSessionId);
+      }
+    }, TTS_PLAY_BUTTON_LONG_PRESS_MS);
+  };
+
+  const handleAutoScrollButtonPointerUp = () => {
+    clearAutoScrollButtonLongPress();
+  };
+
+  const handleAutoScrollButtonClick = () => {
+    if (suppressAutoScrollButtonClickRef.current) {
+      suppressAutoScrollButtonClickRef.current = false;
+      return;
+    }
+
+    setTtsAutoScrollEnabled((prev) => !prev);
   };
 
   const handlePlayButtonClick = async () => {
@@ -1120,6 +1161,10 @@ export default function ChatView({
 
   useEffect(() => () => {
     clearPlayButtonLongPress();
+  }, []);
+
+  useEffect(() => () => {
+    clearAutoScrollButtonLongPress();
   }, []);
 
   const handleChunkPanelTouchStart = (event: ReactTouchEvent<HTMLDivElement>) => {
@@ -2084,9 +2129,16 @@ export default function ChatView({
 
                   {ttsTotalChunks > 0 && (
                     <button
-                      onClick={() => setTtsAutoScrollEnabled((prev) => !prev)}
+                      onClick={handleAutoScrollButtonClick}
+                      onPointerDown={handleAutoScrollButtonPointerDown}
+                      onPointerUp={handleAutoScrollButtonPointerUp}
+                      onPointerLeave={handleAutoScrollButtonPointerUp}
+                      onPointerCancel={handleAutoScrollButtonPointerUp}
+                      onContextMenu={(event) => event.preventDefault()}
                       className={`p-1 rounded-full transition-colors sm:p-1.5 ${ttsAutoScrollEnabled ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300" : "text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"}`}
-                      title={ttsAutoScrollEnabled ? "Disable chunk auto-scroll" : "Enable chunk auto-scroll"}
+                      title={canJumpToActiveTtsSession
+                        ? `${ttsAutoScrollEnabled ? "Disable" : "Enable"} chunk auto-scroll (long press to return to source chat)`
+                        : ttsAutoScrollEnabled ? "Disable chunk auto-scroll" : "Enable chunk auto-scroll"}
                     >
                       <svg className="w-3.5 h-3.5 sm:w-4 sm:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 5v14m0 0l-4-4m4 4l4-4M5 12h14" />

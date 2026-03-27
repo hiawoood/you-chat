@@ -426,6 +426,7 @@ export default function Chat() {
             onUpdateMessageId={handleUpdateMessageId}
             onUpdateSession={handleUpdateSession}
             onToggleSidebar={() => setSidebarOpen(!sidebarOpen)}
+            onSelectSession={handleSelectSession}
             onEditMessage={handleEditMessage}
             onDeleteMessage={handleDeleteMessage}
             onTruncateAfter={handleTruncateAfter}
