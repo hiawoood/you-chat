@@ -145,6 +145,7 @@ async function fetchMessageSnapshot(messageId: string, signal?: AbortSignal): Pr
 }
 
 export function useChat({ sessionId, onMessage, onUserMessageId, onAssistantMessageId, onDone, onTitleGenerated, onThinking, onError }: UseChatOptions) {
+  const STREAM_STALL_TIMEOUT_MS = 5000;
   const [isStreaming, setIsStreaming] = useState(false);
   const [isCompacting, setIsCompacting] = useState(false);
   const [thinkingStatus, setThinkingStatus] = useState<string | null>(null);
@@ -219,7 +220,27 @@ export function useChat({ sessionId, onMessage, onUserMessageId, onAssistantMess
       let assistantMsgId: string | null = null;
       let streamCompleted = false;
       let didFinish = false;
-      let mirrorPollingStarted = false;
+      let streamStalled = false;
+      let stallTimer: ReturnType<typeof setTimeout> | null = null;
+
+      const clearStallTimer = () => {
+        if (stallTimer !== null) {
+          clearTimeout(stallTimer);
+          stallTimer = null;
+        }
+      };
+
+      const scheduleStallTimer = () => {
+        clearStallTimer();
+        stallTimer = setTimeout(() => {
+          if (!assistantMsgId || streamCompleted || controller.signal.aborted) {
+            return;
+          }
+
+          streamStalled = true;
+          controller.abort();
+        }, STREAM_STALL_TIMEOUT_MS);
+      };
 
       const applyStreamContent = (content: string) => {
         if (content === fullContent) return;
@@ -231,40 +252,11 @@ export function useChat({ sessionId, onMessage, onUserMessageId, onAssistantMess
         if (didFinish) return;
         didFinish = true;
         streamCompleted = true;
+        clearStallTimer();
         flushPendingStreamContent();
         setThinkingStatus(null);
         onDone?.(messageId);
         if (generatedTitle) onTitleGenerated?.(generatedTitle);
-      };
-
-      const startMirrorPolling = (messageId: string) => {
-        if (mirrorPollingStarted) return;
-        mirrorPollingStarted = true;
-
-        void (async () => {
-          const POLL_INTERVAL = 1500;
-
-          while (!controller.signal.aborted && !streamCompleted) {
-            try {
-              const snapshot = await fetchMessageSnapshot(messageId, controller.signal);
-              if (snapshot) {
-                if (snapshot.content) {
-                  setThinkingStatus(null);
-                  applyStreamContent(snapshot.content);
-                }
-
-                if (snapshot.status !== "streaming") {
-                  finishStream(messageId);
-                  return;
-                }
-              }
-            } catch {
-              if (controller.signal.aborted) return;
-            }
-
-            await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL));
-          }
-        })();
       };
 
       try {
@@ -278,20 +270,24 @@ export function useChat({ sessionId, onMessage, onUserMessageId, onAssistantMess
 
         if (!response.ok) throw new Error("Failed to send message");
 
+        scheduleStallTimer();
+
         await readStream(response, {
           onThinking: (status) => {
+            scheduleStallTimer();
             setThinkingStatus(status);
             onThinking?.(status);
           },
           onDelta: (delta) => {
+            scheduleStallTimer();
             setThinkingStatus(null);
             applyStreamContent(fullContent + delta);
           },
           onUserMessageId,
           onAssistantMessageId: (id) => {
+            scheduleStallTimer();
             assistantMsgId = id;
             onAssistantMessageId?.(id);
-            startMirrorPolling(id);
           },
           onDone: (messageId, generatedTitle) => {
             assistantMsgId = messageId;
@@ -320,7 +316,7 @@ export function useChat({ sessionId, onMessage, onUserMessageId, onAssistantMess
           }, controller.signal);
         }
       } catch (error) {
-        if (controller.signal.aborted) return; // Server handles cleanup
+        if (controller.signal.aborted && !streamStalled) return; // Server handles cleanup
         // Network error on initial fetch or during stream — try polling if we have assistant msg ID
         if (assistantMsgId && !controller.signal.aborted) {
           console.log("[useChat] Error during stream, falling back to polling", assistantMsgId);
@@ -335,10 +331,26 @@ export function useChat({ sessionId, onMessage, onUserMessageId, onAssistantMess
             },
             onError,
           }, controller.signal);
+        } else if (assistantMsgId && streamStalled) {
+          console.log("[useChat] Stream stalled, falling back to polling", assistantMsgId);
+          const pollingController = new AbortController();
+          abortRef.current = pollingController;
+          setThinkingStatus("Reconnecting…");
+          await pollUntilDone(assistantMsgId, {
+            onContent: (content) => {
+              setThinkingStatus(null);
+              applyStreamContent(content);
+            },
+            onDone: (msgId) => {
+              finishStream(msgId);
+            },
+            onError,
+          }, pollingController.signal);
         } else {
           onError?.(error instanceof Error ? error.message : "Unknown error");
         }
       } finally {
+        clearStallTimer();
         setIsStreaming(false);
         resetStreamContent();
         setThinkingStatus(null);
@@ -359,7 +371,27 @@ export function useChat({ sessionId, onMessage, onUserMessageId, onAssistantMess
       let regenCompleted = false;
       let regenMsgId: string | null = null;
       let didFinish = false;
-      let mirrorPollingStarted = false;
+      let streamStalled = false;
+      let stallTimer: ReturnType<typeof setTimeout> | null = null;
+
+      const clearStallTimer = () => {
+        if (stallTimer !== null) {
+          clearTimeout(stallTimer);
+          stallTimer = null;
+        }
+      };
+
+      const scheduleStallTimer = () => {
+        clearStallTimer();
+        stallTimer = setTimeout(() => {
+          if (!regenMsgId || regenCompleted || controller.signal.aborted) {
+            return;
+          }
+
+          streamStalled = true;
+          controller.abort();
+        }, STREAM_STALL_TIMEOUT_MS);
+      };
 
       const applyStreamContent = (content: string) => {
         if (content === fullContent) return;
@@ -371,39 +403,10 @@ export function useChat({ sessionId, onMessage, onUserMessageId, onAssistantMess
         if (didFinish) return;
         didFinish = true;
         regenCompleted = true;
+        clearStallTimer();
         flushPendingStreamContent();
         setThinkingStatus(null);
         onDone?.(nextMessageId);
-      };
-
-      const startMirrorPolling = (nextMessageId: string) => {
-        if (mirrorPollingStarted) return;
-        mirrorPollingStarted = true;
-
-        void (async () => {
-          const POLL_INTERVAL = 1500;
-
-          while (!controller.signal.aborted && !regenCompleted) {
-            try {
-              const snapshot = await fetchMessageSnapshot(nextMessageId, controller.signal);
-              if (snapshot) {
-                if (snapshot.content) {
-                  setThinkingStatus(null);
-                  applyStreamContent(snapshot.content);
-                }
-
-                if (snapshot.status !== "streaming") {
-                  finishRegeneration(nextMessageId);
-                  return;
-                }
-              }
-            } catch {
-              if (controller.signal.aborted) return;
-            }
-
-            await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL));
-          }
-        })();
       };
 
       try {
@@ -417,19 +420,23 @@ export function useChat({ sessionId, onMessage, onUserMessageId, onAssistantMess
 
         if (!response.ok) throw new Error("Failed to regenerate");
 
+        scheduleStallTimer();
+
         await readStream(response, {
           onThinking: (status) => {
+            scheduleStallTimer();
             setThinkingStatus(status);
             onThinking?.(status);
           },
           onDelta: (delta) => {
+            scheduleStallTimer();
             setThinkingStatus(null);
             applyStreamContent(fullContent + delta);
           },
           onAssistantMessageId: (id) => {
+            scheduleStallTimer();
             regenMsgId = id;
             onAssistantMessageId?.(id);
-            startMirrorPolling(id);
           },
           onDone: (msgId) => {
             finishRegeneration(msgId);
@@ -456,9 +463,45 @@ export function useChat({ sessionId, onMessage, onUserMessageId, onAssistantMess
           }, controller.signal);
         }
       } catch (error) {
-        if (controller.signal.aborted) return;
+        if (controller.signal.aborted && !streamStalled) return;
+
+        if (regenMsgId && streamStalled) {
+          console.log("[useChat] Regenerate stream stalled, polling", regenMsgId);
+          const pollingController = new AbortController();
+          abortRef.current = pollingController;
+          setThinkingStatus("Reconnecting…");
+          await pollUntilDone(regenMsgId, {
+            onContent: (content) => {
+              setThinkingStatus(null);
+              applyStreamContent(content);
+            },
+            onDone: (msgId) => {
+              finishRegeneration(msgId);
+            },
+            onError,
+          }, pollingController.signal);
+          return;
+        }
+
+        if (regenMsgId && !controller.signal.aborted) {
+          console.log("[useChat] Regenerate stream error, polling", regenMsgId);
+          setThinkingStatus("Reconnecting…");
+          await pollUntilDone(regenMsgId, {
+            onContent: (content) => {
+              setThinkingStatus(null);
+              applyStreamContent(content);
+            },
+            onDone: (msgId) => {
+              finishRegeneration(msgId);
+            },
+            onError,
+          }, controller.signal);
+          return;
+        }
+
         onError?.(error instanceof Error ? error.message : "Unknown error");
       } finally {
+        clearStallTimer();
         setIsStreaming(false);
         resetStreamContent();
         setThinkingStatus(null);

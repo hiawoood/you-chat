@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import type { AppEnv } from "../context";
 import {
-  getChatSession, createMessage, getMessages, updateChatSession,
+  getChatSession, createMessage, getMessages, getMessagesForChatHistory, updateChatSession,
   deleteMessagesAfter, getMessage, deleteMessage, deleteStreamingMessages,
   createStreamingMessage, updateStreamingContent, completeStreamingMessage,
   getUserCredentials, getSessionYouChatId, updateSessionYouChatId,
@@ -164,7 +164,7 @@ async function streamAndSave(
 
         const now = Date.now();
         if (now - lastSaveTime > SAVE_INTERVAL_MS) {
-          updateStreamingContent(assistantMsgId, fullResponse);
+          updateStreamingContent(assistantMsgId, sessionId, fullResponse);
           lastSaveTime = now;
         }
       }
@@ -181,7 +181,7 @@ async function streamAndSave(
       try { deleteMessage(assistantMsgId, sessionId); } catch { /* already deleted */ }
     } else {
       // Normal completion or client disconnect — save what we have
-      completeStreamingMessage(assistantMsgId, fullResponse);
+      completeStreamingMessage(assistantMsgId, sessionId, fullResponse);
     }
   }
 
@@ -238,15 +238,13 @@ chat.post("/", async (c) => {
     return c.json({ error: "Session not found" }, 404);
   }
 
-  const existingMessages = getMessages(sessionId) as { id: string }[];
-  const isFirstMessage = existingMessages.length === 0;
+  const historyMessages = getMessagesForChatHistory(sessionId);
+  const isFirstMessage = historyMessages.length === 0;
 
   // Save user message
   const userMsg = createMessage(sessionId, "user", message);
 
   // Build chat history for You.com (Q&A pairs from previous messages, NOT including current)
-  const allMessages = getMessages(sessionId) as { role: string; content: string }[];
-  const historyMessages = allMessages.slice(0, -1);
   const chatHistory = buildChatHistory(historyMessages);
 
   // Get or create You.com thread ID

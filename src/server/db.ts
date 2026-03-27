@@ -29,6 +29,10 @@ export const db = new Database(dbPath, { create: true });
 const tableColumnCache = new Map<string, Set<string>>();
 
 // Enable foreign keys
+db.run("PRAGMA journal_mode = WAL");
+db.run("PRAGMA synchronous = NORMAL");
+db.run("PRAGMA busy_timeout = 5000");
+db.run("PRAGMA temp_store = MEMORY");
 db.run("PRAGMA foreign_keys = ON");
 
 // Initialize schema
@@ -366,6 +370,22 @@ export function getMessages(sessionId: string) {
   `).all(sessionId);
 }
 
+export function getMessagesForChatHistory(sessionId: string) {
+  return db.query(`
+    SELECT role, content FROM messages
+    WHERE session_id = ?
+    ORDER BY created_at ASC
+  `).all(sessionId) as Array<{ role: "user" | "assistant"; content: string }>;
+}
+
+export function messageExistsInSession(sessionId: string, messageId: string) {
+  return Boolean(db.query(`
+    SELECT 1 FROM messages
+    WHERE session_id = ? AND id = ?
+    LIMIT 1
+  `).get(sessionId, messageId));
+}
+
 export function createMessage(sessionId: string, role: "user" | "assistant", content: string) {
   const id = generateId();
   const now = Math.floor(Date.now() / 1000);
@@ -394,21 +414,15 @@ export function createStreamingMessage(sessionId: string, role: "user" | "assist
 }
 
 // Update streaming message content progressively
-export function updateStreamingContent(messageId: string, content: string) {
+export function updateStreamingContent(messageId: string, sessionId: string, content: string) {
   db.run(`UPDATE messages SET content = ? WHERE id = ?`, [content, messageId]);
-  const row = db.query(`SELECT session_id FROM messages WHERE id = ?`).get(messageId) as { session_id: string } | null;
-  if (row?.session_id) {
-    syncStreamingMessageSpeakers(row.session_id, messageId, content, false);
-  }
+  syncStreamingMessageSpeakers(sessionId, messageId, content, false);
 }
 
 // Mark a streaming message as complete
-export function completeStreamingMessage(messageId: string, content: string) {
+export function completeStreamingMessage(messageId: string, sessionId: string, content: string) {
   db.run(`UPDATE messages SET content = ?, status = 'complete' WHERE id = ?`, [content, messageId]);
-  const row = db.query(`SELECT session_id FROM messages WHERE id = ?`).get(messageId) as { session_id: string } | null;
-  if (row?.session_id) {
-    syncStreamingMessageSpeakers(row.session_id, messageId, content, true);
-  }
+  syncStreamingMessageSpeakers(sessionId, messageId, content, true);
 }
 
 export function updateMessage(messageId: string, sessionId: string, content: string) {

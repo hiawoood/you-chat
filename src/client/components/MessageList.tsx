@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Message } from "../lib/api";
@@ -14,6 +14,7 @@ const CHUNK_HITBOX_PADDING_X = 10;
 const CHUNK_HITBOX_PADDING_Y = 6;
 const CHUNK_ACTION_BUTTON_SIZE = 24;
 const CHUNK_ACTION_BUTTON_MARGIN = 4;
+const MAX_CHUNK_PLAN_CACHE_ENTRIES = 256;
 
 interface ChunkHighlightRect {
   left: number;
@@ -95,6 +96,66 @@ function areTtsChunksEqual(left: TTSChunk[] = [], right: TTSChunk[] = []) {
     }
   }
   return true;
+}
+
+function areSourceRangesEqual(left: SourceRange[] = [], right: SourceRange[] = []) {
+  if (left === right) return true;
+  if (left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index++) {
+    const leftRange = left[index];
+    const rightRange = right[index];
+    if (!leftRange || !rightRange) return false;
+    if (leftRange.start !== rightRange.start || leftRange.end !== rightRange.end) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function areNumberArraysEqual(left: number[] = [], right: number[] = []) {
+  if (left === right) return true;
+  if (left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index++) {
+    if (left[index] !== right[index]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+const MemoizedMarkdownContent = memo(
+  function MarkdownContent({ content }: { content: string }) {
+    return <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>;
+  },
+  (previousProps, nextProps) => previousProps.content === nextProps.content,
+);
+
+interface MessageBubbleProps {
+  message: Message;
+  isStreaming?: boolean;
+  isDeleting?: boolean;
+  isSaving?: boolean;
+  isForking?: boolean;
+  onEdit?: (content: string) => void;
+  onDelete?: () => void;
+  onRegenerate?: (messageId: string) => void;
+  regenerateTargetMessageId?: string | null;
+  onFork?: () => void;
+  onContinue?: (messageContent: string) => void;
+  onCompact?: () => void;
+  onToggleTTS?: () => void;
+  onPlayTTSChunk?: (chunkIndex: number) => void;
+  onWordClick?: (e: React.MouseEvent, wordIndex: number) => void;
+  disableContinue?: boolean;
+  forceCollapsed?: boolean;
+  actionDisabled?: boolean;
+  isTTSActive?: boolean;
+  isTTSPlaying?: boolean;
+  isTTSLoading?: boolean;
+  ttsCurrentChunk?: number;
+  ttsAutoScrollEnabled?: boolean;
+  chunkSourceRanges?: SourceRange[];
+  chunkWordCounts?: number[];
 }
 
 function collectRenderedWordRanges(root: HTMLElement): TextWordRange[] {
@@ -396,6 +457,35 @@ function MessageList({
     [dedupedMessages, streamingContent, streamingMessageId],
   );
 
+  const regenerateTargetByMessageId = useMemo(() => {
+    const targets = new Map<string, string | null>();
+    let lastUserMessageId: string | null = null;
+
+    for (const item of items) {
+      if (item.role === "user") {
+        lastUserMessageId = item.id;
+        targets.set(item.id, item.id);
+        continue;
+      }
+
+      targets.set(item.id, lastUserMessageId);
+    }
+
+    return targets;
+  }, [items]);
+
+  useEffect(() => {
+    const cache = chunkPlanCacheRef.current;
+    const validMessageIds = new Set(items.map((item) => item.id));
+    for (const cacheKey of Array.from(cache.keys())) {
+      const separatorIndex = cacheKey.indexOf(":");
+      const messageId = separatorIndex >= 0 ? cacheKey.slice(0, separatorIndex) : cacheKey;
+      if (!validMessageIds.has(messageId)) {
+        cache.delete(cacheKey);
+      }
+    }
+  }, [items]);
+
   const getCachedChunkPlans = (messageId: string, content: string, isStreamingMessage: boolean): PreparedChunkPlan[] => {
     const cacheKey = `${messageId}:${isStreamingMessage ? "streaming" : "static"}`;
     const cached = chunkPlanCacheRef.current.get(cacheKey);
@@ -417,6 +507,14 @@ function MessageList({
       streaming: isStreamingMessage,
       plans,
     });
+
+    while (chunkPlanCacheRef.current.size > MAX_CHUNK_PLAN_CACHE_ENTRIES) {
+      const oldestKey = chunkPlanCacheRef.current.keys().next().value;
+      if (!oldestKey) {
+        break;
+      }
+      chunkPlanCacheRef.current.delete(oldestKey);
+    }
 
     return plans;
   };
@@ -467,18 +565,7 @@ function MessageList({
         const isDeleting = actionLoading === `delete-msg-${item.id}`;
         const isActivelyStreaming = !!item.isStreaming || item.status === "streaming";
         const isUserItem = item.role === "user";
-        const regenerateTargetMessageId = isUserItem
-          ? item.id
-          : (() => {
-              const idx = items.indexOf(item);
-              for (let i = idx - 1; i >= 0; i--) {
-                const prevItem = items[i];
-                if (prevItem?.role === "user") {
-                  return prevItem.id;
-                }
-              }
-              return null;
-            })();
+        const regenerateTargetMessageId = regenerateTargetByMessageId.get(item.id) ?? null;
 
         const isTTSActive = ttsActiveMessageId === item.id;
         const messageChunkPlans = isTTSActive && activeTtsChunkPlans.length > 0
@@ -486,7 +573,7 @@ function MessageList({
           : getCachedChunkPlans(item.id, item.content, isActivelyStreaming);
 
         return (
-          <MessageBubble
+          <MemoizedMessageBubble
             key={item.id}
             message={item}
             isStreaming={isActivelyStreaming}
@@ -620,33 +707,7 @@ function MessageBubble({
   ttsAutoScrollEnabled = false,
   chunkSourceRanges = [],
   chunkWordCounts = [],
-}: {
-  message: Message;
-  isStreaming?: boolean;
-  isDeleting?: boolean;
-  isSaving?: boolean;
-  isForking?: boolean;
-  onEdit?: (content: string) => void;
-  onDelete?: () => void;
-  onRegenerate?: (messageId: string) => void;
-  regenerateTargetMessageId?: string | null;
-  onFork?: () => void;
-  onContinue?: (messageContent: string) => void;
-  onCompact?: () => void;
-  onToggleTTS?: () => void;
-  onPlayTTSChunk?: (chunkIndex: number) => void;
-  onWordClick?: (e: React.MouseEvent, wordIndex: number) => void;
-  disableContinue?: boolean;
-  forceCollapsed?: boolean;
-  actionDisabled?: boolean;
-  isTTSActive?: boolean;
-  isTTSPlaying?: boolean;
-  isTTSLoading?: boolean;
-  ttsCurrentChunk?: number;
-  ttsAutoScrollEnabled?: boolean;
-  chunkSourceRanges?: SourceRange[];
-  chunkWordCounts?: number[];
-}) {
+}: MessageBubbleProps) {
   const isUser = message.role === "user";
   const contentRef = useRef<HTMLDivElement>(null);
   const markdownRef = useRef<HTMLDivElement>(null);
@@ -660,6 +721,8 @@ function MessageBubble({
   const [hoveredChunkIndex, setHoveredChunkIndex] = useState<number | null>(null);
   const [selectedChunkIndex, setSelectedChunkIndex] = useState<number | null>(null);
   const [chunkLayouts, setChunkLayouts] = useState<ChunkHighlightLayout[]>([]);
+  const hoveredChunkFrameRef = useRef<number | null>(null);
+  const pendingHoveredChunkIndexRef = useRef<number | null>(null);
 
   const resizeEditTextarea = (textarea: HTMLTextAreaElement) => {
     textarea.style.height = "auto";
@@ -751,6 +814,26 @@ function MessageBubble({
     setSelectedChunkIndex(null);
   }, [message.id]);
 
+  useEffect(() => () => {
+    if (hoveredChunkFrameRef.current !== null) {
+      window.cancelAnimationFrame(hoveredChunkFrameRef.current);
+      hoveredChunkFrameRef.current = null;
+    }
+  }, []);
+
+  const scheduleHoveredChunkIndex = useCallback((nextChunkIndex: number | null) => {
+    pendingHoveredChunkIndexRef.current = nextChunkIndex;
+
+    if (hoveredChunkFrameRef.current !== null) {
+      return;
+    }
+
+    hoveredChunkFrameRef.current = window.requestAnimationFrame(() => {
+      hoveredChunkFrameRef.current = null;
+      setHoveredChunkIndex((current) => current === pendingHoveredChunkIndexRef.current ? current : pendingHoveredChunkIndexRef.current);
+    });
+  }, []);
+
   useEffect(() => {
     const markdownElement = markdownRef.current;
     if (!markdownElement || !shouldRenderChunkLayout || !chunkSourceRanges.length || editing || isCollapsed) {
@@ -826,11 +909,11 @@ function MessageBubble({
 
   const handleChunkPointerMove = (event: React.MouseEvent<HTMLDivElement>) => {
     if (!shouldEnableChunkSelection) return;
-    setHoveredChunkIndex(resolveChunkIndexFromPointer(event.clientX, event.clientY));
+    scheduleHoveredChunkIndex(resolveChunkIndexFromPointer(event.clientX, event.clientY));
   };
 
   const handleChunkPointerLeave = () => {
-    setHoveredChunkIndex(null);
+    scheduleHoveredChunkIndex(null);
   };
 
   const handleChunkPointerSelect = (clientX: number, clientY: number) => {
@@ -970,7 +1053,7 @@ function MessageBubble({
                   })}
                 </div>
                 <div className="relative z-10">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+                  <MemoizedMarkdownContent content={message.content} />
                 </div>
               </div>
               {shouldRenderChunkActions && actionChunkIndex !== null && actionLayoutBounds && (
@@ -1167,6 +1250,65 @@ function MessageBubble({
     </div>
   );
 }
+
+function areMessageBubblePropsEqual(previousProps: Readonly<MessageBubbleProps>, nextProps: Readonly<MessageBubbleProps>) {
+  const sameMessage = previousProps.message === nextProps.message || (
+    previousProps.message.id === nextProps.message.id
+    && previousProps.message.role === nextProps.message.role
+    && previousProps.message.content === nextProps.message.content
+    && previousProps.message.created_at === nextProps.message.created_at
+    && previousProps.message.status === nextProps.message.status
+  );
+
+  if (!sameMessage) return false;
+
+  if (
+    previousProps.isStreaming !== nextProps.isStreaming
+    || previousProps.isDeleting !== nextProps.isDeleting
+    || previousProps.isSaving !== nextProps.isSaving
+    || previousProps.isForking !== nextProps.isForking
+    || previousProps.regenerateTargetMessageId !== nextProps.regenerateTargetMessageId
+    || previousProps.disableContinue !== nextProps.disableContinue
+    || previousProps.forceCollapsed !== nextProps.forceCollapsed
+    || previousProps.actionDisabled !== nextProps.actionDisabled
+    || previousProps.isTTSActive !== nextProps.isTTSActive
+    || previousProps.isTTSPlaying !== nextProps.isTTSPlaying
+    || previousProps.isTTSLoading !== nextProps.isTTSLoading
+    || previousProps.ttsAutoScrollEnabled !== nextProps.ttsAutoScrollEnabled
+  ) {
+    return false;
+  }
+
+  if (
+    Boolean(previousProps.onEdit) !== Boolean(nextProps.onEdit)
+    || Boolean(previousProps.onDelete) !== Boolean(nextProps.onDelete)
+    || Boolean(previousProps.onRegenerate) !== Boolean(nextProps.onRegenerate)
+    || Boolean(previousProps.onFork) !== Boolean(nextProps.onFork)
+    || Boolean(previousProps.onContinue) !== Boolean(nextProps.onContinue)
+    || Boolean(previousProps.onCompact) !== Boolean(nextProps.onCompact)
+    || Boolean(previousProps.onToggleTTS) !== Boolean(nextProps.onToggleTTS)
+    || Boolean(previousProps.onPlayTTSChunk) !== Boolean(nextProps.onPlayTTSChunk)
+    || Boolean(previousProps.onWordClick) !== Boolean(nextProps.onWordClick)
+  ) {
+    return false;
+  }
+
+  if (!areSourceRangesEqual(previousProps.chunkSourceRanges, nextProps.chunkSourceRanges)) {
+    return false;
+  }
+
+  if (!areNumberArraysEqual(previousProps.chunkWordCounts, nextProps.chunkWordCounts)) {
+    return false;
+  }
+
+  if ((previousProps.isTTSActive || nextProps.isTTSActive) && previousProps.ttsCurrentChunk !== nextProps.ttsCurrentChunk) {
+    return false;
+  }
+
+  return true;
+}
+
+const MemoizedMessageBubble = memo(MessageBubble, areMessageBubblePropsEqual);
 
 function areMessageListPropsEqual(previousProps: Readonly<MessageListProps>, nextProps: Readonly<MessageListProps>) {
   return areMessagesEqual(previousProps.messages, nextProps.messages)

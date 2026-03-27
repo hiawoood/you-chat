@@ -26,7 +26,11 @@ async function loadModel(): Promise<KokoroTTS> {
       const { KokoroTTS } = await import("kokoro-js");
       tts = await KokoroTTS.from_pretrained(MODEL_ID, {
         dtype: "q8",
-        progress_callback: (progress: { loaded: number; total: number }) => {
+        progress_callback: (progress) => {
+          if (!("loaded" in progress) || !("total" in progress) || !progress.total) {
+            return;
+          }
+
           const percent = Math.round((progress.loaded / progress.total) * 100);
           self.postMessage({ type: "progress", progress: percent });
         },
@@ -52,15 +56,12 @@ async function generate(text: string, chunkId: number) {
     const duration = Date.now() - startTime;
     console.log(`[TTS Worker] Chunk ${chunkId} generated in ${duration}ms (${text.length} chars)`);
 
-    self.postMessage(
-      {
-        type: "chunk-ready",
-        chunkId,
-        audio: result.audio,
-        sampleRate: result.sample_rate || 24000,
-      },
-      [result.audio.buffer]
-    );
+    self.postMessage({
+      type: "chunk-ready",
+      chunkId,
+      audio: result.audio,
+      sampleRate: result.sampling_rate || 24000,
+    });
   } catch (error) {
     console.error(`[TTS Worker] Chunk ${chunkId} failed:`, error);
     self.postMessage({

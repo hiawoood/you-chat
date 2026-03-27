@@ -21,6 +21,7 @@ import {
   updateSessionTtsSpeakerHidden,
   updateSessionTtsSpeakerVoice,
   getUserCredentials,
+  messageExistsInSession,
 } from "../db";
 import { deleteThread } from "../lib/you-client";
 import type { AppEnv } from "../context";
@@ -66,7 +67,7 @@ sessions.patch("/:id", async (c) => {
   const sessionId = c.req.param("id");
 
   if (body.lastTtsMessageId !== undefined && body.lastTtsMessageId !== null) {
-    const messageExists = getMessages(sessionId).some((message: any) => message.id === body.lastTtsMessageId);
+    const messageExists = messageExistsInSession(sessionId, body.lastTtsMessageId);
     if (!messageExists) {
       return c.json({ error: "Last played TTS message not found in session" }, 404);
     }

@@ -230,7 +230,7 @@ export function useTTS() {
       }
 
       const audioBuffer = audioContext.createBuffer(1, chunk.audio.length, SAMPLE_RATE);
-      audioBuffer.copyToChannel(chunk.audio, 0);
+      audioBuffer.copyToChannel(new Float32Array(chunk.audio), 0);
 
       const source = audioContext.createBufferSource();
       source.buffer = audioBuffer;

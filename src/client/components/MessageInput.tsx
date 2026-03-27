@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 interface MessageInputProps {
   onSend: (message: string) => void;
@@ -11,18 +11,34 @@ export default function MessageInput({ onSend, disabled }: MessageInputProps) {
   const [message, setMessage] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  useEffect(() => {
-    if (textareaRef.current) {
-      textareaRef.current.style.height = "auto";
-      textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, MAX_HEIGHT)}px`;
+  const resizeTextarea = useCallback((textarea: HTMLTextAreaElement | null) => {
+    if (!textarea) return;
+
+    textarea.style.height = "auto";
+    const nextHeight = Math.min(textarea.scrollHeight, MAX_HEIGHT);
+    const nextHeightPx = `${nextHeight}px`;
+    if (textarea.style.height !== nextHeightPx) {
+      textarea.style.height = nextHeightPx;
     }
-  }, [message]);
+
+    const nextOverflow = textarea.scrollHeight > MAX_HEIGHT ? "auto" : "hidden";
+    if (textarea.style.overflowY !== nextOverflow) {
+      textarea.style.overflowY = nextOverflow;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (message.length === 0) {
+      resizeTextarea(textareaRef.current);
+    }
+  }, [message, resizeTextarea]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (message.trim() && !disabled) {
       onSend(message.trim());
       setMessage("");
+      resizeTextarea(textareaRef.current);
     }
   };
 
@@ -36,6 +52,7 @@ export default function MessageInput({ onSend, disabled }: MessageInputProps) {
         ref={textareaRef}
         value={message}
         onChange={(e) => setMessage(e.target.value)}
+        onInput={(e) => resizeTextarea(e.currentTarget)}
         onKeyDown={handleKeyDown}
         placeholder="Message..."
         disabled={disabled}
