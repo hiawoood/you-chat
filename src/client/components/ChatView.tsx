@@ -609,6 +609,25 @@ export default function ChatView({
     persistLastPlayedMessage(messageId);
   };
 
+  const handleStopTTS = useCallback(async () => {
+    stopVoicePreview();
+    setTtsAutoScrollEnabled(false);
+
+    if (ttsActiveMessageId) {
+      setCollapsedIds((current) => {
+        if (!current.has(ttsActiveMessageId)) {
+          return current;
+        }
+
+        const next = new Set(current);
+        next.delete(ttsActiveMessageId);
+        return next;
+      });
+    }
+
+    await ttsStop();
+  }, [stopVoicePreview, ttsActiveMessageId, ttsStop]);
+
   const handleResumeSessionTts = async () => {
     stopVoicePreview();
     const lastPlayedMessageId = session.last_tts_message_id;
@@ -679,7 +698,7 @@ export default function ChatView({
     if (!onEditMessage) return;
 
     if (ttsActiveMessageId === messageId) {
-      ttsStop();
+      await handleStopTTS();
     }
 
     await onEditMessage(messageId, content);
@@ -727,7 +746,7 @@ export default function ChatView({
       return;
     }
 
-    await ttsStop();
+    await handleStopTTS();
 
     if (ttsActiveMessageId === activeStreamingTtsMessageId && streamingContentRef.current.trim()) {
       await startPlayback(
@@ -749,7 +768,7 @@ export default function ChatView({
         defaultVoiceOverride ?? selectedTtsVoiceId,
       );
     }
-  }, [activeStreamingTtsMessageId, messages, selectedTtsVoiceId, setSpeakerContext, startPlayback, ttsActiveMessageId, ttsCurrentChunk, ttsIsLoading, ttsIsPlaying, ttsStop]);
+  }, [activeStreamingTtsMessageId, handleStopTTS, messages, selectedTtsVoiceId, setSpeakerContext, startPlayback, ttsActiveMessageId, ttsCurrentChunk, ttsIsLoading, ttsIsPlaying]);
 
   const handleAssignSpeakerVoice = async (speakerKey: string, voiceId: string | null) => {
     stopVoicePreview();
@@ -812,7 +831,7 @@ export default function ChatView({
     if (ttsIsPlaying) {
       ttsPause();
     } else if (ttsIsLoading) {
-      await ttsStop();
+      await handleStopTTS();
     }
 
     const previewAudio = new Audio(voice.previewUrl || api.getTtsVoicePreviewUrl(voice.id));
@@ -1790,7 +1809,7 @@ export default function ChatView({
                 <div className="flex items-center gap-2 text-xs font-medium text-red-600 dark:text-red-400">
                   <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" strokeWidth="2" /><path d="M12 8v4m0 4h.01" strokeWidth="2" strokeLinecap="round" /></svg>
                   <span>Error</span>
-                  <button onClick={() => void ttsStop()} className="p-1 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-full" title="Close">
+                  <button onClick={() => void handleStopTTS()} className="p-1 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-full" title="Close">
                     <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
                   </button>
                 </div>
@@ -1913,11 +1932,11 @@ export default function ChatView({
 
                   <div className="w-px h-4 bg-gray-200 dark:bg-gray-700 mx-0.5 sm:mx-1" />
 
-                  <button
-                    onClick={() => void ttsStop()}
-                    className="p-1 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-full transition-colors sm:p-1.5"
-                    title="Stop"
-                  >
+                    <button
+                      onClick={() => void handleStopTTS()}
+                      className="p-1 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-full transition-colors sm:p-1.5"
+                      title="Stop"
+                    >
                     <svg className="w-3.5 h-3.5 sm:w-4 sm:h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M6 6h12v12H6z" /></svg>
                   </button>
                 </>

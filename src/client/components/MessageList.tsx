@@ -1017,6 +1017,22 @@ function MessageBubble({
                 }
                 handleChunkPointerSelect(event.clientX, event.clientY);
               }}
+              onDoubleClick={(event) => {
+                if (!shouldEnableChunkSelection) return;
+                if ((event.target as HTMLElement).closest("button, a, input, textarea, select")) {
+                  return;
+                }
+
+                const nextChunkIndex = resolveChunkIndexFromPointer(event.clientX, event.clientY);
+                if (nextChunkIndex === null) {
+                  return;
+                }
+
+                event.preventDefault();
+                event.stopPropagation();
+                setSelectedChunkIndex(nextChunkIndex);
+                onPlayTTSChunk?.(nextChunkIndex);
+              }}
               onTouchStart={(event) => {
                 if (!shouldEnableChunkSelection) return;
                 const touch = event.touches[0];
@@ -1039,7 +1055,7 @@ function MessageBubble({
                         key={`${message.id}-highlight-${chunkIndex}-${rectIndex}`}
                         className={`absolute rounded-sm ${
                           isCurrentChunk
-                            ? "bg-emerald-50/80 dark:bg-emerald-900/20"
+                            ? "bg-emerald-200/85 ring-1 ring-emerald-300/80 dark:bg-emerald-400/20 dark:ring-emerald-300/35"
                             : "bg-amber-50/80 ring-1 ring-amber-200/70 dark:bg-amber-500/10 dark:ring-amber-400/20"
                         }`}
                         style={{
