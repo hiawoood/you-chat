@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Message } from "../lib/api";
@@ -37,6 +37,64 @@ interface TextWordRange {
 interface RenderedWordRange extends TextWordRange {
   sourceStartOffset: number;
   sourceEndOffset: number;
+}
+
+interface PreparedChunkPlan {
+  sourceStartOffset: number;
+  sourceEndOffset: number;
+  wordCount: number;
+}
+
+function areMessagesEqual(left: Message[], right: Message[]) {
+  if (left === right) return true;
+  if (left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index++) {
+    const leftMessage = left[index];
+    const rightMessage = right[index];
+    if (leftMessage === rightMessage) continue;
+    if (!leftMessage || !rightMessage) return false;
+    if (
+      leftMessage.id !== rightMessage.id ||
+      leftMessage.role !== rightMessage.role ||
+      leftMessage.content !== rightMessage.content ||
+      leftMessage.created_at !== rightMessage.created_at ||
+      leftMessage.status !== rightMessage.status
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function areSetsEqual(left?: Set<string>, right?: Set<string>) {
+  if (left === right) return true;
+  if (!left || !right) return false;
+  if (left.size !== right.size) return false;
+  for (const value of left) {
+    if (!right.has(value)) return false;
+  }
+  return true;
+}
+
+function areTtsChunksEqual(left: TTSChunk[] = [], right: TTSChunk[] = []) {
+  if (left === right) return true;
+  if (left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index++) {
+    const leftChunk = left[index];
+    const rightChunk = right[index];
+    if (leftChunk === rightChunk) continue;
+    if (!leftChunk || !rightChunk) return false;
+    if (
+      leftChunk.text !== rightChunk.text ||
+      leftChunk.displayText !== rightChunk.displayText ||
+      leftChunk.sourceStartOffset !== rightChunk.sourceStartOffset ||
+      leftChunk.sourceEndOffset !== rightChunk.sourceEndOffset ||
+      leftChunk.status !== rightChunk.status
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function collectRenderedWordRanges(root: HTMLElement): TextWordRange[] {
@@ -132,7 +190,14 @@ function buildChunkHighlightLayoutsFromWordCounts(root: HTMLElement, chunkWordCo
       ? renderedWords.length - 1
       : Math.min(renderedWords.length - 1, startWord + requestedWordCount - 1);
     nextWordIndex = endWord + 1;
-    layouts.push(buildRangeLayout(root, renderedWords[startWord], renderedWords[endWord]));
+    const startRenderedWord = renderedWords[startWord];
+    const endRenderedWord = renderedWords[endWord];
+    if (!startRenderedWord || !endRenderedWord) {
+      layouts.push({ rects: [], bounds: null, hitBounds: null });
+      continue;
+    }
+
+    layouts.push(buildRangeLayout(root, startRenderedWord, endRenderedWord));
   }
 
   return layouts;
@@ -184,7 +249,14 @@ function buildChunkHighlightLayouts(root: HTMLElement, markdown: string, chunkSo
     }
 
     searchStartIndex = endWordIndex + 1;
-    layouts.push(buildRangeLayout(root, renderedWordsWithSource[startWordIndex], renderedWordsWithSource[endWordIndex]));
+    const startRenderedWord = renderedWordsWithSource[startWordIndex];
+    const endRenderedWord = renderedWordsWithSource[endWordIndex];
+    if (!startRenderedWord || !endRenderedWord) {
+      layouts.push({ rects: [], bounds: null, hitBounds: null });
+      continue;
+    }
+
+    layouts.push(buildRangeLayout(root, startRenderedWord, endRenderedWord));
   }
 
   return layouts;
@@ -259,7 +331,7 @@ function formatTime(ts: number): string {
   return `${d.toLocaleDateString([], { month: "short", day: "numeric" })}, ${time}`;
 }
 
-export default function MessageList({
+function MessageList({
   messages,
   streamingContent,
   streamingMessageId,
@@ -289,25 +361,65 @@ export default function MessageList({
   ttsAutoScrollEnabled = false,
   bottomSpacerHeight = 0,
 }: MessageListProps) {
-  const dedupedMessages = streamingContent && streamingMessageId
-    ? messages.filter((message) => message.id !== streamingMessageId)
-    : messages;
+  const dedupedMessages = useMemo(
+    () => streamingContent && streamingMessageId
+      ? messages.filter((message) => message.id !== streamingMessageId)
+      : messages,
+    [messages, streamingContent, streamingMessageId],
+  );
   const bottomRef = useRef<HTMLDivElement>(null);
   const prevMessageLengthRef = useRef(dedupedMessages.length);
+  const chunkPlanCacheRef = useRef(new Map<string, { content: string; streaming: boolean; plans: PreparedChunkPlan[] }>());
+  const activeTtsChunkPlans = useMemo(
+    () => ttsChunks?.map((chunk) => ({
+      sourceStartOffset: chunk.sourceStartOffset,
+      sourceEndOffset: chunk.sourceEndOffset,
+      wordCount: chunk.text.split(/\s+/).filter(Boolean).length,
+    })) ?? [],
+    [ttsChunks],
+  );
 
-  const items: (Message & { isStreaming?: boolean })[] = [
-    ...dedupedMessages,
-    ...(streamingContent
-      ? [{
-          id: streamingMessageId || "streaming",
-          session_id: "",
-          role: "assistant" as const,
-          content: streamingContent,
-          created_at: Date.now() / 1000,
-          isStreaming: true,
-        }]
-      : []),
-  ];
+  const items: (Message & { isStreaming?: boolean })[] = useMemo(
+    () => [
+      ...dedupedMessages,
+      ...(streamingContent
+        ? [{
+            id: streamingMessageId || "streaming",
+            session_id: "",
+            role: "assistant" as const,
+            content: streamingContent,
+            created_at: Date.now() / 1000,
+            isStreaming: true,
+          }]
+        : []),
+    ],
+    [dedupedMessages, streamingContent, streamingMessageId],
+  );
+
+  const getCachedChunkPlans = (messageId: string, content: string, isStreamingMessage: boolean): PreparedChunkPlan[] => {
+    const cacheKey = `${messageId}:${isStreamingMessage ? "streaming" : "static"}`;
+    const cached = chunkPlanCacheRef.current.get(cacheKey);
+    if (cached && cached.content === content && cached.streaming === isStreamingMessage) {
+      return cached.plans;
+    }
+
+    const plans = (isStreamingMessage
+      ? splitStreamingTextIntoDisplayChunkPlans(content)
+      : splitTextIntoDisplayChunkPlans(content)
+    ).map((chunk) => ({
+      sourceStartOffset: chunk.sourceStartOffset,
+      sourceEndOffset: chunk.sourceEndOffset,
+      wordCount: chunk.text.split(/\s+/).filter(Boolean).length,
+    }));
+
+    chunkPlanCacheRef.current.set(cacheKey, {
+      content,
+      streaming: isStreamingMessage,
+      plans,
+    });
+
+    return plans;
+  };
 
   useEffect(() => {
     const prevLength = prevMessageLengthRef.current;
@@ -355,28 +467,23 @@ export default function MessageList({
         const isDeleting = actionLoading === `delete-msg-${item.id}`;
         const isActivelyStreaming = !!item.isStreaming || item.status === "streaming";
         const isUserItem = item.role === "user";
+        const regenerateTargetMessageId = isUserItem
+          ? item.id
+          : (() => {
+              const idx = items.indexOf(item);
+              for (let i = idx - 1; i >= 0; i--) {
+                const prevItem = items[i];
+                if (prevItem?.role === "user") {
+                  return prevItem.id;
+                }
+              }
+              return null;
+            })();
 
         const isTTSActive = ttsActiveMessageId === item.id;
-        const messageChunkPlans = isTTSActive && ttsChunks && ttsChunks.length > 0
-          ? ttsChunks.map((chunk) => ({
-              displayText: chunk.displayText,
-              sourceStartOffset: chunk.sourceStartOffset,
-              sourceEndOffset: chunk.sourceEndOffset,
-              wordCount: chunk.text.split(/\s+/).filter(Boolean).length,
-            }))
-          : isActivelyStreaming
-            ? splitStreamingTextIntoDisplayChunkPlans(item.content).map((chunk) => ({
-                displayText: chunk.displayText,
-                sourceStartOffset: chunk.sourceStartOffset,
-                sourceEndOffset: chunk.sourceEndOffset,
-                wordCount: chunk.text.split(/\s+/).filter(Boolean).length,
-              }))
-            : splitTextIntoDisplayChunkPlans(item.content).map((chunk) => ({
-                displayText: chunk.displayText,
-                sourceStartOffset: chunk.sourceStartOffset,
-                sourceEndOffset: chunk.sourceEndOffset,
-                wordCount: chunk.text.split(/\s+/).filter(Boolean).length,
-              }));
+        const messageChunkPlans = isTTSActive && activeTtsChunkPlans.length > 0
+          ? activeTtsChunkPlans
+          : getCachedChunkPlans(item.id, item.content, isActivelyStreaming);
 
         return (
           <MessageBubble
@@ -386,21 +493,8 @@ export default function MessageList({
             isDeleting={isDeleting}
             onEdit={onEditMessage && !isActivelyStreaming ? (content: string) => onEditMessage(item.id, content) : undefined}
             onDelete={onDeleteMessage && !isActivelyStreaming ? () => onDeleteMessage(item.id) : undefined}
-            onRegenerate={onRegenerate && !isActivelyStreaming ? () => {
-              if (item.role === "user") {
-                onRegenerate(item.id);
-              } else {
-                // For assistant messages, find the preceding user message
-                const idx = items.indexOf(item);
-                for (let i = idx - 1; i >= 0; i--) {
-                  const prevItem = items[i];
-                  if (prevItem?.role === "user") {
-                    onRegenerate(prevItem.id);
-                    return;
-                  }
-                }
-              }
-            } : undefined}
+            onRegenerate={onRegenerate && !isActivelyStreaming ? onRegenerate : undefined}
+            regenerateTargetMessageId={regenerateTargetMessageId}
             onFork={onFork && !isActivelyStreaming ? () => onFork(item.id) : undefined}
             onContinue={onContinue && !isActivelyStreaming && !isUserItem ? () => onContinue(item.content) : undefined}
             onCompact={onCompact && !isActivelyStreaming ? () => onCompact(item.id) : undefined}
@@ -509,6 +603,7 @@ function MessageBubble({
   onEdit,
   onDelete,
   onRegenerate,
+  regenerateTargetMessageId,
   onFork,
   onContinue,
   onCompact,
@@ -533,7 +628,8 @@ function MessageBubble({
   isForking?: boolean;
   onEdit?: (content: string) => void;
   onDelete?: () => void;
-  onRegenerate?: () => void;
+  onRegenerate?: (messageId: string) => void;
+  regenerateTargetMessageId?: string | null;
   onFork?: () => void;
   onContinue?: (messageContent: string) => void;
   onCompact?: () => void;
@@ -697,7 +793,8 @@ function MessageBubble({
     }
 
     const targetLayout = chunkLayouts[ttsCurrentChunk];
-    if (!targetLayout?.bounds || !contentRef.current) {
+    const targetBounds = targetLayout?.bounds;
+    if (!targetBounds || !contentRef.current) {
       return;
     }
 
@@ -709,7 +806,7 @@ function MessageBubble({
 
       const contentRect = contentRef.current.getBoundingClientRect();
       const scrollRect = scrollContainer.getBoundingClientRect();
-      const targetCenter = scrollContainer.scrollTop + (contentRect.top - scrollRect.top) + targetLayout.bounds.top + (targetLayout.bounds.height / 2);
+      const targetCenter = scrollContainer.scrollTop + (contentRect.top - scrollRect.top) + targetBounds.top + (targetBounds.height / 2);
       scrollContainer.scrollTo({
         top: Math.max(0, targetCenter - (scrollContainer.clientHeight / 2)),
         behavior: "smooth",
@@ -752,7 +849,10 @@ function MessageBubble({
   const contentHeight = contentRef.current?.clientHeight ?? 0;
 
   return (
-    <div className={`group ${isUser ? "flex flex-col items-end" : "flex flex-col items-start"} ${isBusy ? "opacity-50" : ""}`}>
+    <div
+      className={`group ${isUser ? "flex flex-col items-end" : "flex flex-col items-start"} ${isBusy ? "opacity-50" : ""}`}
+      style={{ contentVisibility: "auto", containIntrinsicSize: "160px" }}
+    >
       {/* Timestamp */}
       <div className={`text-[10px] text-gray-400 dark:text-gray-500 mb-0.5 px-1 ${isUser ? "text-right" : "text-left"}`}>
         {formatTime(message.created_at)}
@@ -950,7 +1050,7 @@ function MessageBubble({
             <button
               onClick={() => {
                 if (confirmAction === "delete") onDelete?.();
-                else if (confirmAction === "regenerate") onRegenerate?.();
+                else if (confirmAction === "regenerate" && regenerateTargetMessageId) onRegenerate?.(regenerateTargetMessageId);
                 setConfirmAction(null);
               }}
               className="px-2 py-0.5 rounded bg-red-600 text-white hover:bg-red-700"
@@ -1067,3 +1167,25 @@ function MessageBubble({
     </div>
   );
 }
+
+function areMessageListPropsEqual(previousProps: Readonly<MessageListProps>, nextProps: Readonly<MessageListProps>) {
+  return areMessagesEqual(previousProps.messages, nextProps.messages)
+    && previousProps.streamingContent === nextProps.streamingContent
+    && previousProps.streamingMessageId === nextProps.streamingMessageId
+    && previousProps.thinkingStatus === nextProps.thinkingStatus
+    && previousProps.actionLoading === nextProps.actionLoading
+    && areSetsEqual(previousProps.collapsedIds, nextProps.collapsedIds)
+    && previousProps.suppressAutoScrollOnNextAppend === nextProps.suppressAutoScrollOnNextAppend
+    && previousProps.disableAutoScroll === nextProps.disableAutoScroll
+    && previousProps.disableQuickContinue === nextProps.disableQuickContinue
+    && previousProps.compactBusy === nextProps.compactBusy
+    && previousProps.ttsActiveMessageId === nextProps.ttsActiveMessageId
+    && areTtsChunksEqual(previousProps.ttsChunks, nextProps.ttsChunks)
+    && previousProps.ttsCurrentChunk === nextProps.ttsCurrentChunk
+    && previousProps.ttsIsPlaying === nextProps.ttsIsPlaying
+    && previousProps.ttsIsLoading === nextProps.ttsIsLoading
+    && previousProps.ttsAutoScrollEnabled === nextProps.ttsAutoScrollEnabled
+    && previousProps.bottomSpacerHeight === nextProps.bottomSpacerHeight;
+}
+
+export default memo(MessageList, areMessageListPropsEqual);

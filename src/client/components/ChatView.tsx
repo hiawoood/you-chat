@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, type PointerEvent as ReactPointerEvent, type TouchEvent as ReactTouchEvent } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo, type PointerEvent as ReactPointerEvent, type TouchEvent as ReactTouchEvent } from "react";
 import { api } from "../lib/api";
 import type { ChatSession, Message, Agent, SessionTtsSpeakerMapping, TtsVoiceReference, TtsVoiceListResponse, TtsStatusResponse } from "../lib/api";
 import { useChat } from "../hooks/useChat";
@@ -89,7 +89,6 @@ export default function ChatView({
   messagesRefreshing = false,
   actionLoading,
 }: ChatViewProps) {
-  const [streamingContent, setStreamingContent] = useState("");
   const [streamingAssistantMessageId, setStreamingAssistantMessageId] = useState<string | null>(null);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [collapsedIds, setCollapsedIds] = useState<Set<string>>(new Set());
@@ -99,6 +98,7 @@ export default function ChatView({
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const hideHeader = false;
   const [showScrollBtn, setShowScrollBtn] = useState(false);
+  const showScrollBtnRef = useRef(false);
   const [suppressMessageAutoScroll, setSuppressMessageAutoScroll] = useState(false);
   const [showChunkTextPanel, setShowChunkTextPanel] = useState(false);
   const [showVoiceMenu, setShowVoiceMenu] = useState(false);
@@ -134,6 +134,8 @@ export default function ChatView({
   const pullRefreshStartYRef = useRef<number | null>(null);
   const pullRefreshTrackingRef = useRef(false);
   const [pullRefreshDistance, setPullRefreshDistance] = useState(0);
+  const pullRefreshDistanceRef = useRef(0);
+  const pullRefreshAnimationFrameRef = useRef<number | null>(null);
 
   // Initialize chunked TTS hook
   const {
@@ -172,6 +174,36 @@ export default function ChatView({
     return el.scrollHeight - el.clientHeight - el.scrollTop <= SCROLL_TRIGGER_BUFFER_PX;
   }, []);
 
+  const schedulePullRefreshDistance = useCallback((nextDistance: number) => {
+    const clampedDistance = Math.max(0, Math.min(MAX_PULL_TO_REFRESH_PX, nextDistance));
+    if (pullRefreshDistanceRef.current === clampedDistance) {
+      return;
+    }
+
+    pullRefreshDistanceRef.current = clampedDistance;
+    if (typeof window === "undefined") {
+      setPullRefreshDistance((current) => current === clampedDistance ? current : clampedDistance);
+      return;
+    }
+
+    if (pullRefreshAnimationFrameRef.current !== null) {
+      return;
+    }
+
+    pullRefreshAnimationFrameRef.current = window.requestAnimationFrame(() => {
+      pullRefreshAnimationFrameRef.current = null;
+      const distance = pullRefreshDistanceRef.current;
+      setPullRefreshDistance((current) => current === distance ? current : distance);
+    });
+  }, []);
+
+  useEffect(() => () => {
+    if (pullRefreshAnimationFrameRef.current !== null && typeof window !== "undefined") {
+      window.cancelAnimationFrame(pullRefreshAnimationFrameRef.current);
+      pullRefreshAnimationFrameRef.current = null;
+    }
+  }, []);
+
   const getLastWords = (content: string, count: number) => {
     const words = content.trim().split(/\s+/).filter(Boolean);
     if (words.length <= count) return words.join(" ");
@@ -190,11 +222,18 @@ export default function ChatView({
     if (!el) return;
     const handleScroll = () => {
       const distFromBottom = el.scrollHeight - el.clientHeight - el.scrollTop;
-      setShowScrollBtn(distFromBottom > SCROLL_TRIGGER_BUFFER_PX);
+      const nextShowScrollBtn = distFromBottom > SCROLL_TRIGGER_BUFFER_PX;
+      if (showScrollBtnRef.current === nextShowScrollBtn) {
+        return;
+      }
+
+      showScrollBtnRef.current = nextShowScrollBtn;
+      setShowScrollBtn(nextShowScrollBtn);
     };
+    handleScroll();
     el.addEventListener("scroll", handleScroll, { passive: true });
     return () => el.removeEventListener("scroll", handleScroll);
-  }, []);
+  }, [messages.length, messagesLoading]);
 
   const scrollToBottom = useCallback(() => {
     const el = scrollContainerRef.current;
@@ -222,7 +261,14 @@ export default function ChatView({
   const activeChunkText = activeChunk?.displayText ?? "No chunk text available.";
   const currentChunkNumber = ttsTotalChunks > 0 ? ttsCurrentChunk + 1 : 0;
   const isCurrentChunkLoading = ttsLoadingChunkIndex === ttsCurrentChunk;
-  const selectedTtsVoice = ttsVoices.find((voice) => voice.id === selectedTtsVoiceId) || null;
+  const voiceById = useMemo(
+    () => new Map(ttsVoices.map((voice) => [voice.id, voice])),
+    [ttsVoices],
+  );
+  const selectedTtsVoice = useMemo(
+    () => selectedTtsVoiceId ? voiceById.get(selectedTtsVoiceId) || null : null,
+    [selectedTtsVoiceId, voiceById],
+  );
   const ttsLifecycle = ttsServiceStatus?.lifecycle;
   const isTtsProvisioning = Boolean(ttsLifecycle?.provisioning);
   const ttsStatusSummary = ttsLifecycle?.message || (ttsServiceStatus?.active ? "GPU instance ready." : "No GPU instance is active.");
@@ -244,6 +290,14 @@ export default function ChatView({
     : null;
   const showPullRefreshIndicator = pullRefreshDistance > 0 || messagesRefreshing;
   const pullRefreshProgress = Math.min(1, pullRefreshDistance / PULL_TO_REFRESH_TRIGGER_PX);
+  const customAgents = useMemo(
+    () => agents.filter((agent) => agent.type === "agent"),
+    [agents],
+  );
+  const modelAgents = useMemo(
+    () => agents.filter((agent) => agent.type === "model"),
+    [agents],
+  );
 
   useEffect(() => {
     if (!hasTtsOverlay || ttsTotalChunks === 0) {
@@ -256,9 +310,9 @@ export default function ChatView({
 
   useEffect(() => {
     if (!messagesRefreshing) {
-      setPullRefreshDistance(0);
+      schedulePullRefreshDistance(0);
     }
-  }, [messagesRefreshing]);
+  }, [messagesRefreshing, schedulePullRefreshDistance]);
 
   const handleAgentChange = (newAgent: string) => {
     onUpdateSession(session.id, { agent: newAgent });
@@ -271,8 +325,6 @@ export default function ChatView({
 
     onUpdateSession(session.id, { lastTtsMessageId: messageId });
   }, [onUpdateSession, session.id, session.last_tts_message_id]);
-
-  const [thinkingStatus, setThinkingStatus] = useState<string | null>(null);
 
   const applyVoiceSelectionResponse = useCallback((response: TtsVoiceListResponse) => {
     setTtsVoices(response.voices || []);
@@ -377,7 +429,16 @@ export default function ChatView({
     };
   }, [hasTtsOverlay, loadTtsServiceStatus, showTtsLogsModal, showTtsStatusPanel]);
 
-  const { sendMessage, regenerate, compactMessage, stopGeneration, isStreaming, isCompacting } = useChat({
+  const {
+    sendMessage,
+    regenerate,
+    compactMessage,
+    stopGeneration,
+    isStreaming,
+    isCompacting,
+    thinkingStatus,
+    streamedContent: streamingContent,
+  } = useChat({
     sessionId: session.id,
     onUserMessageId: (realId) => {
       if (pendingTempIdRef.current) {
@@ -388,17 +449,11 @@ export default function ChatView({
     onAssistantMessageId: (messageId) => {
       setStreamingAssistantMessageId(messageId);
     },
-    onThinking: (status) => {
-      setThinkingStatus(status);
-    },
     onMessage: (content) => {
-      setThinkingStatus(null);
       streamingContentRef.current = content;
-      setStreamingContent(content);
     },
     onDone: (messageId) => {
       const finalContent = streamingContentRef.current;
-      setThinkingStatus(null);
       setSuppressMessageAutoScroll((prev) => prev || !isNearBottom());
       onMessageReceived({
         id: messageId,
@@ -410,23 +465,21 @@ export default function ChatView({
       void syncActiveStreamingTtsToFinalMessage(messageId, finalContent);
       setStreamingAssistantMessageId(null);
       streamingContentRef.current = "";
-      setStreamingContent("");
     },
     onTitleGenerated: (title) => {
       onUpdateSession(session.id, { title });
     },
     onError: (error) => {
       console.error("Chat error:", error);
-      setThinkingStatus(null);
       setStreamingAssistantMessageId(null);
       streamingContentRef.current = "";
-      setStreamingContent("");
     },
   });
 
   const handleRegenerate = async (messageId: string) => {
     // Remove messages after this one from UI
     const runRegeneration = async () => {
+      streamingContentRef.current = "";
       onTruncateAfter?.(messageId);
       await regenerate(messageId);
     };
@@ -449,6 +502,7 @@ export default function ChatView({
       created_at: Math.floor(Date.now() / 1000),
     };
     pendingTempIdRef.current = tempId;
+    streamingContentRef.current = "";
     setStreamingAssistantMessageId(null);
     onMessageSent(userMessage);
     await sendMessage(content);
@@ -946,31 +1000,31 @@ export default function ChatView({
     if (el.scrollTop > 0) {
       pullRefreshTrackingRef.current = false;
       pullRefreshStartYRef.current = null;
-      setPullRefreshDistance(0);
+      schedulePullRefreshDistance(0);
       return;
     }
 
     const deltaY = touch.clientY - startY;
     if (deltaY <= 0) {
-      setPullRefreshDistance(0);
+      schedulePullRefreshDistance(0);
       return;
     }
 
-    setPullRefreshDistance(Math.min(MAX_PULL_TO_REFRESH_PX, deltaY * 0.5));
+    schedulePullRefreshDistance(deltaY * 0.5);
   };
 
   const handleMessageListTouchEnd = () => {
-    const shouldRefresh = pullRefreshDistance >= PULL_TO_REFRESH_TRIGGER_PX && !messagesRefreshing;
+    const shouldRefresh = pullRefreshDistanceRef.current >= PULL_TO_REFRESH_TRIGGER_PX && !messagesRefreshing;
     pullRefreshTrackingRef.current = false;
     pullRefreshStartYRef.current = null;
 
     if (shouldRefresh) {
-      setPullRefreshDistance(PULL_TO_REFRESH_TRIGGER_PX);
+      schedulePullRefreshDistance(PULL_TO_REFRESH_TRIGGER_PX);
       void onRefreshMessages?.();
       return;
     }
 
-    setPullRefreshDistance(0);
+    schedulePullRefreshDistance(0);
   };
 
   const hasMessages = messages.length > 0;
@@ -1011,15 +1065,24 @@ export default function ChatView({
     return () => window.clearTimeout(timer);
   }, [hasActiveStream, loadSessionTtsSpeakers, streamingContent]);
 
-  const visibleSessionTtsSpeakers = sessionTtsSpeakers.filter((speaker) => !speaker.hidden);
-  const hiddenSessionTtsSpeakers = sessionTtsSpeakers.filter((speaker) => speaker.hidden);
-  const effectiveCollapsedIds = ttsActiveMessageId
-    ? new Set([...collapsedIds].filter((messageId) => messageId !== ttsActiveMessageId))
-    : collapsedIds;
-  const getSpeakerPreviewVoice = (speaker: SessionTtsSpeakerMapping) => {
+  const visibleSessionTtsSpeakers = useMemo(
+    () => sessionTtsSpeakers.filter((speaker) => !speaker.hidden),
+    [sessionTtsSpeakers],
+  );
+  const hiddenSessionTtsSpeakers = useMemo(
+    () => sessionTtsSpeakers.filter((speaker) => speaker.hidden),
+    [sessionTtsSpeakers],
+  );
+  const effectiveCollapsedIds = useMemo(
+    () => ttsActiveMessageId
+      ? new Set([...collapsedIds].filter((messageId) => messageId !== ttsActiveMessageId))
+      : collapsedIds,
+    [collapsedIds, ttsActiveMessageId],
+  );
+  const getSpeakerPreviewVoice = useCallback((speaker: SessionTtsSpeakerMapping) => {
     const effectiveVoiceId = speaker.voiceReferenceId ?? selectedTtsVoiceId;
-    return effectiveVoiceId ? ttsVoices.find((voice) => voice.id === effectiveVoiceId) || null : null;
-  };
+    return effectiveVoiceId ? voiceById.get(effectiveVoiceId) || null : null;
+  }, [selectedTtsVoiceId, voiceById]);
 
   return (
     <div className="relative flex flex-col h-full bg-white dark:bg-gray-900">
@@ -1102,18 +1165,18 @@ export default function ChatView({
               disabled={hasActiveStream}
               className="text-sm px-2 py-1 bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-md text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-gray-400 max-w-[120px] sm:max-w-none"
             >
-              {agents.filter((a) => a.type === "agent").length > 0 && (
+              {customAgents.length > 0 && (
                 <optgroup label="Custom Agents">
-                  {agents.filter((a) => a.type === "agent").map((agent) => (
+                  {customAgents.map((agent) => (
                     <option key={agent.id} value={agent.id}>
                       {agent.name}
                     </option>
                   ))}
                 </optgroup>
               )}
-              {agents.filter((a) => a.type === "model").length > 0 && (
+              {modelAgents.length > 0 && (
                 <optgroup label="Models">
-                  {agents.filter((a) => a.type === "model").map((agent) => (
+                  {modelAgents.map((agent) => (
                     <option key={agent.id} value={agent.id}>
                       {agent.name}
                     </option>
@@ -1869,8 +1932,7 @@ export default function ChatView({
                 const stopRequest = onStopGeneration?.();
                 stopGeneration();
                 setStreamingAssistantMessageId(null);
-                setStreamingContent("");
-                setThinkingStatus(null);
+                streamingContentRef.current = "";
                 await stopRequest;
               }}
               className="w-full h-9 flex items-center justify-center gap-2 rounded-md bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-900/40 transition-colors text-sm"

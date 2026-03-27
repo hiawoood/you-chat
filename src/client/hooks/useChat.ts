@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, startTransition } from "react";
 
 interface UseChatOptions {
   sessionId: string;
@@ -150,6 +150,56 @@ export function useChat({ sessionId, onMessage, onUserMessageId, onAssistantMess
   const [thinkingStatus, setThinkingStatus] = useState<string | null>(null);
   const [streamedContent, setStreamedContent] = useState("");
   const abortRef = useRef<AbortController | null>(null);
+  const pendingStreamContentRef = useRef("");
+  const streamContentFrameRef = useRef<number | null>(null);
+
+  const emitStreamContent = useCallback((content: string) => {
+    startTransition(() => {
+      setStreamedContent((current) => current === content ? current : content);
+    });
+    onMessage?.(content);
+  }, [onMessage]);
+
+  const flushPendingStreamContent = useCallback(() => {
+    if (streamContentFrameRef.current !== null && typeof window !== "undefined") {
+      window.cancelAnimationFrame(streamContentFrameRef.current);
+      streamContentFrameRef.current = null;
+    }
+
+    emitStreamContent(pendingStreamContentRef.current);
+  }, [emitStreamContent]);
+
+  const scheduleStreamContent = useCallback((content: string) => {
+    if (pendingStreamContentRef.current === content) {
+      return;
+    }
+
+    pendingStreamContentRef.current = content;
+    if (typeof window === "undefined") {
+      emitStreamContent(content);
+      return;
+    }
+
+    if (streamContentFrameRef.current !== null) {
+      return;
+    }
+
+    streamContentFrameRef.current = window.requestAnimationFrame(() => {
+      streamContentFrameRef.current = null;
+      emitStreamContent(pendingStreamContentRef.current);
+    });
+  }, [emitStreamContent]);
+
+  const resetStreamContent = useCallback(() => {
+    pendingStreamContentRef.current = "";
+    if (streamContentFrameRef.current !== null && typeof window !== "undefined") {
+      window.cancelAnimationFrame(streamContentFrameRef.current);
+      streamContentFrameRef.current = null;
+    }
+    startTransition(() => {
+      setStreamedContent("");
+    });
+  }, []);
 
   const stopGeneration = useCallback(async () => {
     if (abortRef.current) {
@@ -163,7 +213,7 @@ export function useChat({ sessionId, onMessage, onUserMessageId, onAssistantMess
       const controller = new AbortController();
       abortRef.current = controller;
       setIsStreaming(true);
-      setStreamedContent("");
+      resetStreamContent();
       setThinkingStatus(null);
       let fullContent = "";
       let assistantMsgId: string | null = null;
@@ -174,14 +224,14 @@ export function useChat({ sessionId, onMessage, onUserMessageId, onAssistantMess
       const applyStreamContent = (content: string) => {
         if (content === fullContent) return;
         fullContent = content;
-        setStreamedContent(content);
-        onMessage?.(content);
+        scheduleStreamContent(content);
       };
 
       const finishStream = (messageId: string, generatedTitle?: string) => {
         if (didFinish) return;
         didFinish = true;
         streamCompleted = true;
+        flushPendingStreamContent();
         setThinkingStatus(null);
         onDone?.(messageId);
         if (generatedTitle) onTitleGenerated?.(generatedTitle);
@@ -290,12 +340,12 @@ export function useChat({ sessionId, onMessage, onUserMessageId, onAssistantMess
         }
       } finally {
         setIsStreaming(false);
-        setStreamedContent("");
+        resetStreamContent();
         setThinkingStatus(null);
         abortRef.current = null;
       }
     },
-    [sessionId, onAssistantMessageId, onMessage, onUserMessageId, onDone, onTitleGenerated, onThinking, onError]
+    [flushPendingStreamContent, onAssistantMessageId, onDone, onError, onThinking, onTitleGenerated, onUserMessageId, resetStreamContent, scheduleStreamContent, sessionId]
   );
 
   const regenerate = useCallback(
@@ -303,7 +353,7 @@ export function useChat({ sessionId, onMessage, onUserMessageId, onAssistantMess
       const controller = new AbortController();
       abortRef.current = controller;
       setIsStreaming(true);
-      setStreamedContent("");
+      resetStreamContent();
       setThinkingStatus(null);
       let fullContent = "";
       let regenCompleted = false;
@@ -314,14 +364,14 @@ export function useChat({ sessionId, onMessage, onUserMessageId, onAssistantMess
       const applyStreamContent = (content: string) => {
         if (content === fullContent) return;
         fullContent = content;
-        setStreamedContent(content);
-        onMessage?.(content);
+        scheduleStreamContent(content);
       };
 
       const finishRegeneration = (nextMessageId: string) => {
         if (didFinish) return;
         didFinish = true;
         regenCompleted = true;
+        flushPendingStreamContent();
         setThinkingStatus(null);
         onDone?.(nextMessageId);
       };
@@ -410,12 +460,12 @@ export function useChat({ sessionId, onMessage, onUserMessageId, onAssistantMess
         onError?.(error instanceof Error ? error.message : "Unknown error");
       } finally {
         setIsStreaming(false);
-        setStreamedContent("");
+        resetStreamContent();
         setThinkingStatus(null);
         abortRef.current = null;
       }
     },
-    [sessionId, onAssistantMessageId, onMessage, onDone, onThinking, onError]
+    [flushPendingStreamContent, onAssistantMessageId, onDone, onError, onThinking, resetStreamContent, scheduleStreamContent, sessionId]
   );
 
   const compactMessage = useCallback(

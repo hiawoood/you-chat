@@ -1,10 +1,19 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, Suspense, lazy } from "react";
 import { Capacitor } from "@capacitor/core";
 import { useSession } from "./lib/auth";
 import { api } from "./lib/api";
-import Login from "./pages/Login";
-import Chat from "./pages/Chat";
-import CookieSetup from "./pages/CookieSetup";
+
+const Login = lazy(() => import("./pages/Login"));
+const Chat = lazy(() => import("./pages/Chat"));
+const CookieSetup = lazy(() => import("./pages/CookieSetup"));
+
+function FullScreenSpinner() {
+  return (
+    <div className="flex items-center justify-center min-h-screen">
+      <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900"></div>
+    </div>
+  );
+}
 
 export default function App() {
   useEffect(() => {
@@ -36,27 +45,33 @@ export default function App() {
   }, [session?.user]);
 
   if (isPending || checkingCredentials) {
-    return (
-      <div className="flex items-center justify-center min-h-screen">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900"></div>
-      </div>
-    );
+    return <FullScreenSpinner />;
   }
 
   if (!session?.user) {
-    return <Login />;
+    return (
+      <Suspense fallback={<FullScreenSpinner />}>
+        <Login />
+      </Suspense>
+    );
   }
 
   if (hasCredentials === false) {
     return (
-      <CookieSetup
-        onComplete={() => {
-          credentialChecked.current = true;
-          setHasCredentials(true);
-        }}
-      />
+      <Suspense fallback={<FullScreenSpinner />}>
+        <CookieSetup
+          onComplete={() => {
+            credentialChecked.current = true;
+            setHasCredentials(true);
+          }}
+        />
+      </Suspense>
     );
   }
 
-  return <Chat />;
+  return (
+    <Suspense fallback={<FullScreenSpinner />}>
+      <Chat />
+    </Suspense>
+  );
 }
