@@ -25,12 +25,12 @@ interface ChatViewProps {
   messagesLoading?: boolean;
   onMessageSent: (message: Message) => void;
   onMessageReceived: (message: Message) => void;
-  onUpdateMessageId: (tempId: string, realId: string) => void;
+  onUpdateMessageId: (sessionId: string, tempId: string, realId: string) => void;
   onUpdateSession: (id: string, updates: { title?: string; agent?: string; lastTtsMessageId?: string | null }) => void;
   onToggleSidebar?: () => void;
   onEditMessage?: (messageId: string, content: string) => Promise<void>;
   onDeleteMessage?: (messageId: string) => void;
-  onTruncateAfter?: (messageId: string) => void;
+  onTruncateAfter?: (sessionId: string, messageId: string) => void;
   onFork?: (messageId: string) => void;
   onStopGeneration?: () => void;
   onBeforeRegenerate?: (action: () => Promise<void>) => Promise<void>;
@@ -38,6 +38,15 @@ interface ChatViewProps {
   hasInFlightStream?: boolean;
   messagesRefreshing?: boolean;
   actionLoading?: string | null;
+}
+
+interface ActiveTtsSource {
+  sessionId: string;
+  messageId: string;
+  content: string;
+  voiceReferenceId: string | null;
+  speakerMappings: SessionTtsSpeakerMapping[];
+  isStreaming: boolean;
 }
 
 function sortSessionTtsSpeakers(speakers: SessionTtsSpeakerMapping[]): SessionTtsSpeakerMapping[] {
@@ -124,9 +133,11 @@ export default function ChatView({
   const [ttsLogsInstanceId, setTtsLogsInstanceId] = useState<string | null>(null);
   const [ttsLogsLoading, setTtsLogsLoading] = useState(false);
   const [ttsLogsError, setTtsLogsError] = useState<string | null>(null);
+  const [activeTtsSource, setActiveTtsSourceState] = useState<ActiveTtsSource | null>(null);
   const [previewVoiceId, setPreviewVoiceId] = useState<string | null>(null);
   const previewAudioRef = useRef<HTMLAudioElement | null>(null);
   const previewVoiceIdRef = useRef<string | null>(null);
+  const activeTtsSourceRef = useRef<ActiveTtsSource | null>(null);
   const chunkPanelTouchStartRef = useRef<{ x: number; y: number } | null>(null);
   const playButtonLongPressTimerRef = useRef<number | null>(null);
   const suppressPlayButtonClickRef = useRef(false);
@@ -359,13 +370,44 @@ export default function ChatView({
     }
   }, [applyVoiceSelectionResponse]);
 
-  useEffect(() => {
-    setSpeakerContext({
-      sessionId: session.id,
-      defaultVoiceReferenceId: selectedTtsVoiceId,
-      speakerMappings: sessionTtsSpeakers,
+  const setActiveTtsSource = useCallback((nextSource: ActiveTtsSource | null | ((current: ActiveTtsSource | null) => ActiveTtsSource | null)) => {
+    setActiveTtsSourceState((current) => {
+      const resolved = typeof nextSource === "function"
+        ? (nextSource as (value: ActiveTtsSource | null) => ActiveTtsSource | null)(current)
+        : nextSource;
+      activeTtsSourceRef.current = resolved;
+      return resolved;
     });
-  }, [selectedTtsVoiceId, session.id, sessionTtsSpeakers, setSpeakerContext]);
+  }, []);
+
+  const applyTtsSourceContext = useCallback((source: ActiveTtsSource | null) => {
+    if (!source) return;
+
+    setSpeakerContext({
+      sessionId: source.sessionId,
+      defaultVoiceReferenceId: source.voiceReferenceId,
+      speakerMappings: source.speakerMappings,
+    });
+  }, [setSpeakerContext]);
+
+  const updateCurrentSessionTtsSource = useCallback((updater: (current: ActiveTtsSource) => ActiveTtsSource) => {
+    setActiveTtsSource((current) => {
+      if (!current || current.sessionId !== session.id) {
+        return current;
+      }
+
+      return updater(current);
+    });
+  }, [session.id, setActiveTtsSource]);
+
+  const createCurrentSessionTtsSource = useCallback((messageId: string, content: string, options?: { voiceReferenceId?: string | null; isStreaming?: boolean; speakerMappings?: SessionTtsSpeakerMapping[] }) => ({
+    sessionId: session.id,
+    messageId,
+    content,
+    voiceReferenceId: options?.voiceReferenceId ?? selectedTtsVoiceId,
+    speakerMappings: options?.speakerMappings ?? sessionTtsSpeakers,
+    isStreaming: options?.isStreaming ?? false,
+  }), [selectedTtsVoiceId, session.id, sessionTtsSpeakers]);
 
   const stopVoicePreview = useCallback(() => {
     const previewAudio = previewAudioRef.current;
@@ -442,7 +484,7 @@ export default function ChatView({
     sessionId: session.id,
     onUserMessageId: (realId) => {
       if (pendingTempIdRef.current) {
-        onUpdateMessageId(pendingTempIdRef.current, realId);
+        onUpdateMessageId(session.id, pendingTempIdRef.current, realId);
         pendingTempIdRef.current = null;
       }
     },
@@ -480,7 +522,7 @@ export default function ChatView({
     // Remove messages after this one from UI
     const runRegeneration = async () => {
       streamingContentRef.current = "";
-      onTruncateAfter?.(messageId);
+      onTruncateAfter?.(session.id, messageId);
       await regenerate(messageId);
     };
 
@@ -529,28 +571,136 @@ export default function ChatView({
     return response?.selectedVoiceId ?? null;
   };
 
-  const syncActiveStreamingTtsToFinalMessage = async (messageId: string, content: string) => {
-    if (ttsActiveMessageId !== STREAMING_TTS_PLACEHOLDER_ID || (!ttsIsPlaying && !ttsIsLoading) || !content.trim()) {
+  const syncTtsSourceToFinalMessage = useCallback(async (messageId: string, content: string, sourceOverride?: ActiveTtsSource | null) => {
+    const source = sourceOverride ?? activeTtsSourceRef.current;
+    if (!source || !content.trim()) {
       return;
     }
 
-    const voiceId = await resolvePlaybackVoiceId();
-    await startPlayback(content, messageId, Math.max(0, ttsCurrentChunk), voiceId);
+    const nextSource: ActiveTtsSource = {
+      ...source,
+      messageId,
+      content,
+      isStreaming: false,
+    };
+
+    applyTtsSourceContext(nextSource);
+    setActiveTtsSource(nextSource);
+    await startPlayback(content, messageId, Math.max(0, ttsCurrentChunk), nextSource.voiceReferenceId);
     persistLastPlayedMessage(messageId);
+  }, [applyTtsSourceContext, persistLastPlayedMessage, setActiveTtsSource, startPlayback, ttsCurrentChunk]);
+
+  const syncActiveStreamingTtsToFinalMessage = async (messageId: string, content: string) => {
+    const activeSource = activeTtsSourceRef.current;
+    if (!activeSource?.isStreaming || (!ttsIsPlaying && !ttsIsLoading) || !content.trim()) {
+      return;
+    }
+
+    await syncTtsSourceToFinalMessage(messageId, content, activeSource);
   };
 
   useEffect(() => {
-    if (ttsActiveMessageId !== activeStreamingTtsMessageId || !streamingContent.trim()) {
+    const activeSource = activeTtsSourceRef.current;
+    if (!activeSource || !activeSource.isStreaming || activeSource.sessionId !== session.id || !streamingContent.trim()) {
       return;
     }
 
-    void syncStreamingPlayback(streamingContent, activeStreamingTtsMessageId, selectedTtsVoiceId);
-  }, [activeStreamingTtsMessageId, selectedTtsVoiceId, streamingContent, syncStreamingPlayback, ttsActiveMessageId]);
+    const nextMessageId = streamingAssistantMessageId ?? activeSource.messageId;
+    const nextSource = {
+      ...activeSource,
+      messageId: nextMessageId,
+      content: streamingContent,
+      voiceReferenceId: activeSource.voiceReferenceId ?? selectedTtsVoiceId,
+    };
+
+    applyTtsSourceContext(nextSource);
+    setActiveTtsSource(nextSource);
+    void syncStreamingPlayback(streamingContent, nextMessageId, nextSource.voiceReferenceId);
+  }, [applyTtsSourceContext, selectedTtsVoiceId, session.id, setActiveTtsSource, streamingAssistantMessageId, streamingContent, syncStreamingPlayback]);
+
+  useEffect(() => {
+    const activeSource = activeTtsSourceRef.current;
+    if (!streamingAssistantMessageId || !activeSource || !activeSource.isStreaming || activeSource.sessionId !== session.id || activeSource.messageId !== STREAMING_TTS_PLACEHOLDER_ID) {
+      return;
+    }
+
+    const nextSource = {
+      ...activeSource,
+      messageId: streamingAssistantMessageId,
+    };
+
+    setActiveTtsSource(nextSource);
+
+    if (ttsActiveMessageId === STREAMING_TTS_PLACEHOLDER_ID && activeSource.content.trim()) {
+      applyTtsSourceContext(nextSource);
+      void startPlayback(activeSource.content, streamingAssistantMessageId, Math.max(0, ttsCurrentChunk), nextSource.voiceReferenceId, { streaming: true });
+    }
+  }, [applyTtsSourceContext, session.id, setActiveTtsSource, startPlayback, streamingAssistantMessageId, ttsActiveMessageId, ttsCurrentChunk]);
+
+  useEffect(() => {
+    const activeSource = activeTtsSourceRef.current;
+    if (!activeSource || !activeSource.isStreaming || activeSource.messageId === STREAMING_TTS_PLACEHOLDER_ID) {
+      return;
+    }
+
+    let cancelled = false;
+    let pollingTimer: number | null = null;
+
+    const pollSourceMessage = async () => {
+      try {
+        const message = await api.getMessage(activeSource.sessionId, activeSource.messageId);
+        if (cancelled) {
+          return;
+        }
+
+        const currentSource = activeTtsSourceRef.current;
+        if (!currentSource || currentSource.sessionId !== activeSource.sessionId || currentSource.messageId !== activeSource.messageId) {
+          return;
+        }
+
+        const nextSource: ActiveTtsSource = {
+          ...currentSource,
+          content: message.content,
+          isStreaming: message.status === "streaming",
+        };
+
+        setActiveTtsSource(nextSource);
+
+        if (message.content.trim()) {
+          applyTtsSourceContext(nextSource);
+          if (message.status === "streaming") {
+            await syncStreamingPlayback(message.content, nextSource.messageId, nextSource.voiceReferenceId);
+          } else {
+            await syncTtsSourceToFinalMessage(nextSource.messageId, message.content, nextSource);
+            return;
+          }
+        }
+      } catch {
+        // Ignore poll errors and retry.
+      }
+
+      if (!cancelled) {
+        pollingTimer = window.setTimeout(() => {
+          void pollSourceMessage();
+        }, 1500);
+      }
+    };
+
+    void pollSourceMessage();
+
+    return () => {
+      cancelled = true;
+      if (pollingTimer !== null) {
+        window.clearTimeout(pollingTimer);
+      }
+    };
+  }, [activeTtsSource, applyTtsSourceContext, setActiveTtsSource, syncStreamingPlayback, syncTtsSourceToFinalMessage]);
 
   const handleToggleTTS = async (messageId: string, content: string) => {
     stopVoicePreview();
     if (messageId === activeStreamingTtsMessageId && !!streamingContent.trim()) {
       const voiceId = await resolvePlaybackVoiceId();
+      const source = createCurrentSessionTtsSource(messageId, content, { isStreaming: true, voiceReferenceId: voiceId });
 
       if (ttsActiveMessageId === messageId && (ttsIsPlaying || ttsIsLoading)) {
         ttsPause();
@@ -564,6 +714,8 @@ export default function ChatView({
       }
 
       setTtsAutoScrollEnabled(true);
+      applyTtsSourceContext(source);
+      setActiveTtsSource(source);
       await startPlayback(content, messageId, ttsActiveMessageId === messageId ? Math.max(0, ttsCurrentChunk) : 0, voiceId, { streaming: true });
       if (messageId !== STREAMING_TTS_PLACEHOLDER_ID) {
         persistLastPlayedMessage(messageId);
@@ -577,10 +729,13 @@ export default function ChatView({
     }
 
     const voiceId = await resolvePlaybackVoiceId();
+    const source = createCurrentSessionTtsSource(messageId, content, { voiceReferenceId: voiceId });
     setTtsAutoScrollEnabled(true);
     if (ttsActiveMessageId === messageId && ttsIsPaused) {
       await ttsResume();
     } else {
+      applyTtsSourceContext(source);
+      setActiveTtsSource(source);
       await startPlayback(content, messageId, -1, voiceId);
     }
     persistLastPlayedMessage(messageId);
@@ -589,7 +744,10 @@ export default function ChatView({
   const handleStartTTSFromWord = async (messageId: string, content: string, wordIndex: number) => {
     stopVoicePreview();
     const voiceId = await resolvePlaybackVoiceId();
+    const source = createCurrentSessionTtsSource(messageId, content, { voiceReferenceId: voiceId });
     setTtsAutoScrollEnabled(true);
+    applyTtsSourceContext(source);
+    setActiveTtsSource(source);
     await startFromWord(content, messageId, wordIndex, voiceId);
     persistLastPlayedMessage(messageId);
     hideWordMenu();
@@ -605,6 +763,12 @@ export default function ChatView({
     }
 
     const voiceId = await resolvePlaybackVoiceId();
+    const source = createCurrentSessionTtsSource(messageId, content, {
+      voiceReferenceId: voiceId,
+      isStreaming: messageId === activeStreamingTtsMessageId,
+    });
+    applyTtsSourceContext(source);
+    setActiveTtsSource(source);
     await startPlayback(content, messageId, chunkIndex, voiceId, { streaming: messageId === activeStreamingTtsMessageId });
     persistLastPlayedMessage(messageId);
   };
@@ -625,8 +789,9 @@ export default function ChatView({
       });
     }
 
+    setActiveTtsSource(null);
     await ttsStop();
-  }, [stopVoicePreview, ttsActiveMessageId, ttsStop]);
+  }, [setActiveTtsSource, stopVoicePreview, ttsActiveMessageId, ttsStop]);
 
   const handleResumeSessionTts = async () => {
     stopVoicePreview();
@@ -650,7 +815,10 @@ export default function ChatView({
 
     if (lastPlayedMessageId === activeStreamingTtsMessageId && streamingContentRef.current.trim()) {
       const voiceId = await resolvePlaybackVoiceId();
+      const source = createCurrentSessionTtsSource(lastPlayedMessageId, streamingContentRef.current, { voiceReferenceId: voiceId, isStreaming: true });
       setTtsAutoScrollEnabled(true);
+      applyTtsSourceContext(source);
+      setActiveTtsSource(source);
       await startPlayback(streamingContentRef.current, lastPlayedMessageId, -1, voiceId, { streaming: true });
       return;
     }
@@ -661,7 +829,10 @@ export default function ChatView({
     }
 
     const voiceId = await resolvePlaybackVoiceId();
+    const source = createCurrentSessionTtsSource(targetMessage.id, targetMessage.content, { voiceReferenceId: voiceId });
     setTtsAutoScrollEnabled(true);
+    applyTtsSourceContext(source);
+    setActiveTtsSource(source);
     await startPlayback(targetMessage.content, targetMessage.id, -1, voiceId);
   };
 
@@ -712,11 +883,6 @@ export default function ChatView({
     try {
       const response = voiceId ? await api.selectTtsVoice(voiceId) : await api.clearSelectedTtsVoice();
       applyVoiceSelectionResponse(response);
-      setSpeakerContext({
-        sessionId: session.id,
-        defaultVoiceReferenceId: response.selectedVoiceId ?? null,
-        speakerMappings: sessionTtsSpeakers,
-      });
       setShowVoiceMenu(false);
       await restartCurrentTtsPlayback(sessionTtsSpeakers, response.selectedVoiceId ?? null);
     } catch (error) {
@@ -727,48 +893,50 @@ export default function ChatView({
   };
 
   const restartCurrentTtsPlayback = useCallback(async (speakerMappingsOverride?: SessionTtsSpeakerMapping[], defaultVoiceOverride?: string | null) => {
-    if (!ttsActiveMessageId) {
+    const currentSource = activeTtsSourceRef.current;
+    if (!ttsActiveMessageId || !currentSource) {
       return;
     }
 
     const shouldRestartImmediately = ttsIsPlaying || ttsIsLoading;
     const restartChunkIndex = ttsCurrentChunk;
+    const nextSource: ActiveTtsSource = {
+      ...currentSource,
+      speakerMappings: speakerMappingsOverride ?? currentSource.speakerMappings,
+      voiceReferenceId: defaultVoiceOverride ?? currentSource.voiceReferenceId,
+    };
 
-    if (speakerMappingsOverride) {
-      setSpeakerContext({
-        sessionId: session.id,
-        defaultVoiceReferenceId: defaultVoiceOverride ?? selectedTtsVoiceId,
-        speakerMappings: speakerMappingsOverride,
-      });
-    }
+    setActiveTtsSource(nextSource);
+    applyTtsSourceContext(nextSource);
 
     if (!shouldRestartImmediately) {
       return;
     }
 
     await handleStopTTS();
+    setActiveTtsSource(nextSource);
+    applyTtsSourceContext(nextSource);
 
-    if (ttsActiveMessageId === activeStreamingTtsMessageId && streamingContentRef.current.trim()) {
+    if (nextSource.isStreaming && nextSource.content.trim()) {
       await startPlayback(
-        streamingContentRef.current,
-        activeStreamingTtsMessageId,
+        nextSource.content,
+        nextSource.messageId,
         restartChunkIndex,
-        defaultVoiceOverride ?? selectedTtsVoiceId,
+        nextSource.voiceReferenceId,
         { streaming: true },
       );
       return;
     }
 
-    const activeMessage = messages.find((message) => message.id === ttsActiveMessageId);
-    if (activeMessage) {
+    if (nextSource.content.trim()) {
       await startPlayback(
-        activeMessage.content,
-        activeMessage.id,
+        nextSource.content,
+        nextSource.messageId,
         restartChunkIndex,
-        defaultVoiceOverride ?? selectedTtsVoiceId,
+        nextSource.voiceReferenceId,
       );
     }
-  }, [activeStreamingTtsMessageId, handleStopTTS, messages, selectedTtsVoiceId, setSpeakerContext, startPlayback, ttsActiveMessageId, ttsCurrentChunk, ttsIsLoading, ttsIsPlaying]);
+  }, [applyTtsSourceContext, handleStopTTS, setActiveTtsSource, startPlayback, ttsActiveMessageId, ttsCurrentChunk, ttsIsLoading, ttsIsPlaying]);
 
   const handleAssignSpeakerVoice = async (speakerKey: string, voiceId: string | null) => {
     stopVoicePreview();
@@ -779,13 +947,9 @@ export default function ChatView({
       const nextSpeakerMappings = mergeSessionTtsSpeaker(sessionTtsSpeakers, response.speaker);
 
       setSessionTtsSpeakers(nextSpeakerMappings);
-      setSpeakerContext({
-        sessionId: session.id,
-        defaultVoiceReferenceId: selectedTtsVoiceId,
-        speakerMappings: nextSpeakerMappings,
-      });
-
-      await restartCurrentTtsPlayback(nextSpeakerMappings, selectedTtsVoiceId);
+      if (activeTtsSourceRef.current?.sessionId === session.id) {
+        await restartCurrentTtsPlayback(nextSpeakerMappings, activeTtsSourceRef.current.voiceReferenceId);
+      }
       void loadSessionTtsSpeakers();
     } catch (error) {
       setSessionTtsSpeakerError(error instanceof Error ? error.message : "Failed to update speaker voice");
@@ -802,11 +966,12 @@ export default function ChatView({
       const nextSpeakerMappings = mergeSessionTtsSpeaker(sessionTtsSpeakers, response.speaker);
 
       setSessionTtsSpeakers(nextSpeakerMappings);
-      setSpeakerContext({
-        sessionId: session.id,
-        defaultVoiceReferenceId: selectedTtsVoiceId,
-        speakerMappings: nextSpeakerMappings,
-      });
+      if (activeTtsSourceRef.current?.sessionId === session.id) {
+        updateCurrentSessionTtsSource((current) => ({
+          ...current,
+          speakerMappings: nextSpeakerMappings,
+        }));
+      }
     } catch (error) {
       setSessionTtsSpeakerError(error instanceof Error ? error.message : "Failed to update speaker visibility");
     } finally {
@@ -1073,6 +1238,14 @@ export default function ChatView({
       setShowHiddenSpeakers(true);
     }
   }, [sessionTtsSpeakers]);
+
+  useEffect(() => {
+    updateCurrentSessionTtsSource((current) => ({
+      ...current,
+      speakerMappings: sessionTtsSpeakers,
+      voiceReferenceId: selectedTtsVoiceId,
+    }));
+  }, [selectedTtsVoiceId, sessionTtsSpeakers, updateCurrentSessionTtsSource]);
 
   useEffect(() => {
     if (!hasActiveStream) return;

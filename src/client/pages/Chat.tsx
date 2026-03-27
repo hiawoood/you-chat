@@ -25,6 +25,7 @@ export default function Chat() {
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollingSessionRef = useRef<string | null>(null);
   const pollingMessageRef = useRef<string | null>(null);
+  const activeSessionIdRef = useRef<string | null>(activeSessionId);
 
   const activeSession = sessions.find((s) => s.id === activeSessionId);
   const isMobile = typeof window !== "undefined" && window.innerWidth < 1024;
@@ -69,6 +70,10 @@ export default function Chat() {
     } else {
       window.localStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY);
     }
+  }, [activeSessionId]);
+
+  useEffect(() => {
+    activeSessionIdRef.current = activeSessionId;
   }, [activeSessionId]);
 
   const loadMessages = useCallback(async (sessionId: string) => {
@@ -258,22 +263,33 @@ export default function Chat() {
   };
 
   const handleMessageSent = (userMessage: Message) => {
+    if (userMessage.session_id !== activeSessionIdRef.current) {
+      return;
+    }
+
     setMessages((prev) => [...prev, userMessage]);
   };
 
-  const handleUpdateMessageId = (tempId: string, realId: string) => {
+  const handleUpdateMessageId = (sessionId: string, tempId: string, realId: string) => {
+    if (sessionId !== activeSessionIdRef.current) {
+      return;
+    }
+
     setMessages((prev) => prev.map((m) => (m.id === tempId ? { ...m, id: realId } : m)));
   };
 
   const handleMessageReceived = (assistantMessage: Message) => {
-    setMessages((prev) => {
-      const existingIndex = prev.findIndex((message) => message.id === assistantMessage.id);
-      if (existingIndex >= 0) {
-        return prev.map((message, index) => index === existingIndex ? { ...message, ...assistantMessage } : message);
-      }
+    if (assistantMessage.session_id === activeSessionIdRef.current) {
+      setMessages((prev) => {
+        const existingIndex = prev.findIndex((message) => message.id === assistantMessage.id);
+        if (existingIndex >= 0) {
+          return prev.map((message, index) => index === existingIndex ? { ...message, ...assistantMessage } : message);
+        }
 
-      return [...prev, assistantMessage];
-    });
+        return [...prev, assistantMessage];
+      });
+    }
+
     loadSessions();
   };
 
@@ -323,7 +339,11 @@ export default function Chat() {
     });
   };
 
-  const handleTruncateAfter = (messageId: string) => {
+  const handleTruncateAfter = (sessionId: string, messageId: string) => {
+    if (sessionId !== activeSessionIdRef.current) {
+      return;
+    }
+
     const idx = messages.findIndex((m) => m.id === messageId);
     if (idx >= 0) {
       setMessages(messages.slice(0, idx + 1));
