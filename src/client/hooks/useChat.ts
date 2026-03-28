@@ -299,6 +299,24 @@ export function useChat({ sessionId, onMessage, onUserMessageId, onAssistantMess
           },
         }, controller.signal);
 
+        if (!streamCompleted && assistantMsgId && streamStalled) {
+          console.log("[useChat] Stream stalled, falling back to polling", assistantMsgId);
+          const pollingController = new AbortController();
+          abortRef.current = pollingController;
+          setThinkingStatus("Reconnecting…");
+          await pollUntilDone(assistantMsgId, {
+            onContent: (content) => {
+              setThinkingStatus(null);
+              applyStreamContent(content);
+            },
+            onDone: (msgId) => {
+              finishStream(msgId);
+            },
+            onError,
+          }, pollingController.signal);
+          return;
+        }
+
         // If stream ended without a done/error event and we have an assistant message ID,
         // the connection was lost — fall back to polling
         if (!streamCompleted && assistantMsgId && !controller.signal.aborted) {
@@ -331,21 +349,6 @@ export function useChat({ sessionId, onMessage, onUserMessageId, onAssistantMess
             },
             onError,
           }, controller.signal);
-        } else if (assistantMsgId && streamStalled) {
-          console.log("[useChat] Stream stalled, falling back to polling", assistantMsgId);
-          const pollingController = new AbortController();
-          abortRef.current = pollingController;
-          setThinkingStatus("Reconnecting…");
-          await pollUntilDone(assistantMsgId, {
-            onContent: (content) => {
-              setThinkingStatus(null);
-              applyStreamContent(content);
-            },
-            onDone: (msgId) => {
-              finishStream(msgId);
-            },
-            onError,
-          }, pollingController.signal);
         } else {
           onError?.(error instanceof Error ? error.message : "Unknown error");
         }
@@ -447,6 +450,24 @@ export function useChat({ sessionId, onMessage, onUserMessageId, onAssistantMess
           },
         }, controller.signal);
 
+        if (!regenCompleted && regenMsgId && streamStalled) {
+          console.log("[useChat] Regenerate stream stalled, polling", regenMsgId);
+          const pollingController = new AbortController();
+          abortRef.current = pollingController;
+          setThinkingStatus("Reconnecting…");
+          await pollUntilDone(regenMsgId, {
+            onContent: (content) => {
+              setThinkingStatus(null);
+              applyStreamContent(content);
+            },
+            onDone: (msgId) => {
+              finishRegeneration(msgId);
+            },
+            onError,
+          }, pollingController.signal);
+          return;
+        }
+
         // Fall back to polling if stream disconnected
         if (!regenCompleted && regenMsgId && !controller.signal.aborted) {
           console.log("[useChat] Regenerate stream disconnected, polling", regenMsgId);
@@ -464,24 +485,6 @@ export function useChat({ sessionId, onMessage, onUserMessageId, onAssistantMess
         }
       } catch (error) {
         if (controller.signal.aborted && !streamStalled) return;
-
-        if (regenMsgId && streamStalled) {
-          console.log("[useChat] Regenerate stream stalled, polling", regenMsgId);
-          const pollingController = new AbortController();
-          abortRef.current = pollingController;
-          setThinkingStatus("Reconnecting…");
-          await pollUntilDone(regenMsgId, {
-            onContent: (content) => {
-              setThinkingStatus(null);
-              applyStreamContent(content);
-            },
-            onDone: (msgId) => {
-              finishRegeneration(msgId);
-            },
-            onError,
-          }, pollingController.signal);
-          return;
-        }
 
         if (regenMsgId && !controller.signal.aborted) {
           console.log("[useChat] Regenerate stream error, polling", regenMsgId);
