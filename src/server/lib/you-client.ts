@@ -119,47 +119,76 @@ export async function* streamChat(
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  let currentEvent = "";
+
+  const parseLine = (line: string): StreamEvent | null => {
+    const trimmed = line.trim();
+
+    if (!trimmed) {
+      currentEvent = "";
+      return null;
+    }
+
+    if (trimmed.startsWith("event: ")) {
+      // SSE event metadata and its data line can arrive in separate network reads.
+      currentEvent = trimmed.slice(7);
+      return null;
+    }
+
+    if (!trimmed.startsWith("data: ")) {
+      return null;
+    }
+
+    const data = trimmed.slice(6);
+    if (currentEvent === "youChatUpdate") {
+      try {
+        const parsed = JSON.parse(data);
+        // Thinking status: {"msg": "Thinking", "done": false}
+        if (parsed.msg && !parsed.done) {
+          return { type: "thinking", message: parsed.msg };
+        }
+      } catch {
+        // skip
+      }
+      return null;
+    }
+
+    if (currentEvent === "youChatToken") {
+      try {
+        const parsed = JSON.parse(data);
+        if (parsed.youChatToken) {
+          return { type: "token", text: parsed.youChatToken };
+        }
+      } catch {
+        // skip malformed JSON
+      }
+      return null;
+    }
+
+    if (currentEvent === "done") {
+      return { type: "done" };
+    }
+
+    return null;
+  };
 
   while (true) {
     const { done, value } = await reader.read();
-    if (done) break;
-
-    buffer += decoder.decode(value, { stream: true });
+    buffer += done ? decoder.decode() : decoder.decode(value, { stream: true });
     const lines = buffer.split("\n");
-    buffer = lines.pop() || "";
+    buffer = done ? "" : lines.pop() || "";
 
-    let currentEvent = "";
     for (const line of lines) {
-      const trimmed = line.trim();
-      if (trimmed.startsWith("event: ")) {
-        currentEvent = trimmed.slice(7);
-      } else if (trimmed.startsWith("data: ")) {
-        const data = trimmed.slice(6);
-        if (currentEvent === "youChatUpdate") {
-          try {
-            const parsed = JSON.parse(data);
-            // Thinking status: {"msg": "Thinking", "done": false}
-            if (parsed.msg && !parsed.done) {
-              yield { type: "thinking", message: parsed.msg };
-            }
-          } catch {
-            // skip
-          }
-        } else if (currentEvent === "youChatToken") {
-          try {
-            const parsed = JSON.parse(data);
-            if (parsed.youChatToken) {
-              yield { type: "token", text: parsed.youChatToken };
-            }
-          } catch {
-            // skip malformed JSON
-          }
-        } else if (currentEvent === "done") {
-          yield { type: "done" };
-          return;
-        }
+      const event = parseLine(line);
+      if (!event) continue;
+
+      yield event;
+      if (event.type === "done") {
+        return;
       }
     }
+
+    if (done) break;
   }
 }
 
