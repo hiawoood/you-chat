@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Message } from "../lib/api";
+import { countAnthropicTokens, countEffectiveChatHistoryTokens } from "../lib/anthropic-tokens";
 import { splitStreamingTextIntoDisplayChunkPlans, splitTextIntoDisplayChunkPlans, type TTSChunk } from "../hooks/useChunkedVastTTS";
 import { extractRenderedMarkdownWordSourceRanges, type SourceRange } from "../lib/markdown-word-ranges";
 
@@ -132,6 +133,7 @@ const MemoizedMarkdownContent = memo(
 
 interface MessageBubbleProps {
   message: Message;
+  tokenCount: number;
   isStreaming?: boolean;
   isDeleting?: boolean;
   isSaving?: boolean;
@@ -392,6 +394,10 @@ function formatTime(ts: number): string {
   return `${d.toLocaleDateString([], { month: "short", day: "numeric" })}, ${time}`;
 }
 
+function formatTokenCount(count: number): string {
+  return `${count.toLocaleString()} token${count === 1 ? "" : "s"}`;
+}
+
 function MessageList({
   messages,
   streamingContent,
@@ -455,6 +461,19 @@ function MessageList({
         : []),
     ],
     [dedupedMessages, streamingContent, streamingMessageId],
+  );
+  const tokenCountsByMessageId = useMemo(() => {
+    const counts = new Map<string, number>();
+
+    for (const item of items) {
+      counts.set(item.id, countAnthropicTokens(item.content));
+    }
+
+    return counts;
+  }, [items]);
+  const effectiveHistoryTokenCount = useMemo(
+    () => countEffectiveChatHistoryTokens(items),
+    [items],
   );
 
   const regenerateTargetByMessageId = useMemo(() => {
@@ -576,6 +595,7 @@ function MessageList({
           <MemoizedMessageBubble
             key={item.id}
             message={item}
+            tokenCount={tokenCountsByMessageId.get(item.id) ?? 0}
             isStreaming={isActivelyStreaming}
             isDeleting={isDeleting}
             onEdit={onEditMessage && !isActivelyStreaming ? (content: string) => onEditMessage(item.id, content) : undefined}
@@ -603,6 +623,12 @@ function MessageList({
           />
         );
       })}
+
+      <div className="flex justify-center pt-1">
+        <div className="rounded-full border border-gray-200 bg-white px-3 py-1 text-[11px] text-gray-500 shadow-sm dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300">
+          Next request context: <span className="font-medium text-gray-700 dark:text-gray-100">{formatTokenCount(effectiveHistoryTokenCount)}</span>
+        </div>
+      </div>
 
       {/* Thinking indicator */}
       {thinkingStatus && !streamingContent && (
@@ -683,6 +709,7 @@ function IconButton({ onClick, title, children, className = "", disabled = false
 
 function MessageBubble({
   message,
+  tokenCount,
   isStreaming = false,
   isDeleting = false,
   isSaving = false,
@@ -800,6 +827,7 @@ function MessageBubble({
 
   const isCollapsed = collapsed && isLong && !editing;
   const isBusy = isDeleting || isSaving || isForking || actionDisabled;
+  const displayedTokenCount = editing ? countAnthropicTokens(editValue) : tokenCount;
   const shouldRenderChunkLayout = !isUser && chunkSourceRanges.length > 1;
   const shouldRenderChunkActions = !isUser && !!onPlayTTSChunk && chunkSourceRanges.length > 1;
   const shouldEnableChunkSelection = shouldRenderChunkLayout && !!onPlayTTSChunk;
@@ -1139,6 +1167,10 @@ function MessageBubble({
         )}
       </div>
 
+      <div className={`mt-1 px-1 text-[10px] text-gray-400 dark:text-gray-500 ${isUser ? "text-right" : "text-left"}`}>
+        {formatTokenCount(displayedTokenCount)}
+      </div>
+
       {/* Action buttons - horizontal under the bubble */}
       {!isStreaming && !editing && !isBusy && (
         confirmAction ? (
@@ -1279,6 +1311,8 @@ function areMessageBubblePropsEqual(previousProps: Readonly<MessageBubbleProps>,
   if (!sameMessage) return false;
 
   if (
+    previousProps.tokenCount !== nextProps.tokenCount
+    ||
     previousProps.isStreaming !== nextProps.isStreaming
     || previousProps.isDeleting !== nextProps.isDeleting
     || previousProps.isSaving !== nextProps.isSaving
